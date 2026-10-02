@@ -7,3 +7,6 @@ pcb/build/
 *.kicad_prl
 *.dsn
 *.ses
+
+# Firmware credentials (copy secrets.example.h -> secrets.h)
+secrets.h
