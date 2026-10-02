@@ -1,204 +1,309 @@
 # ============================================================
 # ESP32 PC Controller — carrier PCB
 # ============================================================
-# Houses: ESP32-S3 SuperMini, ESP32 DevKit V1, MT3608 boost converter,
-# ST7789V display header, 5x EL817C/PC817 optocoupler bank, 2x status LED,
-# 7x current-limit resistor, 1x isolated motherboard-RST pair, and two
-# spare-pin expansion headers (one per MCU).
+# Houses: ESP32-S3-N16R8 DevKitC-1-style module (44-pin/2x22, 16MB flash/
+# 8MB PSRAM, dual USB-C), 5V->12V boost module (soldered on), 3x ST7789
+# display header (shared SPI bus, per-display CS), 5x EL817C/PC817
+# optocoupler bank, 1x status LED, 6x 270R + 5x 10k + 2x 33R, 1x 1x6
+# keyfob connector, 1x isolated motherboard-RST pair, and one
+# consolidated spare-pin expansion header.
 #
-# Everything here is written by hand against core atopile syntax (component /
-# module / pin / signal / footprint / `~`), with NO external stdlib imports,
-# specifically so it doesn't depend on guessing the right import path for
-# whatever atopile version is installed. Not run through `ato build` yet —
-# atopile isn't installed in this environment. Run it and fix whatever the
-# version-specific error is; the wiring/quantities below are the part that
-# actually matters and were cross-checked against the reverse-engineered
-# netlist from circuit_image.svg.
+# Single-MCU architecture (2026-09-30 pivot, superseding the earlier
+# dual-MCU SuperMini+DevKit design). All three displays, the 5-row
+# optocoupler bank, and the motherboard RST line are now driven from one
+# ESP32-S3-N16R8 module. Netlist reverse-engineered from
+# diagrams/circuit_image.png via pixel-level exact-color wire tracing
+# (this tool has a history of color-collision bugs in its exports, so
+# every net below was confirmed at both endpoints, not eyeballed).
 #
-# Net-to-pin mapping below carries the same caveats already flagged earlier:
-#   - SuperMini idx16 ("BAT" or "5V" — silkscreen was ambiguous on the
-#     reference photo) is the pin actually feeding DevKit VIN + the boost
-#     converter's 5V input. VERIFY WITH A MULTIMETER once the board is in
-#     hand — if it's genuinely the BAT/charge-IC pad rather than a clean 5V
-#     rail, DevKit's VIN will be undervolted. This board design routes that
-#     pin through either way; fixing it (if needed) is a one-line net change.
-#   - RESOLVED (2026-09-29): GPIO7 turned out genuinely taken — bench-testing
-#     the real display against a real S3 board landed its SCK line there (see
-#     display SPI wiring below, updated to the tested pin mapping, replacing
-#     the old pre-arrival guess). led2 (the S3-side status LED, previously
-#     tentative on GPIO7) moves to GPIO8 instead. GPIO8 isn't a header pin on
-#     the assumed 18-pin/2x9 SuperMini socket — added as a 19th pin below;
-#     VERIFY the physical header on hand actually has 20 pins (2x10), not 18,
-#     before ordering.
-#   - Which exact DevKit GPIO (of D18/D21/D19/D22/D4) drives which specific
-#     door button vs. the RST optocoupler was reconstructed from a busy
-#     hand-drawn diagram and should be treated as unconfirmed. It does not
-#     change this PCB's copper — each of the 5 optocoupler rows still gets
-#     its own dedicated GPIO + resistor + isolated output regardless of
-#     which row is physically "UP" vs "RST". Confirm the exact mapping
-#     against Cirkit Designer's own netlist before finalizing firmware.
+# Pin mapping (confirmed):
+#   - Display bus (shared across all 3 panels): SDA/MOSI=GPIO11 and
+#     SCL/SCK=GPIO12 (FSPI IO_MUX pins -- 80MHz-capable), each through a
+#     33R series resistor at the module. RST=GPIO10, DC=GPIO9. Per-display
+#     CS: CS1=GPIO8 (display 1), CS2=GPIO18 (display 2), CS3=GPIO17
+#     (display 3). (2026-10-02: moved from RST=6/DC=7/CS=17/16/15 so the
+#     whole bus sits on adjacent module pins 10-18 facing the displays --
+#     the module is mounted rotated 180deg, USB-C to the board's top edge.)
+#   - Display VCC is wired to the module's 5Vin pin, not 3V3 — CONFIRMED
+#     INTENTIONAL by the user, not a bug: the final display part carries its
+#     own onboard 5V->3.3V regulator, which avoids loading the module's
+#     single onboard 3.3V LDO across all 3 panels at once.
+#   - Optocoupler bank: GPIO1/42/41/40/39 -> opto rows 1-5 respectively.
+#     Rows 1-4 are the door-remote buttons (power-injection: boost 12V+
+#     bussed to rows 1-4 collectors, emitters out to the 1x6 keyfob
+#     connector). Row 5 is the motherboard hardware-reset line: its
+#     collector/emitter go ONLY to the RST pair, never to the 12V bus.
+#     GPIO39 has a 10k pull-down so the reset opto stays off whenever
+#     firmware isn't driving the pin.
+#   - Status LED: GPIO21 -> 270R -> single LED -> GND. Down from 2 LEDs
+#     in the old dual-MCU design (one per board) to 1.
+#   - USB-OTG (motherboard front-panel USB passthrough) needs NO carrier
+#     PCB copper: it's the module's own onboard second USB-C port, wired
+#     externally via a Type-E-to-Type-C cable straight to the
+#     motherboard's front-panel USB header. Not represented below.
+#
+# N16R8Socket pin layout is the standard ESP32-S3-DevKitC-1 44-pin/2x22
+# silkscreen, confirmed against the reference photo down to the last
+# 1-3 pins on each column (previously the only gap in the trace).
+#
+# EVERY component below declares pins as `signal <name> ~ pin <N>`, not a
+# bare `pin <name>`. A bare named pin's identifier has no relationship to
+# the real KiCad footprint's numeric pad designators -- it silently fails
+# to bind to an actual physical pad on stock library footprints (all of
+# which use plain numbers, not named pads). This was true of the old
+# dual-MCU main.ato too; it just never got exercised against a real board
+# until this rewrite, when loading each footprint's real pad list via
+# pcbnew's Python API (not assumed) turned this up. Real pad order was
+# confirmed per footprint before assigning: single-row headers/resistor/
+# LED/DIP-4 all number sequentially in a way that happens to match
+# declaration order, EXCEPT the 2x22 socket (see N16R8Socket below, the
+# one case where pad order and declaration order genuinely diverge).
 
 # ---- discrete building blocks -------------------------------------------
 
 component Resistor270:
-    """7x needed: 5 for the PC817 LED drive, 2 for the status LEDs."""
-    pin p1
-    pin p2
+    """6x needed: 5 for the PC817 LED drive, 1 for the status LED."""
+    signal p1 ~ pin 1
+    signal p2 ~ pin 2
+    footprint = "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal"
+
+component Resistor10k:
+    """GPIO39 pull-down: holds the motherboard-reset opto off while firmware
+    isn't driving the pin (boot, flashing, crash, deep sleep). Must stay
+    <=~20k to beat a possible ~45k internal pull-up at reset."""
+    signal p1 ~ pin 1
+    signal p2 ~ pin 2
+    footprint = "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal"
+
+component Resistor33:
+    """33R THT series (source) termination on SCK / MOSI, placed in the
+    board's top-right corner next to the module: damps reflections on the
+    ~140mm daisy-chained display bus. Fit a wire link (0R) to disable."""
+    signal p1 ~ pin 1
+    signal p2 ~ pin 2
     footprint = "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal"
 
 component StatusLED:
-    pin a  # anode
-    pin k  # cathode
+    # KiCad LED_THT footprints: pad 1 (square) = cathode, pad 2 = anode
+    signal k ~ pin 1  # cathode
+    signal a ~ pin 2  # anode
     footprint = "LED_THT:LED_D5.0mm"
 
 component Optocoupler:
-    """EL817C / PC817, DIP-4, 2.54mm pitch, 7.62mm row spacing."""
-    pin anode      # 1 - LED+
-    pin cathode    # 2 - LED-
-    pin emitter    # 3 - phototransistor E
-    pin collector  # 4 - phototransistor C
+    """EL817C / PC817, DIP-4, 2.54mm pitch, 7.62mm row spacing. Standard
+    pinout confirmed against the real footprint's pad geometry: pins 1/2
+    (LED side) sit opposite pins 4/3 (phototransistor side) respectively."""
+    signal anode     ~ pin 1  # LED+
+    signal cathode   ~ pin 2  # LED-
+    signal emitter   ~ pin 3  # phototransistor E
+    signal collector ~ pin 4  # phototransistor C
     footprint = "Package_DIP:DIP-4_W7.62mm"
 
-# ---- module-interface connectors (female sockets — the boards/module ----
+# ---- module-interface connectors (female sockets — the module/boards ----
 # ---- carry their own soldered-on male DuPont pins and plug into these) --
 
-component SuperMiniSocket:
-    """Was 18-pin/2x9. Now 19 named signals (added gpio8, see below) — the
-    footprint below assumes a 20-pin/2x10 header to fit that. VERIFY the
-    physical SuperMini header on hand actually has 20 pins, not 18; if it's
-    genuinely 18, gpio8 has to come from somewhere else (see note on the
-    pwr_spare pin)."""
-    pin tx
-    pin rx
-    pin gpio1
-    pin gpio2
-    pin gpio3      # display CS (tested mapping, see Main)
-    pin gpio4      # display DC (tested mapping, see Main)
-    pin gpio5      # display RST (tested mapping, see Main)
-    pin gpio6      # display MOSI/SDA (tested mapping, see Main)
-    pin gpio7      # display SCK/SCL — confirmed taken by the bring-up test
-    pin gpio8      # led2 (S3-side status LED) lives here now, moved off gpio7
-    pin gpio9
-    pin gpio10
-    pin gpio11
-    pin gpio12
-    pin gpio13
-    pin vcc_3v3
-    pin gnd
-    pin pwr_bat_or_5v  # ambiguous silkscreen — verify with a meter, see header note
-    pin pwr_spare      # the other top-right pin; read as unconnected — free.
-                       # If the real header turns out to be 18-pin (no gpio8
-                       # pad), this is the most likely candidate to actually
-                       # BE gpio8 mislabeled — recheck against the real part.
-    footprint = "Connector_PinSocket_2.54mm:PinSocket_2x10_P2.54mm_Vertical"
+component Header1x22:
+    """One 22-pin single-row 2.54mm female socket -- one half of the
+    module's 44-pin/2x22 footprint. Single-row headers number pads
+    sequentially 1..22 matching physical top-to-bottom position
+    (confirmed project-wide convention, unlike the 2x22 zigzag case
+    this replaces -- see N16R8Socket below for why)."""
+    signal pin1 ~ pin 1
+    signal pin2 ~ pin 2
+    signal pin3 ~ pin 3
+    signal pin4 ~ pin 4
+    signal pin5 ~ pin 5
+    signal pin6 ~ pin 6
+    signal pin7 ~ pin 7
+    signal pin8 ~ pin 8
+    signal pin9 ~ pin 9
+    signal pin10 ~ pin 10
+    signal pin11 ~ pin 11
+    signal pin12 ~ pin 12
+    signal pin13 ~ pin 13
+    signal pin14 ~ pin 14
+    signal pin15 ~ pin 15
+    signal pin16 ~ pin 16
+    signal pin17 ~ pin 17
+    signal pin18 ~ pin 18
+    signal pin19 ~ pin 19
+    signal pin20 ~ pin 20
+    signal pin21 ~ pin 21
+    signal pin22 ~ pin 22
+    footprint = "Connector_PinSocket_2.54mm:PinSocket_1x22_P2.54mm_Vertical"
 
-component DevkitV1Socket:
-    """30-pin, 2x15, matches the ESP32 DevKit V1's own header footprint."""
-    # left column
-    pin en
-    pin vp
-    pin vn
-    pin d34
-    pin d35
-    pin d32
-    pin d33
-    pin d25
-    pin d26
-    pin d27
-    pin d14
-    pin d12
-    pin d13
-    pin gnd_l
-    pin vin
-    # right column
-    pin d23
-    pin d22
-    pin tx0
-    pin rx0
-    pin d21
-    pin d19
-    pin d18
-    pin d5
-    pin tx2
-    pin rx2
-    pin d4
-    pin d2
-    pin d15
-    pin gnd_r
-    pin vcc_3v3   # confirmed unconnected in the current circuit — free
-    footprint = "Connector_PinSocket_2.54mm:PinSocket_2x15_P2.54mm_Vertical"
+module N16R8Socket:
+    """ESP32-S3-N16R8 DevKitC-1-style module, 44-pin/2x22, 2.54mm.
+    Pin names/order match the module's own silkscreen, confirmed via
+    pixel-level tracing against the reference photo (both columns, top
+    to bottom, including the final 1-3 pins on each side that needed a
+    dedicated close-up crop to resolve).
 
-component BoostConverterSocket:
-    """MT3608 module, 4-pin, 2.54mm — module gets male DuPont pins soldered on."""
-    pin in_pos
-    pin in_neg
-    pin out_pos
-    pin out_neg
-    footprint = "Connector_PinSocket_2.54mm:PinSocket_1x04_P2.54mm_Vertical"
+    Originally modeled as a single `PinSocket_2x22_P2.54mm_Vertical`
+    footprint. That's wrong for a real DevKitC-1-style module: that
+    footprint's two rows are a fixed 2.54mm apart (it's a ribbon-cable-
+    style dual-row header), but the real module has its two 22-pin rows
+    25.40mm apart, measured off the actual clone board (Espressif's own
+    DevKitC-1 drawing says 22.86mm -- this third-party board differs) --
+    no single stock 2xN footprint matches that spacing.
+
+    Fixed by splitting into two independent `Header1x22` sockets (left
+    and right), wired here to the same signal names as before so
+    nothing downstream in `Main` had to change. The two footprints get
+    placed 25.40mm apart (center-to-center) in the board layout step --
+    that spacing is a placement concern, not something the netlist
+    encodes, but it's only achievable at all now that the two rows are
+    separate footprints instead of one fixed-geometry part."""
+    left = new Header1x22
+    right = new Header1x22
+
+    # left column -> left socket, pins 1..22 top-to-bottom
+    signal vcc_3v3_1 ~ left.pin1
+    signal vcc_3v3_2 ~ left.pin2
+    signal rst       ~ left.pin3
+    signal gpio4     ~ left.pin4
+    signal gpio5     ~ left.pin5
+    signal gpio6     ~ left.pin6
+    signal gpio7     ~ left.pin7
+    signal gpio15    ~ left.pin8
+    signal gpio16    ~ left.pin9
+    signal gpio17    ~ left.pin10
+    signal gpio18    ~ left.pin11
+    signal gpio8     ~ left.pin12
+    signal gpio3     ~ left.pin13
+    signal gpio46    ~ left.pin14
+    signal gpio9     ~ left.pin15
+    signal gpio10    ~ left.pin16
+    signal gpio11    ~ left.pin17
+    signal gpio12    ~ left.pin18
+    signal gpio13    ~ left.pin19
+    signal gpio14    ~ left.pin20
+    signal vin_5v    ~ left.pin21
+    signal gnd_l     ~ left.pin22
+    # right column -> right socket, pins 1..22 top-to-bottom
+    signal gnd_r1 ~ right.pin1
+    signal txd0   ~ right.pin2
+    signal rxd0   ~ right.pin3
+    signal gpio1  ~ right.pin4
+    signal gpio2  ~ right.pin5
+    signal gpio42 ~ right.pin6
+    signal gpio41 ~ right.pin7
+    signal gpio40 ~ right.pin8
+    signal gpio39 ~ right.pin9
+    signal gpio38 ~ right.pin10
+    signal gpio37 ~ right.pin11
+    signal gpio36 ~ right.pin12
+    signal gpio35 ~ right.pin13
+    signal gpio0  ~ right.pin14
+    signal gpio45 ~ right.pin15
+    signal gpio48 ~ right.pin16
+    signal gpio47 ~ right.pin17
+    signal gpio21 ~ right.pin18
+    signal gpio20 ~ right.pin19
+    signal gpio19 ~ right.pin20
+    signal gnd_r2 ~ right.pin21
+    signal gnd_r3 ~ right.pin22
+
+component BoostModuleBS01:
+    """CKCS BS01 5V->12V mini boost (4R7 coil revision), soldered face up
+    directly on the board via 4 straight male pins at the module's own
+    (non-2.54mm) pad spacing -- custom footprint in footprints/ESP32PCC.pretty,
+    pad centers measured off ruler photos (+-0.15mm; print 1:1 and dry-fit
+    before ordering). Output voltage is set by the A/B solder bridges
+    (both bridged = 12V) -- verify with a meter before connecting the fob."""
+    signal in_pos  ~ pin 1
+    signal in_neg  ~ pin 2
+    signal out_pos ~ pin 3
+    signal out_neg ~ pin 4
+    footprint = "ESP32PCC:Boost_CKCS_BS01"
+
+# Right-angle (Horizontal) sockets below are edge-mounted: the body projects
+# off one side so a cable plugs in from outside the board rather than from
+# above -- a straight vertical header's body is symmetric around the pin
+# line, so rotating it in-plane can't do that.
 
 component DisplaySocket:
-    """ST7789V 2.0" 240x320, 8-pin, 2.54mm, near the board edge."""
-    pin gnd
-    pin vcc
-    pin sck
-    pin mosi
-    pin rst
-    pin dc
-    pin cs
-    pin blk
-    footprint = "Connector_PinSocket_2.54mm:PinSocket_1x08_P2.54mm_Vertical"
+    """GMT020-02-7P ST7789 panel, 7-pin, 2.54mm. Exactly 7 positions so a
+    7-pin plug can't seat one pin off (VCC is 5V -- an offset would put 5V
+    on a logic/GND pin). VCC goes to the module's 5Vin (see header note --
+    intentional, panel has its own onboard 5V->3.3V regulator). The panel
+    plugs in DIRECTLY: its right-angle header (CS DC RST SDA SCL VCC GND)
+    mates with this order when the panel lies DISPLAY SIDE UP, coplanar
+    with the board; back side up reverses it (panel DC lands on 5V). The
+    socket overhangs the board edge slightly so the panel's header clears
+    it. Sockets sit at 57mm pitch (37mm panel + 20mm gap). Each pad is
+    labelled on the silkscreen."""
+    signal gnd  ~ pin 1
+    signal vcc  ~ pin 2
+    signal sck  ~ pin 3
+    signal mosi ~ pin 4
+    signal rst  ~ pin 5
+    signal dc   ~ pin 6
+    signal cs   ~ pin 7
+    footprint = "Connector_PinSocket_2.54mm:PinSocket_1x07_P2.54mm_Horizontal"
+
+component KeyfobSocket:
+    """1x6 to the decased door-remote fob (FSKB-V3.2): 12V + GND power it
+    from the boost output, BTN1-4 are opto 1-4 emitters (power-injection:
+    opto pulls the fob button pad up to 12V). Power on the end pins,
+    buttons in the middle."""
+    signal v12  ~ pin 1
+    signal btn1 ~ pin 2
+    signal btn2 ~ pin 3
+    signal btn3 ~ pin 4
+    signal btn4 ~ pin 5
+    signal gnd  ~ pin 6
+    footprint = "Connector_PinSocket_2.54mm:PinSocket_1x06_P2.54mm_Horizontal"
 
 component IsolatedPair:
-    """1x2 — the isolated leg to the motherboard's RST header (#18)."""
-    pin p1
-    pin p2
-    footprint = "Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical"
+    """1x2 — the isolated leg to the motherboard's RST header. Female
+    socket (not male header) -- changed per user request so this edge-
+    mounted connector matches the rest of the board's cable-side
+    connectors (a loose DuPont wire/cable plugs in with its own male
+    pins, same as the display/boost/module sockets). Right-angle
+    (Horizontal), same reasoning as the right-angle note above."""
+    signal p1 ~ pin 1
+    signal p2 ~ pin 2
+    footprint = "Connector_PinSocket_2.54mm:PinSocket_1x02_P2.54mm_Horizontal"
 
-component SuperMiniSpareHeader:
-    """1x5 male — SuperMini's confirmed-free GPIOs, for later expansion."""
-    pin gpio9
-    pin gpio10
-    pin gpio11
-    pin gpio12
-    pin pwr_spare
-    footprint = "Connector_PinHeader_2.54mm:PinHeader_1x05_P2.54mm_Vertical"
-
-component DevkitSpareHeader:
-    """2x9 male — DevKit's confirmed-free GPIOs, for later expansion.
-    D34/D35/D32/D33 are ADC1/input-only pins (no internal pull) — usable as
-    inputs only. D0/D2/D5/D12/D15 are boot-strapping pins on classic ESP32 —
-    fine once booted, just don't hang external circuitry that pulls them hard
-    during power-on."""
-    pin vp
-    pin vn
-    pin d34
-    pin d35
-    pin d32
-    pin d33
-    pin d25
-    pin d26
-    pin d27
-    pin d14
-    pin d12
-    pin d13
-    pin d23
-    pin tx0
-    pin rx0
-    pin d5
-    pin d15
-    pin vcc_3v3_tap
-    footprint = "Connector_PinHeader_2.54mm:PinHeader_2x09_P2.54mm_Vertical"
+component SpareHeader:
+    """1x16 male — unused module GPIOs, for later expansion. Left-column
+    spares: 4,5,6,7,15,16,3,46,13,14. Right-column spares: 2,38,0,45,48,47.
+    Deliberately NOT broken out: GPIO35/36/37 (octal PSRAM on N16R8 --
+    touching them crashes the cache) and GPIO19/20 (USB D-/D+, carrying
+    the OTG link to the motherboard -- a header tap is a stub on the USB
+    pair). Strapping pins 0/3/45/46 are here but must not be pulled at
+    boot. GPIO48 drives the module's onboard WS2812. txd0/rxd0 left off
+    (reserved for a future serial-debug header)."""
+    signal gpio4  ~ pin 1
+    signal gpio5  ~ pin 2
+    signal gpio6  ~ pin 3
+    signal gpio7  ~ pin 4
+    signal gpio15 ~ pin 5
+    signal gpio16 ~ pin 6
+    signal gpio3  ~ pin 7
+    signal gpio46 ~ pin 8
+    signal gpio13 ~ pin 9
+    signal gpio14 ~ pin 10
+    signal gpio2  ~ pin 11
+    signal gpio38 ~ pin 12
+    signal gpio0  ~ pin 13
+    signal gpio45 ~ pin 14
+    signal gpio48 ~ pin 15
+    signal gpio47 ~ pin 16
+    footprint = "Connector_PinHeader_2.54mm:PinHeader_1x16_P2.54mm_Vertical"
 
 # ---- top level -------------------------------------------------------------
 
 module Main:
-    s3 = new SuperMiniSocket
-    devkit = new DevkitV1Socket
-    boost = new BoostConverterSocket
-    display = new DisplaySocket
+    mcu = new N16R8Socket
+    boost = new BoostModuleBS01
+    display1 = new DisplaySocket
+    display2 = new DisplaySocket
+    display3 = new DisplaySocket
     rst_out = new IsolatedPair
-    s3_spare = new SuperMiniSpareHeader
-    devkit_spare = new DevkitSpareHeader
+    keyfob = new KeyfobSocket
+    spare = new SpareHeader
 
     opto1 = new Optocoupler  # door button row 1
     opto2 = new Optocoupler  # door button row 2
@@ -211,110 +316,159 @@ module Main:
     r3 = new Resistor270  # opto3 LED drive
     r4 = new Resistor270  # opto4 LED drive
     r5 = new Resistor270  # opto5 (reset) LED drive
-    r6 = new Resistor270  # status LED 1
-    r7 = new Resistor270  # status LED 2
+    r6 = new Resistor270  # status LED
+    r7 = new Resistor10k  # GPIO39 pull-down (motherboard-reset row)
+    r8 = new Resistor33  # SCK series termination
+    r9 = new Resistor33  # MOSI series termination
+    # rev 3.1: 10k pull-downs on the four door-button opto GPIOs, same reason
+    # as r7 -- GPIO40/41/42 are JTAG pins like GPIO39 and can come up with a
+    # weak (~45k) pull-up during reset/boot/flashing; ~50uA through the opto
+    # LED is enough for the fob's CMOS button input to see a phantom press.
+    r10 = new Resistor10k  # GPIO1  pull-down (door button 1)
+    r11 = new Resistor10k  # GPIO42 pull-down (door button 2)
+    r12 = new Resistor10k  # GPIO41 pull-down (door button 3)
+    r13 = new Resistor10k  # GPIO40 pull-down (door button 4)
 
     led1 = new StatusLED
-    led2 = new StatusLED
 
-    # ---- power ----
-    s3.vcc_3v3 ~ display.vcc
-    s3.gnd ~ devkit.gnd_l
-    devkit.gnd_l ~ devkit.gnd_r
-    s3.gnd ~ display.gnd
-    s3.gnd ~ led1.k
-    s3.gnd ~ led2.k
+    # ---- named nets ----
+    # Without these, atopile names each net after whichever member pin it
+    # finds first (GND came out as "cathode", 12V as "boost-collector"),
+    # which is exactly how 12V-on-the-motherboard-RST went unnoticed.
+    signal gnd
+    signal v5
+    signal v12
+    signal disp_rst
+    signal disp_dc
+    signal disp_mosi
+    signal disp_sck
+    signal mb_rst
+    signal mb_rst_gnd
+    signal led_a
+    gnd ~ mcu.gnd_l
+    v5 ~ mcu.vin_5v
+    v12 ~ boost.out_pos
+    disp_rst ~ mcu.gpio10
+    disp_dc ~ mcu.gpio9
+    disp_mosi ~ r9.p2   # display side of the series resistor
+    disp_sck ~ r8.p2
+    mb_rst ~ rst_out.p1
+    mb_rst_gnd ~ rst_out.p2
+    led_a ~ led1.a
 
-    # ambiguous power pin — see header note. Feeds DevKit VIN + boost 5V-in.
-    s3.pwr_bat_or_5v ~ devkit.vin
-    devkit.vin ~ boost.in_pos
-    devkit.gnd_r ~ boost.in_neg
+    # ---- ground / power backbone ----
+    mcu.gnd_l ~ mcu.gnd_r1
+    mcu.gnd_r1 ~ mcu.gnd_r2
+    mcu.gnd_r2 ~ mcu.gnd_r3
+    mcu.gnd_l ~ display1.gnd
+    mcu.gnd_l ~ display2.gnd
+    mcu.gnd_l ~ display3.gnd
+    mcu.gnd_l ~ led1.k
 
-    # ---- inter-MCU link ----
-    s3.tx ~ devkit.rx2
-    s3.rx ~ devkit.tx2
-    s3.gpio13 ~ devkit.en   # S3-driven hardware reset of the DevKit
-    # NOTE: no return path exists (DevKit can't hard-reset S3 — the SuperMini
-    # doesn't expose EN/RST on its header, confirmed from its reference
-    # photo). That's a hardware limit of the module, not this PCB. Recommend
-    # each board recover itself via its own onboard watchdog + OTA rollback
-    # instead of relying on a wired cross-reset. See prior discussion.
+    # display VCC on 5Vin — intentional, see header note (panel has its own
+    # onboard 5V->3.3V regulator, avoids loading the module's 3.3V LDO
+    # across all 3 panels)
+    mcu.vin_5v ~ display1.vcc
+    mcu.vin_5v ~ display2.vcc
+    mcu.vin_5v ~ display3.vcc
 
-    # ---- display SPI ----
-    # Bench-tested mapping against real hardware (2026-09-29), replaces the
-    # old pre-arrival guess (gpio1/2 for sck/mosi). The display actually
-    # wired up for that test (GMT020-02-7P, 7-pin, no BLK line — backlight
-    # is tied on internally) may not be the final part; this module has a
-    # note elsewhere about having grabbed "the wrong version" of the display.
-    # If the final part differs, re-verify this mapping against it.
-    s3.gpio3 ~ display.cs
-    s3.gpio4 ~ display.dc
-    s3.gpio5 ~ display.rst
-    s3.gpio6 ~ display.mosi
-    s3.gpio7 ~ display.sck
-    # display.blk left unconnected — tested module has no backlight pin
+    # boost converter: fed from the same 5Vin rail, common ground return
+    mcu.vin_5v ~ boost.in_pos
+    mcu.gnd_l ~ boost.in_neg
+
+    # ---- display SPI (shared bus, per-display CS) ----
+    mcu.gpio10 ~ display1.rst
+    mcu.gpio10 ~ display2.rst
+    mcu.gpio10 ~ display3.rst
+
+    mcu.gpio9 ~ display1.dc
+    mcu.gpio9 ~ display2.dc
+    mcu.gpio9 ~ display3.dc
+
+    mcu.gpio11 ~ r9.p1
+    r9.p2 ~ display1.mosi
+    r9.p2 ~ display2.mosi
+    r9.p2 ~ display3.mosi
+
+    mcu.gpio12 ~ r8.p1
+    r8.p2 ~ display1.sck
+    r8.p2 ~ display2.sck
+    r8.p2 ~ display3.sck
+
+    mcu.gpio8 ~ display1.cs
+    mcu.gpio18 ~ display2.cs
+    mcu.gpio17 ~ display3.cs
 
     # ---- door-remote optocoupler bank (power-injection topology) ----
-    # 12V+ is bussed to all 4 door-button phototransistor collectors and to
-    # the fob's own power pad; each row's emitter goes individually to that
-    # button's sense pad (wire externally per row — not all 4 are on this
-    # board, they land on the fob board itself).
+    # boost 12V+ is bussed to the 4 door-button phototransistor collectors
+    # ONLY. Row 5 (motherboard RST) must never touch the 12V bus -- it
+    # switches the motherboard's own 3.3V reset line.
     boost.out_pos ~ opto1.collector
     boost.out_pos ~ opto2.collector
     boost.out_pos ~ opto3.collector
     boost.out_pos ~ opto4.collector
+    mcu.gnd_l ~ boost.out_neg
 
-    devkit.d18 ~ r1.p1
+    # keyfob: powered from the boost output, buttons from opto 1-4 emitters
+    boost.out_pos ~ keyfob.v12
+    mcu.gnd_l ~ keyfob.gnd
+    opto1.emitter ~ keyfob.btn1
+    opto2.emitter ~ keyfob.btn2
+    opto3.emitter ~ keyfob.btn3
+    opto4.emitter ~ keyfob.btn4
+
+    mcu.gpio1 ~ r10.p1
+    r10.p2 ~ mcu.gnd_l
+    mcu.gpio42 ~ r11.p1
+    r11.p2 ~ mcu.gnd_l
+    mcu.gpio41 ~ r12.p1
+    r12.p2 ~ mcu.gnd_l
+    mcu.gpio40 ~ r13.p1
+    r13.p2 ~ mcu.gnd_l
+
+    mcu.gpio1 ~ r1.p1
     r1.p2 ~ opto1.anode
-    opto1.cathode ~ devkit.gnd_r
+    opto1.cathode ~ mcu.gnd_l
 
-    devkit.d21 ~ r2.p1
+    mcu.gpio42 ~ r2.p1
     r2.p2 ~ opto2.anode
-    opto2.cathode ~ devkit.gnd_r
+    opto2.cathode ~ mcu.gnd_l
 
-    devkit.d19 ~ r3.p1
+    mcu.gpio41 ~ r3.p1
     r3.p2 ~ opto3.anode
-    opto3.cathode ~ devkit.gnd_r
+    opto3.cathode ~ mcu.gnd_l
 
-    devkit.d4 ~ r4.p1
+    mcu.gpio40 ~ r4.p1
     r4.p2 ~ opto4.anode
-    opto4.cathode ~ devkit.gnd_r
+    opto4.cathode ~ mcu.gnd_l
 
     # ---- isolated hardware-reset optocoupler (motherboard RST header) ----
-    devkit.d22 ~ r5.p1
+    mcu.gpio39 ~ r5.p1
     r5.p2 ~ opto5.anode
-    opto5.cathode ~ devkit.gnd_r
-    opto5.collector ~ rst_out.p1
-    opto5.emitter ~ rst_out.p2
+    opto5.cathode ~ mcu.gnd_l
+    mcu.gpio39 ~ r7.p1  # pull-down on the GPIO side of r5
+    r7.p2 ~ mcu.gnd_l
+    opto5.collector ~ rst_out.p1  # -> motherboard RST+ (pulled-up side)
+    opto5.emitter ~ rst_out.p2    # -> motherboard RST GND
 
-    # ---- status LEDs ----
-    devkit.d2 ~ r6.p1
+    # ---- status LED ----
+    mcu.gpio21 ~ r6.p1
     r6.p2 ~ led1.a
-    s3.gpio8 ~ r7.p1   # GPIO7 is now committed to display SCK (see above);
-    r7.p2 ~ led2.a     # this is the SuperMini's own onboard LED pin, confirmed
 
-    # ---- spare / expansion headers ----
-    s3.gpio9 ~ s3_spare.gpio9
-    s3.gpio10 ~ s3_spare.gpio10
-    s3.gpio11 ~ s3_spare.gpio11
-    s3.gpio12 ~ s3_spare.gpio12
-    s3.pwr_spare ~ s3_spare.pwr_spare
-
-    devkit.vp ~ devkit_spare.vp
-    devkit.vn ~ devkit_spare.vn
-    devkit.d34 ~ devkit_spare.d34
-    devkit.d35 ~ devkit_spare.d35
-    devkit.d32 ~ devkit_spare.d32
-    devkit.d33 ~ devkit_spare.d33
-    devkit.d25 ~ devkit_spare.d25
-    devkit.d26 ~ devkit_spare.d26
-    devkit.d27 ~ devkit_spare.d27
-    devkit.d14 ~ devkit_spare.d14
-    devkit.d12 ~ devkit_spare.d12
-    devkit.d13 ~ devkit_spare.d13
-    devkit.d23 ~ devkit_spare.d23
-    devkit.tx0 ~ devkit_spare.tx0
-    devkit.rx0 ~ devkit_spare.rx0
-    devkit.d5 ~ devkit_spare.d5
-    devkit.d15 ~ devkit_spare.d15
-    devkit.vcc_3v3 ~ devkit_spare.vcc_3v3_tap
+    # ---- spare / expansion header ----
+    mcu.gpio4 ~ spare.gpio4
+    mcu.gpio5 ~ spare.gpio5
+    mcu.gpio6 ~ spare.gpio6
+    mcu.gpio7 ~ spare.gpio7
+    mcu.gpio15 ~ spare.gpio15
+    mcu.gpio16 ~ spare.gpio16
+    mcu.gpio3 ~ spare.gpio3
+    mcu.gpio46 ~ spare.gpio46
+    mcu.gpio13 ~ spare.gpio13
+    mcu.gpio14 ~ spare.gpio14
+    mcu.gpio2 ~ spare.gpio2
+    mcu.gpio38 ~ spare.gpio38
+    mcu.gpio0 ~ spare.gpio0
+    mcu.gpio45 ~ spare.gpio45
+    mcu.gpio48 ~ spare.gpio48
+    mcu.gpio47 ~ spare.gpio47

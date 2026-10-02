@@ -1,2 +1,9 @@
 pcb/build/
 *.3mf
+
+# KiCad local state / Freerouting intermediates
+.history/
+*.lck
+*.kicad_prl
+*.dsn
+*.ses
