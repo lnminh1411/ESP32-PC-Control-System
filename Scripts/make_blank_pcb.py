@@ -32,7 +32,7 @@ board.SetLayerName(pcbnew.In1_Cu, "GND_Plane")
 board.SetLayerName(pcbnew.In2_Cu, "Power_Planes")
 
 # title block: bump REVISION/DATE here when the layout changes
-REVISION, DATE = "2.3", "2026-10-03"
+REVISION, DATE = "2.4", "2026-10-03"
 tb = board.GetTitleBlock()
 tb.SetTitle("ESP32 PC Controller System")
 tb.SetRevision(REVISION)

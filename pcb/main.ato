@@ -21,9 +21,11 @@
 #     33R series resistor at the module, DC=GPIO9. Per-display CS:
 #     CS1=GPIO8, CS2=GPIO18, CS3=GPIO17. Per-display RST (rev 2.3, was one
 #     shared GPIO10): RST1=GPIO10, RST2=GPIO16, RST3=GPIO15, so one hung
-#     panel can be reset without blanking the other two. Everything sits
-#     on module pins 8-18 facing the displays (module rotated 180deg,
-#     USB-C to the board's top edge).
+#     panel can be reset without blanking the other two. Per-display
+#     backlight (rev 2.4): BL1=GPIO7, BL2=GPIO6, BL3=GPIO5 (on/off or LEDC
+#     PWM dimming, one panel at a time). Everything sits on module pins
+#     5-18 facing the displays (module rotated 180deg, USB-C to the board's
+#     top edge).
 #   - Display VCC is wired to the module's 5Vin pin, not 3V3 — CONFIRMED
 #     INTENTIONAL by the user, not a bug: the final display part carries its
 #     own onboard 5V->3.3V regulator, which avoids loading the module's
@@ -225,15 +227,15 @@ component BoostModuleBS01:
 # line, so rotating it in-plane can't do that.
 
 component DisplaySocket:
-    """GMT020-02-7P ST7789 panel, 7-pin, 2.54mm. Exactly 7 positions so a
-    7-pin plug can't seat one pin off (VCC is 5V -- an offset would put 5V
-    on a logic/GND pin). VCC goes to the module's 5Vin (see header note --
-    intentional, panel has its own onboard 5V->3.3V regulator). The panel
-    plugs in DIRECTLY: its right-angle header (CS DC RST SDA SCL VCC GND)
-    mates with this order when the panel lies DISPLAY SIDE UP, coplanar
-    with the board; back side up reverses it (panel DC lands on 5V). The
-    socket overhangs the board edge slightly so the panel's header clears
-    it. Sockets sit at 43mm pitch (37mm panel + 6mm gap). Each pad is
+    """GMT024-08-SPI8P 2.4" ST7789 panel (rev 2.4; PCB 46.9 x 71mm), 8-pin,
+    2.54mm. Exactly 8 positions so an 8-pin plug can't seat one pin off
+    (VCC is 5V -- an offset would put 5V on a logic/GND pin). VCC goes to
+    the module's 5Vin (see header note -- intentional, panel has its own
+    onboard regulator). Panel header, pin 1..8: GND VCC SCL SDA RST DC CS
+    BL. BL drives the panel's own backlight transistor (Q1), so a GPIO can
+    switch/PWM it directly. The panel plugs in DIRECTLY; the socket
+    overhangs the board edge slightly so the panel's header clears it.
+    Sockets sit at 51.9mm pitch (46.9mm panel + 5mm gap). Each pad is
     labelled on the silkscreen."""
     signal gnd  ~ pin 1
     signal vcc  ~ pin 2
@@ -242,7 +244,8 @@ component DisplaySocket:
     signal rst  ~ pin 5
     signal dc   ~ pin 6
     signal cs   ~ pin 7
-    footprint = "Connector_PinSocket_2.54mm:PinSocket_1x07_P2.54mm_Horizontal"
+    signal bl   ~ pin 8
+    footprint = "Connector_PinSocket_2.54mm:PinSocket_1x08_P2.54mm_Horizontal"
 
 component KeyfobSocket:
     """1x6 to the decased door-remote fob (FSKB-V3.2): 12V + GND power it
@@ -315,6 +318,9 @@ module Main:
     signal disp_rst1
     signal disp_rst2
     signal disp_rst3
+    signal disp_bl1
+    signal disp_bl2
+    signal disp_bl3
     signal disp_dc
     signal disp_mosi
     signal disp_sck
@@ -327,6 +333,9 @@ module Main:
     disp_rst1 ~ mcu.gpio10
     disp_rst2 ~ mcu.gpio16
     disp_rst3 ~ mcu.gpio15
+    disp_bl1 ~ mcu.gpio7
+    disp_bl2 ~ mcu.gpio6
+    disp_bl3 ~ mcu.gpio5
     disp_dc ~ mcu.gpio9
     disp_mosi ~ r9.p2   # display side of the series resistor
     disp_sck ~ r8.p2
@@ -359,6 +368,11 @@ module Main:
     mcu.gpio10 ~ display1.rst
     mcu.gpio16 ~ display2.rst
     mcu.gpio15 ~ display3.rst
+
+    # per-display backlight (rev 2.4): point-to-point
+    mcu.gpio7 ~ display1.bl
+    mcu.gpio6 ~ display2.bl
+    mcu.gpio5 ~ display3.bl
 
     mcu.gpio9 ~ display1.dc
     mcu.gpio9 ~ display2.dc

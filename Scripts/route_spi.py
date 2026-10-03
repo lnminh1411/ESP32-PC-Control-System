@@ -12,8 +12,8 @@ of SCK/MOSI on B.Cu. The shared lines (SCK, MOSI, DC) must be a true
 DAISY CHAIN -- MCU -> display1 -> display2 -> display3, every segment
 ending on a pad, no T-junctions -- and stay on one layer over one plane.
 
-Rev 2.3 topology (module rotated 180deg, displays plugged in directly at a
-43mm pitch down the east edge, display column only 6.25mm east of J1), all
+Rev 2.4 topology (module rotated 180deg, displays plugged in directly at a
+51.9mm pitch down the east edge, display column only 6.25mm east of J1), all
 F.Cu, no vias, planar by construction:
   * J1 (module left header, now on the right) carries the bus on pins
     18..8: SCK, MOSI (each via a flat THT 33R in the top-right corner),
@@ -32,8 +32,9 @@ F.Cu, no vias, planar by construction:
     left lanes and cross back to the right in the gap before the next
     display. Nesting: DC innermost on the right, SCK innermost on the left.
   * RST1 only goes to display 1 (rev 2.3: one RST per display). RST2/RST3
-    (GPIO16/15) are slow point-to-point lines left to Freerouting (B.Cu).
-  * CS1/CS2/CS3 drop down L5/L5/L4 and enter each display's top pin (CS)
+    (GPIO16/15) are slow point-to-point lines left to Freerouting, as are
+    the per-display backlight lines BL1-3 (GPIO7/6/5 -> pad 8, rev 2.4).
+  * CS1/CS2/CS3 drop down L5/L5/L4 and enter each display's CS pin (pad 7)
     from the left -- above that display's exit lanes.
 Everything is derived from the constants below, which must match
 layout_board.py's placement (XL, XR, XD, PITCH, C1, R8_PAD1/R9_PAD1).
@@ -49,7 +50,8 @@ TRACK_W = 0.2
 XL = 15.5                    # J2 column, as layout_board.py
 XR = XL + 25.4               # J1 pad column
 XD = XR + 6.25               # display pad column
-PITCH, C1 = 43.0, 18.5       # display socket pitch / display 1 centre
+PITCH, C1 = 51.9, 46.9 / 2   # display socket pitch / display 1 centre
+D_PAD1 = 3.5 * 2.54          # display socket pad 1 below its centre (1x8)
 R8_PAD1 = (XR + 2.9, 4.85)  # SCK 33R pad 1, as layout_board.py (second row)
 R9_PAD1 = (XR + 4.1, 1.75)  # MOSI 33R pad 1, as layout_board.py (top row)
 R_PITCH = 8.128              # THT axial resistor pad pitch (measured)
@@ -67,8 +69,8 @@ def u1(n):                   # J1 pad n (module rotated: pin 1 at the bottom)
     return J1_PIN1_Y - 2.54 * (n - 1)
 
 
-def dpad(d, pad):            # display d (0..2) pad 1..7 (pad 1 = GND, bottom)
-    return C1 + d * PITCH + 7.62 - 2.54 * (pad - 1)
+def dpad(d, pad):            # display d (0..2) pad 1..8 (pad 1 = GND, bottom; 8 = BL)
+    return C1 + d * PITCH + D_PAD1 - 2.54 * (pad - 1)
 
 
 # shared nets: name, display pad, source point, over-the-top Y, stair X,

@@ -107,9 +107,10 @@ fps = {fp.GetReference(): fp for fp in board.GetFootprints()}
 # left. Both at 180deg: pin 1 at the bottom (antenna end), pin n at
 # Y = 56.34 - 2.54*(n-1).
 #
-# Displays plug in DIRECTLY (no cables): 37mm-wide panels (confirmed), 7 pins
-# centred, 6mm between panels -> 43mm socket pitch. Panel 1's top is level with the
-# board top (socket centre Y=18.5), so the board grows a narrow strip down
+# Displays plug in DIRECTLY (no cables): GMT024 2.4" panels, 46.9mm wide, 8 pins
+# centred (assumed from the drawing -- verify), 5mm between panels -> 51.9mm socket
+# pitch. Panel 1's top is level with the board top (socket centre Y=23.45), so the
+# board grows a narrow strip down
 # the east side to carry display 2/3 (an L-shaped board, the strip extends
 # downward only). Sockets overhang the east edge by DISPLAY_OVERHANG so the
 # panel's own right-angle header clears the board edge.
@@ -123,14 +124,17 @@ fps = {fp.GetReference(): fp for fp in board.GetFootprints()}
 # XR + 6.25 (was XR + 11) by swapping the 33R rows: MOSI's resistor on top
 # with its bus pad EAST of the right lanes, SCK's below it -- so both still
 # lie flat. Display pitch 47 -> 43mm (37mm panel + 6mm gap).
+# Rev 2.4 (2026-10-03): GMT024-08-SPI8P 2.4" panels (46.9mm wide, 8-pin with
+# BL) -> 1x8 display sockets, per-display backlight, pitch 51.9mm (5mm gap).
 # References come from atopile instance names (sync_netlist_to_board.py):
 # J1 mcu.left, J2 mcu.right, J3-J5 displays, J6 rst_out, J7 keyfob, PS1 boost,
 # U1-U5 opto1-5, R1-R13 r1-r13, D1 led1.
 XL = 15.5                         # J2 column: RA socket (12.29) + 0.8mm pin labels
 XR = XL + 25.4                    # J1 column (measured 25.4mm row spacing)
 XD = XR + 6.25                    # display pin column: 8 bus lanes at 0.5mm
-PITCH = 43.0                      # display socket pitch (37mm panel + 6mm gap)
-C1 = 18.5                         # display 1 socket centre (panel top at Y=0)
+PITCH = 51.9                      # display socket pitch (46.9mm panel + 5mm gap)
+C1 = 46.9 / 2                     # display 1 socket centre (panel top at Y=0)
+D_PAD1 = 3.5 * 2.54               # display socket pad 1 below its centre (1x8)
 R8_PAD1 = (XR + 2.9, 4.85)        # SCK 33R pad 1 (must match route_spi.py)
 R9_PAD1 = (XR + 4.1, 1.75)        # MOSI 33R pad 1 (must match route_spi.py)
 RA_X = 10.5                       # west-edge right-angle sockets' pin column
@@ -138,10 +142,10 @@ layout = {
     "J2":  (XL, 56.34, 180),  # mcu.right (low-speed row: optos, LED)
     "J1":  (XR, 56.34, 180),  # mcu.left  (display bus row) -- 25.4mm spacing
     # displays: angle 180 -> body hangs +X, pad 1 (GND) at the bottom; the
-    # anchor is pad 1 = socket centre + 7.62
-    "J3":  (XD, C1 + 7.62, 180),
-    "J4":  (XD, C1 + PITCH + 7.62, 180),
-    "J5":  (XD, C1 + 2 * PITCH + 7.62, 180),
+    # anchor is pad 1 = socket centre + D_PAD1
+    "J3":  (XD, C1 + D_PAD1, 180),
+    "J4":  (XD, C1 + PITCH + D_PAD1, 180),
+    "J5":  (XD, C1 + 2 * PITCH + D_PAD1, 180),
     # SCK / MOSI 33R, lying flat, top-right corner above display 1 (R8
     # courtyard just clears J1's). Rows 3.1mm apart (courtyards). MOSI on the
     # TOP row: its riser passes R8 pad 1 to the east, and its right lane drops
@@ -407,9 +411,9 @@ for i, (x, y) in enumerate(mount_positions, start=1):
 
 # ---- connector pin labels (silkscreen) ------------------------------------
 # Every off-board connector gets per-pin labels so cables/panels can be
-# dry-fitted by matching names, not by counting pins. Display sockets: the
-# GMT020-02-7P lies flat in the right-angle socket DISPLAY SIDE UP -- back
-# side up reverses the whole order (panel DC would land on 5V).
+# dry-fitted by matching names, not by counting pins. Display sockets follow
+# the GMT024-08-SPI8P header order, pad 1..8 = GND VCC SCL SDA RST DC CS BL;
+# a panel plugged in reversed would put its BL/CS on GND/5V.
 def add_label(text, x, y, hjust, size=0.8):
     t = pcbnew.PCB_TEXT(board)
     t.SetText(text)
@@ -431,7 +435,7 @@ def pad_pos(ref, num):
 LEFT, RIGHT, CENTER = (pcbnew.GR_TEXT_H_ALIGN_LEFT, pcbnew.GR_TEXT_H_ALIGN_RIGHT,
                        pcbnew.GR_TEXT_H_ALIGN_CENTER)
 for ref, n in (("J3", "1"), ("J4", "2"), ("J5", "3")):
-    for num, name in enumerate(["GND", "5V", "SCL", "SDA", "RST" + n, "DC", "CS" + n], start=1):
+    for num, name in enumerate(["GND", "5V", "SCL", "SDA", "RST" + n, "DC", "CS" + n, "BL" + n], start=1):
         p = pad_pos(ref, num)
         add_label(name, p.x - MM(1.25), p.y, RIGHT)
 # west-edge RST pair + keyfob: labels just east of each pad (between the
