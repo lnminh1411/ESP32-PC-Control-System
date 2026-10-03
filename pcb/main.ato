@@ -233,9 +233,14 @@ component DisplaySocket:
     (VCC is 5V -- an offset would put 5V on a logic/GND pin). VCC goes to
     the module's 5Vin (see header note -- intentional, panel has its own
     onboard regulator). Panel header, pin 1..8: GND VCC SCL SDA RST DC CS
-    BL. BL drives the panel's own backlight transistor (Q1), so a GPIO can
-    switch/PWM it directly. The panel plugs in DIRECTLY; the socket
-    overhangs the board edge slightly so the panel's header clears it.
+    BL. BL drives the panel's own backlight transistor (Q2 via R1/R2; Q1 +
+    C1-C3 look like its 3.3V LDO), so a GPIO can switch/PWM it directly.
+    Straight header, pins out the panel's back, centred on the 46.9mm edge
+    (confirmed on the drawing). The panel plugs in DIRECTLY: screen facing
+    out, header edge UP, body hanging down below the board -- that puts
+    panel pin 1 (GND) on pad 1. Flipped (standing up) reverses all 8 pins
+    (5V onto CS). The socket overhangs the board edge slightly so the
+    panel's header clears it.
     Sockets sit at 51.9mm pitch (46.9mm panel + 5mm gap). Each pad is
     labelled on the silkscreen."""
     signal gnd  ~ pin 1

@@ -109,7 +109,8 @@ fps = {fp.GetReference(): fp for fp in board.GetFootprints()}
 # Y = 56.34 - 2.54*(n-1).
 #
 # Displays plug in DIRECTLY (no cables): GMT024 2.4" panels, 46.9mm wide, 8 pins
-# centred (assumed from the drawing -- verify), 5mm between panels -> 51.9mm socket
+# centred (confirmed on the drawing), hanging DOWN below the board, screen
+# out (pad 1 = panel pin 1 GND only that way up), 5mm between panels -> 51.9mm socket
 # pitch. Panel 1's top is level with the board top (socket centre Y=23.45), so the
 # board grows a narrow strip down
 # the east side to carry display 2/3 (an L-shaped board, the strip extends
