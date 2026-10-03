@@ -127,6 +127,14 @@ fps = {fp.GetReference(): fp for fp in board.GetFootprints()}
 # lie flat. Display pitch 47 -> 43mm (37mm panel + 6mm gap).
 # Rev 2.4 (2026-10-03): GMT024-08-SPI8P 2.4" panels (46.9mm wide, 8-pin with
 # BL) -> 1x8 display sockets, per-display backlight, pitch 51.9mm (5mm gap).
+# Rev 3.0 (2026-10-03, narrower board): the west strip is gone. The fab
+# charges for the bounding box anyway (set by the display strip's length),
+# so the RST pair and keyfob move into the unused space below the main body:
+# the main body now runs down past the module's antenna end, J6 keeps its
+# west-edge orientation, J7 turns 90deg to face the bottom edge, D1 + R6 sit
+# beside J6 and a mounting hole takes the bottom-left corner. West of J2 only
+# a routing channel remains (opto outputs, 12V, LED drive), so the board is
+# ~10.5mm narrower. Nothing below the module may sit under its antenna.
 # References come from atopile instance names (sync_netlist_to_board.py):
 # J1 mcu.left, J2 mcu.right, J3-J5 displays, J6 rst_out, J7 keyfob, PS1 boost,
 # U1-U5 opto1-5, R1-R13 r1-r13, D1 led1.
@@ -138,7 +146,12 @@ C1 = 46.9 / 2                     # display 1 socket centre (panel top at Y=0)
 D_PAD1 = 3.5 * 2.54               # display socket pad 1 below its centre (1x8)
 R8_PAD1 = (XR + 2.9, 4.85)        # SCK 33R pad 1 (must match route_spi.py)
 R9_PAD1 = (XR + 4.1, 1.75)        # MOSI 33R pad 1 (must match route_spi.py)
-RA_X = 10.5                       # west-edge right-angle sockets' pin column
+# rev 3 lower area, below the antenna keepout (ends Y=67.5, add_pours.py):
+# J6's body is 10.08mm deep, so its pin column sets the west edge -- XL+5.53
+# puts the edge 4.95mm west of J2: room for 8 lanes between J2's pads and
+# the edge (opto outputs + 12V + GPIO2 down to the sockets)
+J6_PIN1 = (XL + 5.53, 69.8)       # pin 1 clear of the keepout (gpio2 passes above)
+J7_PIN1 = (XL + 3.5, 77.5)        # pins run +X; face at the bottom edge
 layout = {
     "J2":  (XL, 56.34, 180),  # mcu.right (low-speed row: optos, LED)
     "J1":  (XR, 56.34, 180),  # mcu.left  (display bus row) -- 25.4mm spacing
@@ -153,11 +166,13 @@ layout = {
     # between R8's pads; both bus pads (pad 2) sit east of the right lanes.
     "R8":  (*R8_PAD1, 0),     # SCK
     "R9":  (*R9_PAD1, 0),     # MOSI
-    # west edge: right-angle sockets at angle 0 (body hangs -X to the edge,
-    # pins run +Y). MH1 sits above J6 (top-edge support, USB-C plug force).
-    "J6":  (RA_X, 10.3, 0),   # rst_out (motherboard RST pair)
-    "J7":  (RA_X, 16.8, 0),   # keyfob 1x6
-    "D1":  (4.2, 35.0, 0),    # led1 -- west strip, NOT under the module
+    # lower area (rev 3): J6 at the west edge, angle 0 (body hangs -X to the
+    # edge, pins run +Y); J7 at angle 90 (body hangs +Y to the bottom edge,
+    # pins run +X); R6 -> D1 east of J6, LED cathode (pad 1) outermost
+    "J6":  (*J6_PIN1, 0),     # rst_out (motherboard RST pair)
+    "J7":  (*J7_PIN1, 90),    # keyfob 1x6
+    "R6":  (XL + 9.7, 71.0, 0),     # status LED resistor (clear of the RST label)
+    "D1":  (XL + 23.4, 71.0, 180),  # led1, pad 2 (anode) faces R6
     # under the module: boost at 90deg (courtyard 11.5 x 22.5), USB-C end
     "PS1": (XL + 11.71, 21.7, 90),
     # opto column beside the boost
@@ -172,7 +187,6 @@ layout = {
     "R3":  (XL + 2.9, 36.6, 0),
     "R4":  (XL + 13.45, 36.6, 0),
     "R5":  (XL + 2.9, 39.9, 0),
-    "R6":  (XL + 13.45, 39.9, 0),   # status LED
     "R7":  (XL + 2.9, 43.2, 0),     # 10k GPIO39 pull-down
     # rev 2.1: 10k pull-downs for the door-button optos
     "R10": (XL + 13.45, 43.2, 0),   # GPIO1
@@ -186,18 +200,33 @@ layout = {
 # Origin is pin 1, so shift by one row pitch + one pin pitch to keep the body
 # in the same place.
 OPTO_FLIP = COPPER_LAYERS == 2
-# Slot order also follows the west sockets top-down: U5 (motherboard RST ->
-# J6, the top socket) first, then U1-U4 (B1-B4 on J7).
+# Rev 3: slot order U1-U4 (B1-B4), U5 (RST) top-down -- the output lines
+# cross J2 in that order and run down the west channel, so they arrive at
+# the bottom with J7's lines west of J6's and GPIO2 (J2 pin 5) east-most,
+# exactly the order the sockets need (no crossings).
 if OPTO_FLIP:
-    slots = [layout[r] for r in ("U1", "U2", "U3", "U4", "U5")]
-    for ref, (x, y, _) in zip(("U5", "U1", "U2", "U3", "U4"), slots):
+    for ref in ("U1", "U2", "U3", "U4", "U5"):
+        x, y, _ = layout[ref]
         layout[ref] = (x + 7.62, y + 2.54, 180)
-    # LED anodes then rise to the optos' east pins up the DIP corridor; for
-    # planar lanes (west->east U5,U1,U2 | U3,U4) R2 and R3 trade places.
-    layout["R2"], layout["R3"] = layout["R3"], layout["R2"]
-    # status LED resistor goes vertical in the west strip between J2 pin 5
-    # (GPIO2) and D1, instead of east and back across the opto drive lines
-    layout["R6"] = (11.0, 46.2, 90)
+    # LED anodes rise to the optos' east pins up the DIP corridor, west->east
+    # U1..U5; the drive GPIOs leave J2 top-down 39,40,41,42,1 = U1..U5 (main.ato,
+    # rev 3). West column rows a,b,c = R1,R2,R3 (R2/R3's anodes pass the pads
+    # above on their east side), east column rows a,b = R5,R4 (R4's anode
+    # passes R5 on its west side). Pull-downs: GPIO41/40/39 drop from their
+    # series pad 1 under the west bodies to rows d,e,f; GPIO42 and GPIO1 run
+    # down beside J2, east along the bank's bottom and up either side of the
+    # east pad-1 column (GPIO42 west of it, GPIO1 east) to their series and
+    # pull-down pads. The east column moves 0.85mm east so GPIO42 fits
+    # between it and the anode lanes.
+    EAST = XL + 14.3
+    rows = {"a": 33.3, "b": 36.6, "c": 39.9, "d": 43.2, "e": 46.5, "f": 49.8}
+    WEST = XL + 2.9
+    for ref, (x, r) in {"R1": (WEST, "a"), "R2": (WEST, "b"), "R3": (WEST, "c"),
+                        "R5": (EAST, "a"), "R4": (EAST, "b"),
+                        # 10k pull-downs (pad 1 on the GPIO, pad 2 GND)
+                        "R12": (WEST, "d"), "R13": (WEST, "e"), "R7": (WEST, "f"),
+                        "R11": (EAST, "c"), "R10": (EAST, "d")}.items():
+        layout[ref] = (x, rows[r], 0)
 AXIAL_REFS = ("R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10", "R11", "R12", "R13")
 for ref, (x, y, angle) in layout.items():
     place(fps[ref], x, y, angle)
@@ -298,7 +327,7 @@ for ref in AXIAL_REFS:
     fp.SetOrientation(angle)
 
 # ---- board outline: L-shape ------------------------------------------------
-# Main body (module + west strip) plus a strip down the east side carrying
+# Main body (module + west channel + lower socket area) plus a strip down the east side carrying
 # display 2/3. West RA sockets sit flush (fab face + EDGE_FLUSH); display
 # sockets overhang the east edge by DISPLAY_OVERHANG; other parts keep MARGIN
 # from their courtyard. Top edge fixed at Y=0 = panel 1's top edge.
@@ -323,11 +352,15 @@ def placed_layer_bbox(fp, layers):
     return min(xs), min(ys), max(xs), max(ys)
 
 
-ox0 = min(placed_layer_bbox(fps[r], (pcbnew.F_Fab,))[0] for r in ("J6", "J7")) - EDGE_FLUSH
+ox0 = placed_layer_bbox(fps["J6"], (pcbnew.F_Fab,))[0] - EDGE_FLUSH
 ox1 = max(placed_layer_bbox(fps[r], (pcbnew.F_Fab,))[2] for r in ("J3", "J4", "J5")) - DISPLAY_OVERHANG
 oy0 = 0.0
-main_bottom = max(placed_courtyard_bbox(fps[r])[3] for r in layout
-                  if r not in STRIP_REFS) + MARGIN
+# rev 3: J7 faces the bottom edge -> its face sets the main body's bottom
+main_bottom = placed_layer_bbox(fps["J7"], (pcbnew.F_Fab,))[3] + EDGE_FLUSH
+for r in layout:
+    if r not in STRIP_REFS + ("J7",):
+        cy = placed_courtyard_bbox(fps[r])[3]
+        assert cy + MARGIN <= main_bottom, f"{r} courtyard below the main body ({cy:.2f})"
 oy1 = placed_courtyard_bbox(fps["J5"])[3] + MARGIN
 for r in layout:
     cy = placed_courtyard_bbox(fps[r])[1]
@@ -364,8 +397,9 @@ for ref in layout:
 # reached with the module fitted. Generous: rows +-1.3mm, plus antenna end
 # above pin 1 and USB-C end below pin 22.
 comp_rects.append((XL - 1.3, -4.0, XR + 1.3, 66.4))
+comp_rects.append((XL - 1.3, 66.4, XR + 1.3, 67.5))  # antenna keepout tail
 
-HOLE_CLEARANCE = 4.5  # mm, hole CENTER to nearest courtyard edge -- the
+HOLE_CLEARANCE = 3.0  # mm (rev 3: was 4.5, too coarse for the top-right spot), hole CENTER to nearest courtyard edge -- the
 # MountingHole_2.7mm_M2.5 footprint's own courtyard is ~5.9mm across
 # (~3mm radius), so a flat 2mm clearance from the hole's center point
 # wasn't enough: MH3 ended up 0.76mm into U4's courtyard before this fix
@@ -413,8 +447,8 @@ def nearest_clear_spot(tx, ty):
 # this layout: the strip below the module/spare column (bottom-left) and
 # the area right of the displays, above the boost/opto block (upper-right).
 hole_targets = [
-    (5.5, 3.8),    # west strip, top-left corner above J6 (USB-C plug side)
-    (5.5, 52.0),   # west strip, below the LED
+    (XR + 11.1, 9.7),   # top-right, between the 33Rs and display 1 (USB-C plug side)
+    (XL - 1.5, 84.0),   # bottom-left corner, beside J7
     (XD + 5.5, C1 + PITCH / 2),            # east strip, between display 1/2
     (XD + 5.5, C1 + PITCH * 1.5),          # east strip, between display 2/3
 ]
@@ -462,12 +496,23 @@ for ref, n in (("J3", "1"), ("J4", "2"), ("J5", "3")):
     for num, name in enumerate(["GND", "5V", "SCL", "SDA", "RST" + n, "DC", "CS" + n, "BL" + n], start=1):
         p = pad_pos(ref, num)
         add_label(name, p.x - MM(1.25), p.y, RIGHT)
-# west-edge RST pair + keyfob: labels just east of each pad (between the
-# pin column and J2 -- that gap is what sets XL)
-for ref, names in (("J6", ["RST", "GND"]), ("J7", ["12V", "B1", "B2", "B3", "B4", "GND"])):
-    for num, name in enumerate(names, start=1):
-        p = pad_pos(ref, num)
-        add_label(name, p.x + MM(1.1), p.y, LEFT)
+# RST pair: labels just east of each pad
+for num, name in enumerate(["RST", "GND"], start=1):
+    p = pad_pos("J6", num)
+    add_label(name, p.x + MM(1.1), p.y, LEFT)
+# keyfob (rev 3: pins run +X at 2.54mm, too tight for level text): each
+# label reads upward from just above its pad
+for num, name in enumerate(["12V", "B1", "B2", "B3", "B4", "GND"], start=1):
+    p = pad_pos("J7", num)
+    t = pcbnew.PCB_TEXT(board)
+    t.SetText(name)
+    t.SetLayer(pcbnew.F_SilkS)
+    t.SetTextSize(pcbnew.VECTOR2I(MM(0.8), MM(0.8)))
+    t.SetTextThickness(MM(0.12))
+    t.SetTextAngle(pcbnew.EDA_ANGLE(90, pcbnew.DEGREES_T))
+    t.SetHorizJustify(LEFT)
+    t.SetPosition(pcbnew.VECTOR2I(p.x, p.y - MM(1.15)))
+    board.Add(t)
 
 # edge connectors whose stock ref would sit off the board / on a neighbour
 # (pin labels already identify them)

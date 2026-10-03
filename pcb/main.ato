@@ -30,7 +30,8 @@
 #     INTENTIONAL by the user, not a bug: the final display part carries its
 #     own onboard 5V->3.3V regulator, which avoids loading the module's
 #     single onboard 3.3V LDO across all 3 panels at once.
-#   - Optocoupler bank: GPIO1/42/41/40/39 -> opto rows 1-5 respectively.
+#   - Optocoupler bank: GPIO39/40/41/42/1 -> opto rows 1-5 respectively
+#     (rev 3; was GPIO1/42/41/40/39).
 #     Rows 1-4 are the door-remote buttons (power-injection: boost 12V+
 #     bussed to rows 1-4 collectors, emitters out to the 1x6 keyfob
 #     connector). Row 5 is the motherboard hardware-reset line: its
@@ -70,7 +71,7 @@ component Resistor270:
     footprint = "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal"
 
 component Resistor10k:
-    """Opto GPIO pull-down (5x: GPIO39 reset row + GPIO1/42/41/40 doors):
+    """Opto GPIO pull-down (5x: GPIO1 reset row + GPIO39/40/41/42 doors, rev 3):
     holds the opto off while firmware isn't driving the pin (boot,
     flashing, crash, deep sleep). Must stay <=~20k to beat a possible ~45k
     internal pull-up at reset."""
@@ -294,17 +295,17 @@ module Main:
     r4 = new Resistor270  # opto4 LED drive
     r5 = new Resistor270  # opto5 (reset) LED drive
     r6 = new Resistor270  # status LED
-    r7 = new Resistor10k  # GPIO39 pull-down (motherboard-reset row)
+    r7 = new Resistor10k  # GPIO39 pull-down (door button 1; rev 3, was the reset row)
     r8 = new Resistor33  # SCK series termination
     r9 = new Resistor33  # MOSI series termination
     # rev 2.1: 10k pull-downs on the four door-button opto GPIOs, same reason
     # as r7 -- GPIO40/41/42 are JTAG pins like GPIO39 and can come up with a
     # weak (~45k) pull-up during reset/boot/flashing; ~50uA through the opto
     # LED is enough for the fob's CMOS button input to see a phantom press.
-    r10 = new Resistor10k  # GPIO1  pull-down (door button 1)
-    r11 = new Resistor10k  # GPIO42 pull-down (door button 2)
+    r10 = new Resistor10k  # GPIO1  pull-down (motherboard-reset row; rev 3, was door 1)
+    r11 = new Resistor10k  # GPIO42 pull-down (door button 4; rev 3, was 2)
     r12 = new Resistor10k  # GPIO41 pull-down (door button 3)
-    r13 = new Resistor10k  # GPIO40 pull-down (door button 4)
+    r13 = new Resistor10k  # GPIO40 pull-down (door button 2; rev 3, was 4)
 
     led1 = new StatusLED
 
@@ -419,11 +420,13 @@ module Main:
     mcu.gpio40 ~ r13.p1
     r13.p2 ~ mcu.gnd_l
 
-    mcu.gpio1 ~ r1.p1
+    # rev 3: drive GPIOs follow J2's pin order (39,40,41,42 top-down, then 1)
+    # so the drive lines reach the optos without crossing
+    mcu.gpio39 ~ r1.p1
     r1.p2 ~ opto1.anode
     opto1.cathode ~ mcu.gnd_l
 
-    mcu.gpio42 ~ r2.p1
+    mcu.gpio40 ~ r2.p1
     r2.p2 ~ opto2.anode
     opto2.cathode ~ mcu.gnd_l
 
@@ -431,15 +434,15 @@ module Main:
     r3.p2 ~ opto3.anode
     opto3.cathode ~ mcu.gnd_l
 
-    mcu.gpio40 ~ r4.p1
+    mcu.gpio42 ~ r4.p1
     r4.p2 ~ opto4.anode
     opto4.cathode ~ mcu.gnd_l
 
     # ---- isolated hardware-reset optocoupler (motherboard RST header) ----
-    mcu.gpio39 ~ r5.p1
+    mcu.gpio1 ~ r5.p1  # rev 3: was GPIO39
     r5.p2 ~ opto5.anode
     opto5.cathode ~ mcu.gnd_l
-    mcu.gpio39 ~ r7.p1  # pull-down on the GPIO side of r5
+    mcu.gpio39 ~ r7.p1  # pull-down on the GPIO side of r1 (rev 3; was r5)
     r7.p2 ~ mcu.gnd_l
     opto5.collector ~ rst_out.p1  # -> motherboard RST+ (pulled-up side)
     opto5.emitter ~ rst_out.p2    # -> motherboard RST GND

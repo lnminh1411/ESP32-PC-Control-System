@@ -92,7 +92,9 @@ else:
 # X span follows the socket columns (J2/J1 positions), so it tracks layout changes
 xl = board.FindFootprintByReference("J2").GetPosition().x / 1e6
 xr = board.FindFootprintByReference("J1").GetPosition().x / 1e6
-ANT_X0, ANT_X1, ANT_Y0, ANT_Y1 = xl + 1.6, xr - 1.6, 54.5, 62.0
+# rev 3: the board continues below the module, so the keepout runs past the
+# DevKit's antenna end (10mm past pin 1 = Y 66.34) to Y=67.5
+ANT_X0, ANT_X1, ANT_Y0, ANT_Y1 = xl + 1.6, xr - 1.6, 54.5, 67.5
 keep = pcbnew.ZONE(board)
 keep.SetIsRuleArea(True)
 keep.SetZoneName("ANTENNA_KEEPOUT")

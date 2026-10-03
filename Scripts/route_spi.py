@@ -159,6 +159,116 @@ if COPPER_LAYERS == 2:
                                           (PS1_IN[0], GAP_Y + J5V_W - PS1_IN[0]), PS1_IN]))
     VIAS.append(("v5", J5V_E, GAP_Y))
     VIAS.append(("v5", J5V_W, GAP_Y))
+    # rev 3: 12V collector bus (opto pins 4, U1-U4) inside the DIP corridor,
+    # east of the output pins -- left to Freerouting it ran down their WEST
+    # side and walled in the btn lines (emitters, pins 3) that must exit west.
+    # Boost OUT+ -> over the top of U1 -> down the corridor, a stub per pin.
+    OUT_POS = (XL + 3.81, 3.95)          # PS1 pad 3 (boost at 90deg)
+    OPTO_W = XL + 14.85                  # opto output pin column
+    V12_X, V12_TOP = OPTO_W + 1.4, 1.2
+    pin4 = [3.2 + 6 * k + 2.54 for k in range(4)]  # U1-U4 collectors
+    EXTRA.append(("v12", pcbnew.F_Cu, PW + 0.1, [OUT_POS, (OUT_POS[0], V12_TOP), (V12_X, V12_TOP)]
+                  + [(V12_X, y) for y in pin4]))
+    for y in pin4:
+        EXTRA.append(("v12", pcbnew.F_Cu, PW + 0.1, [(V12_X, y), (OPTO_W, y)]))
+
+    # rev 3 west channel: opto outputs + 12V + the LED drive run from the
+    # optos west, cross J2 between its unused upper pins (10-20, one track per
+    # gap), drop down the channel between J2 and the west edge and fan into
+    # J6/J7/R6 below the antenna keepout. Entry order top-down = lane order
+    # west->east = the order the sockets want, so nothing crosses. Positions
+    # must match layout_board.py (J6_PIN1, J7_PIN1, R6, D1).
+    def j2(n):                           # J2 pad n (rotated like J1)
+        return 56.34 - 2.54 * (n - 1)
+    J6P = (XL + 5.53, 69.8)              # J6 pin 1 (pin 2 at +2.54 Y)
+    J7P = (XL + 3.5, 77.5)               # J7 pin 1 (pins run +X)
+    R6P = (XL + 9.7, 71.0)               # R6 pad 1 (pad 2 at +8.128 X)
+    D1A = (XL + 23.4 - 2.54, 71.0)       # D1 pad 2 (anode; D1 at 180deg)
+    # 0.42 pitch (0.22 gaps: chamfer_corners needs > 0.21 to cut the bends);
+    # 12V narrows to 0.4 here (keyfob supply only), 0.55 from the board edge
+    LANE = {"v12": XL - 4.2, "btn1": XL - 3.68, "btn2": XL - 3.26, "btn3": XL - 2.84,
+            "btn4": XL - 2.42, "mb_rst_gnd": XL - 2.0, "mb_rst": XL - 1.58, "gpio2": XL - 1.16}
+    # 12V: the bus's top run continues west over J2's top end (a 0.5mm track
+    # doesn't fit between J2 pads) into the westmost lane
+    EXTRA.append(("v12", pcbnew.F_Cu, PW, [(OUT_POS[0], V12_TOP), (LANE["v12"], V12_TOP)]))
+    # (net, opto output pad, J2 gap centre Y) -- btn4 dips round boost IN+
+    GAP = lambda n: j2(n) - 1.27         # gap between J2 pads n and n+1
+    OUTS = [
+        ("btn1", (OPTO_W, 3.2), GAP(20)),        # under boost OUT-/OUT+
+        ("btn2", (OPTO_W, 9.2), GAP(19)),
+        ("btn3", (OPTO_W, 15.2), GAP(17)),
+        ("btn4", (OPTO_W, 21.2), GAP(13)),       # south of boost IN+
+        ("mb_rst_gnd", (OPTO_W, 27.2), GAP(12)),  # U5 emitter
+        ("mb_rst", (OPTO_W, 29.74), GAP(11)),     # U5 collector
+    ]
+    # down the channel to below the keepout, then east into each pad: J6 pads
+    # straight across (under J6's body), J7 lines in stacked rows between J6
+    # pin 2 and J7's pads, each dropping into its pin
+    J7_ROW = {"btn4": 73.6, "btn3": 74.1, "btn2": 74.6, "btn1": 75.1, "v12": 75.75}
+    END = {"mb_rst": [(LANE["mb_rst"], J6P[1]), J6P],
+           "mb_rst_gnd": [(LANE["mb_rst_gnd"], J6P[1] + 2.54), (J6P[0], J6P[1] + 2.54)]}
+    for i, net in enumerate(("v12", "btn1", "btn2", "btn3", "btn4")):
+        px = J7P[0] + 2.54 * i
+        END[net] = [(LANE[net], J7_ROW[net]), (px, J7_ROW[net]), (px, J7P[1])]
+    for net, (ox, oy), gy in OUTS:
+        if net == "btn4":   # SW past U4's pin 4 + boost IN+, then west at the gap
+            head = [(ox, oy), (ox - 1.45, oy + 1.45), (ox - 1.45 - (gy - oy - 1.45), gy)]
+        else:
+            head = [(ox, oy), (ox - abs(gy - oy), gy)]
+        EXTRA.append((net, pcbnew.F_Cu, TRACK_W, head + [(LANE[net], gy)] + END[net]))
+    EXTRA.append(("v12", pcbnew.F_Cu, PW, [(LANE["v12"], V12_TOP)] + END["v12"]))
+    # LED: J2 pin 5 -> east-most lane -> above J6 pin 1 -> R6 -> D1 anode
+    LED_Y = 68.2                         # between the keepout (67.5) and J6 pin 1
+    EXTRA.append(("gpio2", pcbnew.F_Cu, TRACK_W, [(XL, j2(5)), (LANE["gpio2"], j2(5)),
+                                                  (LANE["gpio2"], LED_Y), (R6P[0], LED_Y), R6P]))
+    EXTRA.append(("led_a", pcbnew.F_Cu, TRACK_W, [(R6P[0] + 8.128, R6P[1]), D1A]))
+
+    # rev 3 opto drive: J2 -> 270R (+ 10k pull-down) -> opto LED anode, all
+    # F.Cu (Freerouting kept leaving one of these on a long B.Cu run). Resistor
+    # rows as layout_board.py: west column pad 1 at W1, east at E1, pitch 8.128.
+    RP = 8.128
+    W1, E1 = XL + 2.9, XL + 14.3
+    W2, E2 = W1 + RP, E1 + RP
+    ROW = dict(a=33.3, b=36.6, c=39.9, d=43.2, e=46.5, f=49.8)
+    OPTO_E = OPTO_W + 7.62               # opto LED pins (pin 1 anode)
+    an = {k: 5.74 + 6 * (k - 1) for k in range(1, 6)}  # U1-U5 anode Y
+    # GPIO39/40/41 -> R1/R2/R3 (west a,b,c) straight from J2 pins 9/8/7; the
+    # pull-downs hang below: GPIO41 -> R12 (west d) straight down the pad
+    # column, GPIO40/39 -> R13/R7 (west e,f) down under the west bodies
+    EXTRA.append(("gpio39", pcbnew.F_Cu, TRACK_W, [(XL, j2(9)), (W1, ROW["a"])]))
+    EXTRA.append(("gpio40", pcbnew.F_Cu, TRACK_W, [(XL, j2(8)), (W1, ROW["b"])]))
+    EXTRA.append(("gpio41", pcbnew.F_Cu, TRACK_W, [(XL, j2(7)), (W1, ROW["c"])]))
+    EXTRA.append(("gpio41", pcbnew.F_Cu, TRACK_W, [(W1, ROW["c"]), (W1, ROW["d"])]))
+    for net, r, gap, cx, pd in (("gpio40", "b", 38.25, W1 + 2.6, "e"),
+                                ("gpio39", "a", 34.95, W1 + 3.1, "f")):
+        EXTRA.append((net, pcbnew.F_Cu, TRACK_W, [(W1, ROW[r]), (W1 + gap - ROW[r], gap), (cx, gap),
+                                                  (cx, ROW[pd]), (W1, ROW[pd])]))
+    # GPIO42 / GPIO1 (J2 pins 6/4): down beside J2, east under the bank, up
+    # either side of the east pad-1 column -> R4 + pull-down R11 (west side),
+    # R5 + pull-down R10 (east side)
+    G42_X, G1_X = E1 - 1.25, E1 + 1.2
+    EXTRA.append(("gpio42", pcbnew.F_Cu, TRACK_W, [(XL, j2(6)), (XL + 1.6, j2(6)), (XL + 1.6, 51.0),
+                                                   (G42_X, 51.0), (G42_X, ROW["b"]), (E1, ROW["b"])]))
+    EXTRA.append(("gpio42", pcbnew.F_Cu, TRACK_W, [(G42_X, ROW["c"]), (E1, ROW["c"])]))
+    EXTRA.append(("gpio1", pcbnew.F_Cu, TRACK_W, [(XL, j2(4)), (XL + 1.17, j2(4)), (XL + 1.17, 51.45),
+                                                  (G1_X, 51.45), (G1_X, ROW["a"]), (E1, ROW["a"])]))
+    EXTRA.append(("gpio1", pcbnew.F_Cu, TRACK_W, [(G1_X, ROW["d"]), (E1, ROW["d"])]))
+    # anodes: west column (R1-R3 -> U1-U3) north between the columns, east
+    # along the gap under U5, up the DIP corridor (lanes west->east U1-U3) and
+    # peel east onto each anode pin; R4 -> U4 up a lane east of the corridor,
+    # R5 -> U5 straight up
+    for k, r, x_up, y_turn, lane in ((1, "a", W2, 30.95, OPTO_W + 2.15),
+                                     (2, "b", W2 + 1.12, 31.4, OPTO_W + 2.6),
+                                     (3, "c", W2 + 1.57, 31.85, OPTO_W + 3.05)):
+        pts = [(W2, ROW[r])]
+        if x_up != W2:
+            pts.append((x_up, ROW[r] - (x_up - W2)))
+        pts += [(x_up, y_turn), (lane, y_turn), (lane, an[k]), (OPTO_E, an[k])]
+        EXTRA.append((f"opto{k}-anode", pcbnew.F_Cu, TRACK_W, pts))
+    U4_X = OPTO_E - 1.57
+    EXTRA.append(("opto4-anode", pcbnew.F_Cu, TRACK_W, [(E2, ROW["b"]), (U4_X, ROW["b"] - (E2 - U4_X)),
+                                                        (U4_X, an[4]), (OPTO_E, an[4])]))
+    EXTRA.append(("opto5-anode", pcbnew.F_Cu, TRACK_W, [(E2, ROW["a"]), (OPTO_E, an[5])]))
     # west lanes: net, J1 pin, lane beside J1, fan-out Y, strip lane, display, pad, jumper?
     WEST = [
         ("disp_rst2", 9, XR + 2.50, 60.5, XR + 2.3, 1, 5, True),

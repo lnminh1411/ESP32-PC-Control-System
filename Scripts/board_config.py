@@ -7,11 +7,12 @@ COPPER_LAYERS picks the stackup variant:
   4 -- rev 2.4: L1 signal, In1 solid GND plane, In2 5V plane, L4 low-speed.
   2 -- rev 2.4b (cost-down): F.Cu carries all routing, B.Cu is a GND pour
        that signals may only cross with short via jumpers; 5V is a routed
-       power track instead of a plane.
+       power track instead of a plane. Rev 3.0 (current) is 2-layer only:
+       its hand routes in route_spi.py assume this stackup.
 Changing it means rebuilding the whole chain from make_blank_pcb.py.
 """
 COPPER_LAYERS = 2
-REVISION = "2.4b"
+REVISION = "3.0"
 DATE = "2026-10-03"
 TITLE = "ESP32 PC Controller System"
 
