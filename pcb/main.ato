@@ -22,9 +22,9 @@
 #     CS1=GPIO8, CS2=GPIO18, CS3=GPIO17. Per-display RST (rev 2.3, was one
 #     shared GPIO10): RST1=GPIO10, RST2=GPIO16, RST3=GPIO15, so one hung
 #     panel can be reset without blanking the other two. Per-display
-#     backlight (rev 2.4): BL1=GPIO7, BL2=GPIO6, BL3=GPIO5 (on/off or LEDC
+#     backlight (rev 2.4): BL1=GPIO13, BL2=GPIO6, BL3=GPIO5 (on/off or LEDC
 #     PWM dimming, one panel at a time). Everything sits on module pins
-#     5-18 facing the displays (module rotated 180deg, USB-C to the board's
+#     5-19 facing the displays (module rotated 180deg, USB-C to the board's
 #     top edge).
 #   - Display VCC is wired to the module's 5Vin pin, not 3V3 — CONFIRMED
 #     INTENTIONAL by the user, not a bug: the final display part carries its
@@ -37,7 +37,7 @@
 #     collector/emitter go ONLY to the RST pair, never to the 12V bus.
 #     All five opto GPIOs have a 10k pull-down so no opto can turn on
 #     while firmware isn't driving its pin (boot, flashing, crash).
-#   - Status LED: GPIO21 -> 270R -> single LED -> GND. Down from 2 LEDs
+#   - Status LED: GPIO2 -> 270R -> single LED -> GND. Down from 2 LEDs
 #     in the old dual-MCU design (one per board) to 1.
 #   - USB-OTG (motherboard front-panel USB passthrough) needs NO carrier
 #     PCB copper: it's the module's own onboard second USB-C port, wired
@@ -333,7 +333,7 @@ module Main:
     disp_rst1 ~ mcu.gpio10
     disp_rst2 ~ mcu.gpio16
     disp_rst3 ~ mcu.gpio15
-    disp_bl1 ~ mcu.gpio7
+    disp_bl1 ~ mcu.gpio13
     disp_bl2 ~ mcu.gpio6
     disp_bl3 ~ mcu.gpio5
     disp_dc ~ mcu.gpio9
@@ -370,7 +370,7 @@ module Main:
     mcu.gpio15 ~ display3.rst
 
     # per-display backlight (rev 2.4): point-to-point
-    mcu.gpio7 ~ display1.bl
+    mcu.gpio13 ~ display1.bl  # rev 2.4b: was GPIO7 -- pin 19 sits by display 1
     mcu.gpio6 ~ display2.bl
     mcu.gpio5 ~ display3.bl
 
@@ -445,5 +445,5 @@ module Main:
     opto5.emitter ~ rst_out.p2    # -> motherboard RST GND
 
     # ---- status LED ----
-    mcu.gpio21 ~ r6.p1
+    mcu.gpio2 ~ r6.p1  # rev 2.4b: was GPIO21 (J2 pin 18, above the keyfob lines)
     r6.p2 ~ led1.a

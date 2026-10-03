@@ -21,9 +21,13 @@ cd pcb && PYTHONIOENCODING=utf-8 ato build && cd ..
 python Scripts/render_board.py
 ```
 
+## board_config.py
+
+Shared build settings imported by the layout chain: `COPPER_LAYERS` (2 = rev 2.4b cost-down, 4 = rev 2.4), `REVISION`, `DATE`, `TITLE`, and the Power net class values (`POWER_NETS`, track/via sizes -- keep equal to `pcb/layouts/default/default.kicad_pro`). Changing `COPPER_LAYERS` means rebuilding the whole chain from `make_blank_pcb.py`. Not run directly.
+
 ## make_blank_pcb.py
 
-Creates a blank 4-layer `pcb/layouts/default/default.kicad_pcb` with the inner planes named `GND_Plane`/`Power_Planes` per the project's stackup spec. **Overwrites unconditionally** — only run once before the board exists, or deliberately to start the layout over. Never re-run after real placement/routing has begun.
+Creates a blank `pcb/layouts/default/default.kicad_pcb` with `board_config.COPPER_LAYERS` copper layers (4: inner planes named `GND_Plane`/`Power_Planes`; 2: F.Cu/B.Cu only) and the title block (revision/date/title from `board_config.py`). **Overwrites unconditionally** — only run once before the board exists, or deliberately to start the layout over. Never re-run after real placement/routing has begun.
 
 ## sync_netlist_to_board.py
 
@@ -42,7 +46,7 @@ Exists because neither atopile's own `ato build` nor `kicad-cli` (KiCad's offici
 
 ## layout_board.py
 
-Real (non-grid) component placement: positions every footprint from real measured geometry (courtyard bounding boxes read live via `pcbnew`, not assumed), fixes the axial resistor footprint's pad pitch to the real measured 8.128mm (stock library part is 10.16mm), handles footprint rotation for the right-angle edge-mounted connectors, places the rev-2.4 layout (module rotated 180° with USB-C at the top edge, boost/optos/axial resistors under the module, RST pair + keyfob + status LED on the west edge, the two 33R bus resistors in the top-right corner (MOSI's on the top row), display column 6.25 mm east of the module, 1x8 sockets at 51.9 mm pitch down the east edge), draws the L-shaped board outline (west RA sockets flush +0.4mm, display sockets overhanging the east edge 1mm with their silk clipped to the board, 0.3mm courtyard margin elsewhere, east strip for displays 2/3) and 4 mounting holes at fixed spots (collision-checked against courtyards, the module body and the L-shape), trims the resistor silkscreen to the shortened pitch, swaps the resistor 3D model to the stock P7.62mm STEP stretched in X to 8.128mm (a shifted P10.16 model left both leads outside their holes), adds per-pin silkscreen labels on every connector, and the assembly markings (module ANTENNA/USB-C ends + 3V3/GND pin 1s, resistor values inside the bodies, PC817 pin-1 dot replacing the notch). Never `fp.Remove()` footprint graphics here — it corrupts later footprints' SWIG wrappers; move items to another layer instead. Run after `sync_netlist_to_board.py`.
+Real (non-grid) component placement: positions every footprint from real measured geometry (courtyard bounding boxes read live via `pcbnew`, not assumed), fixes the axial resistor footprint's pad pitch to the real measured 8.128mm (stock library part is 10.16mm), handles footprint rotation for the right-angle edge-mounted connectors, places the rev-2.4 layout (module rotated 180° with USB-C at the top edge, boost/optos/axial resistors under the module, RST pair + keyfob + status LED on the west edge, the two 33R bus resistors in the top-right corner (MOSI's on the top row), display column 6.25 mm east of the module, 1x8 sockets at 51.9 mm pitch down the east edge), draws the L-shaped board outline (west RA sockets flush +0.4mm, display sockets overhanging the east edge 1mm with their silk clipped to the board, 0.3mm courtyard margin elsewhere, east strip for displays 2/3) and 4 mounting holes at fixed spots (collision-checked against courtyards, the module body and the L-shape), trims the resistor silkscreen to the shortened pitch, swaps the resistor 3D model to the stock P7.62mm STEP stretched in X to 8.128mm (a shifted P10.16 model left both leads outside their holes), adds per-pin silkscreen labels on every connector, and the assembly markings (module ANTENNA/USB-C ends + 3V3/GND pin 1s, resistor values inside the bodies, PC817 pin-1 dot replacing the notch). On 2 layers it also turns the optos 180 deg (reordered U5,U1-U4), swaps R2/R3, stands R6 in the west strip and widens the display strip. Never `fp.Remove()` footprint graphics here — it corrupts later footprints' SWIG wrappers; move items to another layer instead. Run after `sync_netlist_to_board.py`.
 
 **Not idempotent in place** — re-running it on its own output corrupts other live `pcbnew` SWIG object references (same class of bug as the `NETINFO_ITEM` removal issue below). Always rebuild from a fresh blank+synced board first:
 
@@ -56,7 +60,7 @@ Full chain order: `make_blank_pcb` → `sync_netlist_to_board` → `layout_board
 
 ## add_pours.py
 
-Pours the two plane layers: GND on `In1` (net `gnd`) and 5V on `In2` (net `v5`) — both named explicitly in `main.ato`. Also adds the antenna keepout rule area (all copper layers, no tracks/vias/fill) under the module's PCB antenna; it must exist before `route_board.py` so Freerouting routes around it. Since every component on this board is through-hole, THT pad copper already exists on every layer by default, so these two pours alone fully connect every GND/5V pad with zero explicit traces or vias. Run after `layout_board.py`.
+Pours the planes per `COPPER_LAYERS`: 4 layers -> GND on `In1` (net `gnd`) and 5V on `In2` (net `v5`); 2 layers -> one GND pour on `B.Cu` (0.3 mm pad clearance), 5V routed as a track. Also adds the antenna keepout rule area (all copper layers, no tracks/vias/fill) under the module's PCB antenna; it must exist before `route_board.py` so Freerouting routes around it. Since every component on this board is through-hole, THT pad copper already exists on every layer by default, so these two pours alone fully connect every GND/5V pad with zero explicit traces or vias. Run after `layout_board.py`.
 
 ## make_fit_models.py
 
@@ -68,7 +72,7 @@ python "E:\ESP32 PC Controller\Scripts\make_fit_models.py"
 
 ## route_spi.py
 
-Hand-routes the display nets (SCK, MOSI, DC, RST1, CS1-3, plus the two module-to-series-resistor risers) on F.Cu as **locked** tracks: shared lines as a true daisy chain MCU -> display1 -> display2 -> display3 (each segment ends on a pad, no T-junctions, no vias), CS1-3 and RST1 point-to-point, all in 8 lanes at 0.5mm pitch between J1 and the display column. RST2/RST3 are left to Freerouting. Routes are computed from placement constants (`XL`, `XR`, `XD`, `PITCH`, `C1`, `R33_X`/`R8_Y`/`R9_Y`) that must match `layout_board.py` -- change both together. Freerouting would build trees with mid-trace T-joins and drop most of the bus onto B.Cu. Run after `add_pours.py`, before `route_board.py`.
+Hand-routes the display nets (SCK, MOSI, DC, RST1, CS1-3, plus the two module-to-series-resistor risers) on F.Cu as **locked** tracks: shared lines as a true daisy chain MCU -> display1 -> display2 -> display3 (each segment ends on a pad, no T-junctions, no vias), CS1-3 and RST1 point-to-point, all in 8 lanes at 0.5mm pitch between J1 and the display column. RST2/RST3 are left to Freerouting on 4 layers; on 2 layers this script also hand-routes RST2/RST3, BL1-3 and the display/boost 5V on F.Cu with locked short B.Cu jumpers (via + 3.8-8 mm hop) where they cross the bus. Routes are computed from placement constants (`XL`, `XR`, `XD`, `PITCH`, `C1`, `R33_X`/`R8_Y`/`R9_Y`) that must match `layout_board.py` -- change both together. Freerouting would build trees with mid-trace T-joins and drop most of the bus onto B.Cu. Run after `add_pours.py`, before `route_board.py`.
 
 ```bash
 "C:\Program Files\KiCad\10.0\bin\python.exe" "E:\ESP32 PC Controller\Scripts\route_spi.py"
@@ -88,13 +92,13 @@ Verifies the display bus after routing: F.Cu only, 0 vias, no node with 3+ track
 
 ## route_board.py
 
-Auto-routes the remaining (low-speed) signal nets around the locked display bus (max 60 passes) with [Freerouting](https://github.com/freerouting/freerouting) (external tool — neither `kicad-cli` nor `pcbnew` include an autorouter; KiCad dropped its own years ago). Cached at `K:\cache\freerouting\freerouting-2.4.1.jar`, not committed to this repo. Pipeline: export Specctra DSN (`pcbnew.ExportSpecctraDSN`) → run Freerouting headless, restricted to `F.Cu`/`B.Cu` (the plane layers are marked non-routable) → import the routed SES back (`pcbnew.ImportSpecctraSES`) → **re-fill the copper zones** (zones filled before routing don't know about the vias routing just added, which DRC catches as a zone/via clearance violation until re-filled).
+Auto-routes the remaining (low-speed) signal nets around the locked display bus (max 60 passes) with [Freerouting](https://github.com/freerouting/freerouting) (external tool — neither `kicad-cli` nor `pcbnew` include an autorouter; KiCad dropped its own years ago). Cached at `K:\cache\freerouting\freerouting-2.4.1.jar`, not committed to this repo. Pipeline: export Specctra DSN (`pcbnew.ExportSpecctraDSN`) → run Freerouting headless, restricted to `F.Cu`/`B.Cu` (the plane layers are marked non-routable); on 2 layers it runs **two passes** -- F.Cu only, lock the result, then F.Cu+B.Cu for whatever is left (Freerouting ignores per-layer costs in the DSN, so this is what keeps B.Cu to short jumpers; currently pass 1 already routes everything) → import the routed SES back (`pcbnew.ImportSpecctraSES`) → **re-fill the copper zones** (zones filled before routing don't know about the vias routing just added, which DRC catches as a zone/via clearance violation until re-filled).
 
 **Only run against a fresh, unrouted board** (straight out of `add_pours.py`) — re-running it on a board it already routed left a net unrouted in practice (Freerouting tried to reuse existing traces as fixed obstacles and got stuck), where routing fresh hit 0 unrouted both times tried. To reroute after a layout change, rebuild the whole chain from `make_blank_pcb.py` again rather than routing on top of existing traces.
 
 ## render_board.py
 
-Refreshes `pcb/build/renders/`: one PNG per copper layer (F.Cu, In1 GND, In2 5V, B.Cu), top silkscreen over F.Cu, and the slanted 3D overview (also copied to `pcb/build/board_preview.png`) via `kicad-cli` SVG export + pymupdf. Runs under the system Python (needs pymupdf + Pillow); intermediates go to `K:\scratch\pdf`. Run after the full routing chain + DRC pass.
+Refreshes `pcb/build/renders/`: one PNG per copper layer (F.Cu, In1 GND + In2 5V on 4-layer boards only, B.Cu), top silkscreen over F.Cu, and the slanted 3D overview (also copied to `pcb/build/board_preview.png`) via `kicad-cli` SVG export + pymupdf. Runs under the system Python (needs pymupdf + Pillow); intermediates go to `K:\scratch\pdf`. Run after the full routing chain + DRC pass.
 
 ```bash
 python "E:\ESP32 PC Controller\Scripts\render_board.py"

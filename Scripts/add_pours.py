@@ -1,7 +1,12 @@
 """
-Adds the two plane-layer copper pours to pcb/layouts/default/default.kicad_pcb:
+Adds the copper pours to pcb/layouts/default/default.kicad_pcb, per
+board_config.COPPER_LAYERS:
+  4 layers (rev 2.4):
   - In1 (GND_Plane): solid pour on net "gnd".
   - In2 (Power_Planes): solid pour on net "v5" (the module's 5Vin rail).
+  2 layers (rev 2.4b):
+  - B.Cu: GND pour on net "gnd" (the return plane under the F.Cu routing);
+    5V becomes a routed Power-class track.
   Both names are declared explicitly in main.ato (`signal gnd` / `signal v5`)
   -- before that, atopile named them after a random member pin ("cathode",
   "vcc").
@@ -22,6 +27,7 @@ pads automatically, with no explicit traces or vias required for GND/5V.
 import pcbnew
 import os
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # repo root (worktree-safe)
+from board_config import COPPER_LAYERS
 
 BOARD_PATH = os.path.join(ROOT, "pcb", "layouts", "default", "default.kicad_pcb")
 MM = pcbnew.FromMM
@@ -62,8 +68,20 @@ def add_plane(net_name, layer, zone_name):
     return zone
 
 
-gnd_zone = add_plane("gnd", pcbnew.In1_Cu, "GND_pour")
-pwr_zone = add_plane("v5", pcbnew.In2_Cu, "5V_pour")
+if COPPER_LAYERS == 4:
+    gnd_zone = add_plane("gnd", pcbnew.In1_Cu, "GND_pour")
+    pwr_zone = add_plane("v5", pcbnew.In2_Cu, "5V_pour")
+    COPPER = (pcbnew.F_Cu, pcbnew.In1_Cu, pcbnew.In2_Cu, pcbnew.B_Cu)
+    POURS = "GND pour (In1, net 'gnd'), 5V pour (In2, net 'v5')"
+else:
+    # 2-layer (rev 2.4b): bottom layer is the GND return plane; 5V is routed
+    # as a Power-class track by Freerouting
+    gnd_zone = add_plane("gnd", pcbnew.B_Cu, "GND_pour")
+    # 0.3mm (vs the 0.5 default) around the ~150 THT pads: more continuous
+    # copper under the F.Cu routing; still > the 0.2mm netclass clearance
+    gnd_zone.SetLocalClearance(MM(0.3))
+    COPPER = (pcbnew.F_Cu, pcbnew.B_Cu)
+    POURS = "GND pour (B.Cu, net 'gnd')"
 
 # ---- antenna keepout ----
 # Rev 2.0: module mounted rotated (USB-C at the top edge), so the antenna end
@@ -79,7 +97,7 @@ keep = pcbnew.ZONE(board)
 keep.SetIsRuleArea(True)
 keep.SetZoneName("ANTENNA_KEEPOUT")
 lset = pcbnew.LSET()
-for layer in (pcbnew.F_Cu, pcbnew.In1_Cu, pcbnew.In2_Cu, pcbnew.B_Cu):
+for layer in COPPER:
     lset.AddLayer(layer)
 keep.SetLayerSet(lset)
 keep.SetDoNotAllowTracks(True)
@@ -97,5 +115,5 @@ filler = pcbnew.ZONE_FILLER(board)
 filler.Fill(board.Zones())
 
 board.Save(BOARD_PATH)
-print("added GND pour (In1, net 'gnd'), 5V pour (In2, net 'v5'), antenna keepout")
+print(f"added {POURS}, antenna keepout")
 print("saved", BOARD_PATH)

@@ -32,6 +32,7 @@ this project.
 import pcbnew
 import os
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # repo root (worktree-safe)
+from board_config import COPPER_LAYERS
 
 BOARD_PATH = os.path.join(ROOT, "pcb", "layouts", "default", "default.kicad_pcb")
 RESISTOR_PITCH_MM = 8.128  # 0.32" measured, replaces stock 10.16mm (0.4")
@@ -179,6 +180,24 @@ layout = {
     "R12": (XL + 13.45, 46.5, 0),   # GPIO41
     "R13": (XL + 2.9, 49.8, 0),     # GPIO40
 }
+# rev 2.4b (2 layers): optos turned 180deg -- outputs (pins 3/4) face west
+# toward the keyfob/RST sockets, LED side faces the resistors' bus on the
+# east, so the btn lines and the anode lines no longer cross (no jumpers).
+# Origin is pin 1, so shift by one row pitch + one pin pitch to keep the body
+# in the same place.
+OPTO_FLIP = COPPER_LAYERS == 2
+# Slot order also follows the west sockets top-down: U5 (motherboard RST ->
+# J6, the top socket) first, then U1-U4 (B1-B4 on J7).
+if OPTO_FLIP:
+    slots = [layout[r] for r in ("U1", "U2", "U3", "U4", "U5")]
+    for ref, (x, y, _) in zip(("U5", "U1", "U2", "U3", "U4"), slots):
+        layout[ref] = (x + 7.62, y + 2.54, 180)
+    # LED anodes then rise to the optos' east pins up the DIP corridor; for
+    # planar lanes (west->east U5,U1,U2 | U3,U4) R2 and R3 trade places.
+    layout["R2"], layout["R3"] = layout["R3"], layout["R2"]
+    # status LED resistor goes vertical in the west strip between J2 pin 5
+    # (GPIO2) and D1, instead of east and back across the opto drive lines
+    layout["R6"] = (11.0, 46.2, 90)
 AXIAL_REFS = ("R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10", "R11", "R12", "R13")
 for ref, (x, y, angle) in layout.items():
     place(fps[ref], x, y, angle)
@@ -205,14 +224,15 @@ BODY_SHIFT_MM = (STOCK_RESISTOR_PITCH_MM - RESISTOR_PITCH_MM) / 2  # 1.016mm
 for ref in AXIAL_REFS:
     fp = fps[ref]
     pad1_pos = fp.GetPosition()
-    for pad in fp.Pads():
-        if pad.GetNumber() == "2":
-            pad.SetPosition(pcbnew.VECTOR2I(pad1_pos.x + MM(RESISTOR_PITCH_MM), pad1_pos.y))
     # shift (not scale) the stock silkscreen/fab/courtyard body+lead
-    # graphics so the body re-centers between the new pad positions
+    # graphics so the body re-centers between the new pad positions; work at
+    # the origin, unrotated, so pad 2 also lands right on a rotated part
     angle = fp.GetOrientation()
     fp.SetPosition(pcbnew.VECTOR2I(0, 0))
     fp.SetOrientation(pcbnew.EDA_ANGLE(0, pcbnew.DEGREES_T))
+    for pad in fp.Pads():
+        if pad.GetNumber() == "2":
+            pad.SetPosition(pcbnew.VECTOR2I(MM(RESISTOR_PITCH_MM), 0))
     shift = MM(BODY_SHIFT_MM)
     for item in fp.GraphicalItems():
         if item.GetLayer() in (pcbnew.F_SilkS, pcbnew.F_Fab, pcbnew.F_CrtYd) and \
@@ -286,6 +306,10 @@ EDGE_FLUSH = 0.4
 DISPLAY_OVERHANG = 1.0  # socket face past the east edge (panel header clearance)
 MARGIN = 0.3
 STRIP_WEST = XD - 4.3   # strip west edge: CS3 lane + room for the RSTn labels
+if COPPER_LAYERS == 2:
+    # rev 2.4b: the 5V track and the RST2/3 + BL2/3 lanes run down the strip
+    # on F.Cu (on 4 layers 5V is a plane and Freerouting tucks the rest in)
+    STRIP_WEST = XD - 7.6
 STRIP_REFS = ("J4", "J5")
 
 
@@ -515,8 +539,10 @@ for ref in ("U1", "U2", "U3", "U4", "U5"):
     fp.SetOrientation(angle)
     dot = pcbnew.PCB_SHAPE(board, pcbnew.SHAPE_T_CIRCLE)
     dot.SetLayer(pcbnew.F_SilkS)
-    dot.SetCenter(pcbnew.VECTOR2I(pos.x + MM(2.0), pos.y - MM(0.45)))
-    dot.SetEnd(pcbnew.VECTOR2I(pos.x + MM(2.0) + MM(0.35), pos.y - MM(0.45)))
+    sx = -1 if OPTO_FLIP else 1   # dot offset turns with the part
+    cx, cy = pos.x + sx * MM(2.0), pos.y - sx * MM(0.45)
+    dot.SetCenter(pcbnew.VECTOR2I(cx, cy))
+    dot.SetEnd(pcbnew.VECTOR2I(cx + MM(0.35), cy))
     dot.SetFilled(True)
     dot.SetWidth(MM(0.1))
     board.Add(dot)

@@ -30,6 +30,13 @@ ITEMS = [
 ]
 
 os.makedirs(TMP, exist_ok=True)
+# 2-layer board (rev 2.4b): no inner layers to export; B.Cu is the GND pour
+with open(BOARD, encoding="utf-8") as f:
+    four_layer = '"In1.Cu"' in f.read(20000)
+if not four_layer:
+    ITEMS = [it for it in ITEMS if not it[0].startswith("In")]
+    ITEMS = [(k, l, o, "L2 Bottom (B.Cu) - GND pour + short jumpers (X-ray)") if k == "B.Cu" else (k, l, o, t)
+             for k, l, o, t in ITEMS]
 os.makedirs(OUT, exist_ok=True)
 font = ImageFont.truetype("arial.ttf", 44)
 for key, layers, out, title in ITEMS:

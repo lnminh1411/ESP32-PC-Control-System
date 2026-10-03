@@ -38,6 +38,8 @@ after SES import, 0 after re-filling).
 import subprocess
 import os
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # repo root (worktree-safe)
+from board_config import (COPPER_LAYERS, POWER_NETS,
+                          POWER_TRACK_W, POWER_VIA_D, POWER_VIA_DRILL)
 import sys
 
 import pcbnew
@@ -48,35 +50,70 @@ DSN_PATH = BOARD_DIR + r"\default.dsn"
 SES_PATH = BOARD_DIR + r"\default.ses"
 FREEROUTING_JAR = r"K:\cache\freerouting\freerouting-2.4.1.jar"
 
-board = pcbnew.LoadBoard(BOARD_PATH)
-if not pcbnew.ExportSpecctraDSN(board, DSN_PATH):
-    sys.exit("DSN export failed")
-print("exported", DSN_PATH)
 
-# Layer order as written into the DSN (confirmed by inspection, not
-# assumed): F.Cu, GND_Plane, Power_Planes, B.Cu. Only the two real signal
-# layers are routable -- the plane layers are solid pours, not meant to
-# carry individual traces.
-result = subprocess.run(
-    [
-        "java", "-jar", FREEROUTING_JAR,
-        "-de", DSN_PATH, "-do", SES_PATH,
-        "--gui.enabled=false",
-        "--router.layers.routable=true,false,false,true",
-        "-mp", "120",
-    ],
-    cwd=BOARD_DIR,
-)
-if result.returncode != 0:
-    sys.exit(f"Freerouting failed with exit code {result.returncode}")
 
-board = pcbnew.LoadBoard(BOARD_PATH)  # reload -- DSN export didn't mutate it, but be explicit
-if not pcbnew.ImportSpecctraSES(board, SES_PATH):
-    sys.exit("SES import failed")
-print("imported", SES_PATH)
+def load_with_power_class():
+    board = pcbnew.LoadBoard(BOARD_PATH)
+    # Power net class: a script-loaded board doesn't read the .kicad_pro, so
+    # the class (same values as the project file, which DRC/the GUI use) is
+    # applied here for the DSN export -- Freerouting then routes 5V/12V at
+    # full width.
+    ns = board.GetDesignSettings().m_NetSettings
+    nc = pcbnew.NETCLASS("Power")
+    nc.SetTrackWidth(pcbnew.FromMM(POWER_TRACK_W))
+    nc.SetClearance(pcbnew.FromMM(0.2))
+    nc.SetViaDiameter(pcbnew.FromMM(POWER_VIA_D))
+    nc.SetViaDrill(pcbnew.FromMM(POWER_VIA_DRILL))
+    ns.SetNetclass("Power", nc)
+    for net in POWER_NETS:
+        ns.SetNetclassPatternAssignment(net, "Power")
+    board.SynchronizeNetsAndNetClasses(True)
+    return board
 
-filler = pcbnew.ZONE_FILLER(board)
-filler.Fill(board.Zones())  # re-fill so zones carve clearance around the new vias
 
-board.Save(BOARD_PATH)
-print("saved", BOARD_PATH)
+def freeroute(routable, lock_result):
+    """export DSN -> Freerouting -> import SES -> refill; optionally lock
+    everything routed so a later pass treats it as fixed."""
+    board = load_with_power_class()
+    if not pcbnew.ExportSpecctraDSN(board, DSN_PATH):
+        sys.exit("DSN export failed")
+    print("exported", DSN_PATH, "routable layers:", routable)
+    result = subprocess.run(
+        [
+            "java", "-jar", FREEROUTING_JAR,
+            "-de", DSN_PATH, "-do", SES_PATH,
+            "--gui.enabled=false",
+            f"--router.layers.routable={routable}",
+            "-mp", "120",
+        ],
+        cwd=BOARD_DIR,
+    )
+    if result.returncode != 0:
+        sys.exit(f"Freerouting failed with exit code {result.returncode}")
+    if not pcbnew.ImportSpecctraSES(board, SES_PATH):  # keeps locked tracks
+        sys.exit("SES import failed")
+    print("imported", SES_PATH)
+    if lock_result:
+        for t in board.GetTracks():
+            t.SetLocked(True)
+    filler = pcbnew.ZONE_FILLER(board)
+    filler.Fill(board.Zones())  # re-fill so zones carve clearance around the new vias
+    board.Save(BOARD_PATH)
+    print("saved", BOARD_PATH)
+
+
+if COPPER_LAYERS == 4:
+    # Layer order as written into the DSN (confirmed by inspection, not
+    # assumed): F.Cu, GND_Plane, Power_Planes, B.Cu. Only the two real
+    # signal layers are routable -- the plane layers are solid pours.
+    freeroute("true,false,false,true", lock_result=False)
+else:
+    # 2-layer (rev 2.4b): B.Cu is the GND pour and may only carry short
+    # jumpers. Freerouting ignores per-layer cost settings in the DSN (it
+    # recomputes trace costs per board), so instead route in two passes:
+    #   1. F.Cu only -- everything that can be routed without crossing.
+    #      Lock the result.
+    #   2. F.Cu + B.Cu -- only the leftover crossings remain, and with the
+    #      pass-1 copper fixed they come out as via -> short B.Cu hop -> via.
+    freeroute("true,false", lock_result=True)
+    freeroute("true,true", lock_result=False)
