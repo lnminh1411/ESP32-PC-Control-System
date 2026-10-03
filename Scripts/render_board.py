@@ -31,7 +31,7 @@ ITEMS = [
     ("In1.Cu", "In1.Cu,Edge.Cuts", "2_inner1_GND.png", "L2 (In1.Cu) - GND plane"),
     ("In2.Cu", "In2.Cu,Edge.Cuts", "3_inner2_5V.png", "L3 (In2.Cu) - 5V plane"),
     ("B.Cu", "B.Cu,Edge.Cuts", "4_bottom_B.Cu.png", "L4 Bottom (B.Cu) - low-speed (X-ray)"),
-    ("F.SilkS", "F.SilkS,F.Cu,Edge.Cuts", "6_silkscreen_top.png", "Top silkscreen over F.Cu"),
+    ("F.SilkS", "F.Cu,F.SilkS,Edge.Cuts", "6_silkscreen_top.png", "Top silkscreen over F.Cu (silk printed on top, as fabbed)"),
 ]
 
 os.makedirs(TMP, exist_ok=True)

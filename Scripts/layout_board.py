@@ -542,7 +542,8 @@ for ref in ("J3", "J4", "J5", "J6", "J7"):
 # (overhanging the bottom edge). Its header pin 1s sit at the BOTTOM: GND on
 # the left row (module's right header), 3V3 on the right row (left header).
 MID = (XL + XR) / 2
-add_label("USB-C END (TOP EDGE)", MM(MID), MM(0.9), CENTER)
+# rev 3.1: was centred at MID, printed over the 12V bus's top run (Y=1.2)
+add_label("USB-C END", MM(XL + 20.8), MM(0.9), CENTER)
 add_label("ESP32-S3 N16R8", MM(MID), MM(52.6), CENTER)
 add_label("ANTENNA END", MM(MID), MM(53.8), CENTER)
 

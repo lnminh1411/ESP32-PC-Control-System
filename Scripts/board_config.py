@@ -12,7 +12,7 @@ COPPER_LAYERS picks the stackup variant:
 Changing it means rebuilding the whole chain from make_blank_pcb.py.
 """
 COPPER_LAYERS = 2
-REVISION = "3.0"
+REVISION = "3.1"
 DATE = "2026-10-03"
 TITLE = "ESP32 PC Controller System"
 

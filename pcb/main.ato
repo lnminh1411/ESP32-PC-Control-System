@@ -334,7 +334,7 @@ module Main:
     disp_rst1 ~ mcu.gpio10
     disp_rst2 ~ mcu.gpio16
     disp_rst3 ~ mcu.gpio15
-    disp_bl1 ~ mcu.gpio13
+    disp_bl1 ~ mcu.gpio3
     disp_bl2 ~ mcu.gpio6
     disp_bl3 ~ mcu.gpio5
     disp_dc ~ mcu.gpio9
@@ -371,7 +371,8 @@ module Main:
     mcu.gpio15 ~ display3.rst
 
     # per-display backlight (rev 2.4): point-to-point
-    mcu.gpio13 ~ display1.bl  # rev 2.4b: was GPIO7 -- pin 19 sits by display 1
+    mcu.gpio3 ~ display1.bl  # rev 3.1: was GPIO13 (pin 19, boxed in by the SCK/MOSI
+    # risers -> its B.Cu jumper cut the GND under them); pin 13 sits below the bus
     mcu.gpio6 ~ display2.bl
     mcu.gpio5 ~ display3.bl
 

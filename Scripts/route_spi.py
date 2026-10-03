@@ -130,8 +130,11 @@ for d, (pin, ln) in enumerate(zip((12, 11, 10), CS_LANE)):
 #   * west lanes (pitch 0.43 beside J1, fanned out to 0.7 in the strip so the
 #     jumper vias fit): RST2 (J1.9), RST3 (J1.8), BL2 (J1.6), BL3 (J1.5);
 #     lower pin = western lane, so the fan-out is planar.
-#   * BL1 = J1 pin 19 (GPIO13): B.Cu jumper under the riser/stair lanes, via,
-#     F.Cu into display 1 pad 8.
+#   * BL1 = J1 pin 13 (GPIO3, rev 3.1): F.Cu east into the empty pocket
+#     between DC's and CS1's stubs, one B.Cu jumper under DC + CS1 only (slow
+#     lines), via, F.Cu into display 1 pad 8. Pin 19 (rev 2.4b-3.0) sat
+#     inside the SCK/MOSI riser loop, so its jumper cut the GND pour right
+#     under the two fast lines.
 EXTRA = []   # (net, layer, width, pts)
 VIAS = []    # (net, x, y)
 if COPPER_LAYERS == 2:
@@ -285,10 +288,13 @@ if COPPER_LAYERS == 2:
             EXTRA.append((net, pcbnew.B_Cu, TRACK_W, [(sx, y), (XD, y)]))
         else:
             EXTRA.append((net, pcbnew.F_Cu, TRACK_W, pts + [(XD, y)]))
-    BL1_VIA_X = XR + 3.75
-    EXTRA.append(("disp_bl1", pcbnew.B_Cu, TRACK_W, [(XR, u1(19)), (BL1_VIA_X, u1(19))]))
-    VIAS.append(("disp_bl1", BL1_VIA_X, u1(19)))
-    EXTRA.append(("disp_bl1", pcbnew.F_Cu, TRACK_W, [(BL1_VIA_X, u1(19)), (BL1_VIA_X, dpad(0, 8)),
+    BL1_V1 = (XR + 2.1, u1(15) + 0.72)        # pocket below DC's stub, west of CS1
+    BL1_V2 = (XD - 1.85, dpad(0, 8) + 1.44)   # pocket west of display 1 pad 8
+    EXTRA.append(("disp_bl1", pcbnew.F_Cu, TRACK_W, [(XR, u1(13)), (BL1_V1[0], u1(13)), BL1_V1]))
+    EXTRA.append(("disp_bl1", pcbnew.B_Cu, TRACK_W, [BL1_V1, BL1_V2]))
+    VIAS.append(("disp_bl1",) + BL1_V1)
+    VIAS.append(("disp_bl1",) + BL1_V2)
+    EXTRA.append(("disp_bl1", pcbnew.F_Cu, TRACK_W, [BL1_V2, (BL1_V2[0] + 1.44, dpad(0, 8)),
                                                      (XD, dpad(0, 8))]))
 
 board = pcbnew.LoadBoard(BOARD_PATH)

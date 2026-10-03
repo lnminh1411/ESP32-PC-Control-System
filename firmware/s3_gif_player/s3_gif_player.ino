@@ -71,7 +71,7 @@
 #define TFT_RST  10   // RST1
 #define TFT_MOSI 11   // shared, via 33R (FSPI IO_MUX pin, 80 MHz-capable)
 #define TFT_SCK  12   // shared, via 33R (FSPI IO_MUX pin)
-#define TFT_BL   13   // BL1 -> panel's backlight transistor (HIGH = on)
+#define TFT_BL   3    // BL1 -> panel's backlight transistor (HIGH = on)
 // displays 2/3 sit on the same bus: keep them deselected and dark
 #define TFT2_CS  18
 #define TFT3_CS  17
