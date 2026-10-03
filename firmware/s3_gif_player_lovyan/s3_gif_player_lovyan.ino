@@ -26,11 +26,21 @@
 #include <stdarg.h>
 #include "gif_frames_rle.h"
 
-#define TFT_CS   3
-#define TFT_DC   4
-#define TFT_RST  5
-#define TFT_MOSI 6
-#define TFT_SCK  7
+// Pins: rev 3 carrier board (pcb/main.ato), display 1 socket (J3). SCK/MOSI/
+// DC are shared by all three display sockets; each has its own CS/RST/BL.
+// (Old bench rig -- SuperMini, panel wired to GPIO3-7: CS 3, DC 4, RST 5,
+// MOSI 6, SCK 7.)
+#define TFT_CS   8    // CS1
+#define TFT_DC   9    // shared DC
+#define TFT_RST  10   // RST1
+#define TFT_MOSI 11   // shared, via 33R (FSPI IO_MUX pin, 80 MHz-capable)
+#define TFT_SCK  12   // shared, via 33R (FSPI IO_MUX pin)
+#define TFT_BL   13   // BL1 -> panel's backlight transistor (HIGH = on)
+// displays 2/3 sit on the same bus: keep them deselected and dark
+#define TFT2_CS  18
+#define TFT3_CS  17
+#define TFT2_BL  6
+#define TFT3_BL  5
 
 #define TFT_W 240
 #define TFT_H 320
@@ -108,7 +118,17 @@ void decodeFrame(uint8_t frameIdx) {
   }
 }
 
+// Call first in setup(), before the display library touches the bus.
+static void boardPinsInit() {
+  pinMode(TFT2_CS, OUTPUT); digitalWrite(TFT2_CS, HIGH);
+  pinMode(TFT3_CS, OUTPUT); digitalWrite(TFT3_CS, HIGH);
+  pinMode(TFT2_BL, OUTPUT); digitalWrite(TFT2_BL, LOW);
+  pinMode(TFT3_BL, OUTPUT); digitalWrite(TFT3_BL, LOW);
+  pinMode(TFT_BL, OUTPUT);  digitalWrite(TFT_BL, HIGH);
+}
+
 void setup() {
+  boardPinsInit();
   Serial.begin(115200);
   delay(200);
 

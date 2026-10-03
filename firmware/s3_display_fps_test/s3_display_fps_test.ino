@@ -1,32 +1,14 @@
 // ============================================================
-// S3 + GMT020-02-7P (ST7789, 240x320, 7-pin SPI) — Hello World + FPS test
+// S3 + ST7789 240x320 SPI panel (rev 3 board: GMT024-08-SPI8P) — Hello World + FPS test
 // ============================================================
-// Wiring per diagrams/schematic screenshot (2026-09-29 test wiring),
-// traced from wire color at the display header to the SuperMini's
-// numbered GPIO pins:
+// Pins: the rev 3 carrier board's display 1 socket (J3) -- see the #defines
+// below. The panel plugs straight into the board: VCC comes from the module's
+// 5Vin (the GMT024 panel has its own 3.3V regulator), GND from the board.
 //
-//   Display pin (left->right on header)  ->  S3 pin
-//   CS                                   ->  GPIO3
-//   DC                                   ->  GPIO4
-//   RST                                  ->  GPIO5
-//   SDA (MOSI)                           ->  GPIO6
-//   SCL (SCK)                            ->  GPIO7
-//   VCC                                  ->  3V3  (MUST be 3.3V — no level
-//                                              shifter/regulator on this
-//                                              module, do NOT wire to 5V/BAT)
-//   GND                                  ->  GND
-//
-// CS/DC/RST/SDA/SCL order above is the module's *typical* silkscreen order
-// (confirmed for GMT020-02 VER:1.1 boards via web search) applied to the
-// wire colors read off the schematic screenshot. The screenshot resolution
-// was too low to OCR the actual printed labels on your VER:1.3 board and
-// revisions can differ — if the screen stays blank/garbled after upload,
-// the wiring is still fine electrically (all 5 are just logic GPIOs, no
-// damage risk), it just means two of CS/DC/RST/SCL/SDA are swapped: check
-// the real silkscreen on your board and fix the #defines below.
-//
-// VCC->3V3 is the one wire worth actually verifying before power-on: if it
-// landed on the S3's 5V or BAT pin instead, that overvolts the panel.
+// History: these sketches were first brought up on a bench rig (SuperMini +
+// GMT020-02 panel wired CS/DC/RST/SDA/SCL -> GPIO3/4/5/6/7, VCC on 3V3 --
+// that bare GMT020 module had no regulator and must NOT see 5V). To run on
+// that rig again, put the old pin numbers back and drop boardPinsInit().
 //
 // Libraries needed (Library Manager):
 //   "Adafruit GFX Library"
@@ -38,11 +20,21 @@
 #include <Adafruit_ST7789.h>
 #include <SPI.h>
 
-#define TFT_CS   3
-#define TFT_DC   4
-#define TFT_RST  5
-#define TFT_MOSI 6
-#define TFT_SCK  7
+// Pins: rev 3 carrier board (pcb/main.ato), display 1 socket (J3). SCK/MOSI/
+// DC are shared by all three display sockets; each has its own CS/RST/BL.
+// (Old bench rig -- SuperMini, panel wired to GPIO3-7: CS 3, DC 4, RST 5,
+// MOSI 6, SCK 7.)
+#define TFT_CS   8    // CS1
+#define TFT_DC   9    // shared DC
+#define TFT_RST  10   // RST1
+#define TFT_MOSI 11   // shared, via 33R (FSPI IO_MUX pin, 80 MHz-capable)
+#define TFT_SCK  12   // shared, via 33R (FSPI IO_MUX pin)
+#define TFT_BL   13   // BL1 -> panel's backlight transistor (HIGH = on)
+// displays 2/3 sit on the same bus: keep them deselected and dark
+#define TFT2_CS  18
+#define TFT3_CS  17
+#define TFT2_BL  6
+#define TFT3_BL  5
 
 #define TFT_W 240
 #define TFT_H 320
@@ -54,7 +46,17 @@ uint32_t frameCount = 0;
 uint32_t fpsWindowStart = 0;
 uint16_t fps = 0;
 
+// Call first in setup(), before the display library touches the bus.
+static void boardPinsInit() {
+  pinMode(TFT2_CS, OUTPUT); digitalWrite(TFT2_CS, HIGH);
+  pinMode(TFT3_CS, OUTPUT); digitalWrite(TFT3_CS, HIGH);
+  pinMode(TFT2_BL, OUTPUT); digitalWrite(TFT2_BL, LOW);
+  pinMode(TFT3_BL, OUTPUT); digitalWrite(TFT3_BL, LOW);
+  pinMode(TFT_BL, OUTPUT);  digitalWrite(TFT_BL, HIGH);
+}
+
 void setup() {
+  boardPinsInit();
   Serial.begin(115200);
 
   tftSPI.begin(TFT_SCK, -1 /* no MISO */, TFT_MOSI, TFT_CS);

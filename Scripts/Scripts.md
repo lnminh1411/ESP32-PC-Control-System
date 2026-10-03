@@ -98,7 +98,7 @@ Auto-routes the remaining (low-speed) signal nets around the locked display bus 
 
 ## render_board.py
 
-Refreshes `pcb/build/renders/`: one PNG per copper layer (F.Cu, In1 GND + In2 5V on 4-layer boards only, B.Cu), top silkscreen over F.Cu, and the slanted 3D overview (also copied to `pcb/build/board_preview.png`) via `kicad-cli` SVG export + pymupdf. Runs under the system Python (needs pymupdf + Pillow); intermediates go to `K:\scratch\pdf`. Run after the full routing chain + DRC pass.
+Refreshes `pcb/build/renders/` (every image carries the board measurements in mm/cm/in, read from Edge.Cuts: the overall size as a caption, dimension lines for main body width/length, strip width and strip length below the main body on the 2D views, a caption box on the 3D view): one PNG per copper layer (F.Cu, In1 GND + In2 5V on 4-layer boards only, B.Cu), top silkscreen over F.Cu, and the slanted 3D overview (also copied to `pcb/build/board_preview.png`) via `kicad-cli` SVG export + pymupdf. Runs under the system Python (needs pymupdf + Pillow); intermediates go to `K:\scratch\pdf`. Run after the full routing chain + DRC pass.
 
 ```bash
 python "E:\ESP32 PC Controller\Scripts\render_board.py"
