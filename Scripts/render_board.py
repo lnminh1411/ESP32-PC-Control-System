@@ -15,7 +15,7 @@ import subprocess
 import pymupdf
 from PIL import Image, ImageDraw, ImageFont
 
-ROOT = r"E:\ESP32 PC Controller"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # repo root (worktree-safe)
 KC = r"C:\Program Files\KiCad\10.0\bin\kicad-cli.exe"
 BOARD = os.path.join(ROOT, r"pcb\layouts\default\default.kicad_pcb")
 OUT = os.path.join(ROOT, r"pcb\build\renders")

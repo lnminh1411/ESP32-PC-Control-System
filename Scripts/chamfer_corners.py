@@ -16,11 +16,13 @@ anyway). Sub-10um segments are merged into their neighbours first. Nested bus la
 lane pitch the diagonals end up 0.71mm apart, more than the straight runs.
 """
 import math
+import os
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # repo root (worktree-safe)
 from collections import defaultdict
 
 import pcbnew
 
-BOARD_PATH = r"E:\ESP32 PC Controller\pcb\layouts\default\default.kicad_pcb"
+BOARD_PATH = os.path.join(ROOT, "pcb", "layouts", "default", "default.kicad_pcb")
 MM = pcbnew.FromMM
 CHAMFER = 0.5
 MIN_CHAMFER = 0.12

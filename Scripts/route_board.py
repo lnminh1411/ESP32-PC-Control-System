@@ -36,11 +36,13 @@ zone/via clearance violation (seen in practice: 16 real errors right
 after SES import, 0 after re-filling).
 """
 import subprocess
+import os
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # repo root (worktree-safe)
 import sys
 
 import pcbnew
 
-BOARD_DIR = r"E:\ESP32 PC Controller\pcb\layouts\default"
+BOARD_DIR = os.path.join(ROOT, "pcb", "layouts", "default")
 BOARD_PATH = BOARD_DIR + r"\default.kicad_pcb"
 DSN_PATH = BOARD_DIR + r"\default.dsn"
 SES_PATH = BOARD_DIR + r"\default.ses"

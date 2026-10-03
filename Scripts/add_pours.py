@@ -20,8 +20,10 @@ pads automatically, with no explicit traces or vias required for GND/5V.
     "C:\\Program Files\\KiCad\\10.0\\bin\\python.exe" Scripts\\add_pours.py
 """
 import pcbnew
+import os
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # repo root (worktree-safe)
 
-BOARD_PATH = r"E:\ESP32 PC Controller\pcb\layouts\default\default.kicad_pcb"
+BOARD_PATH = os.path.join(ROOT, "pcb", "layouts", "default", "default.kicad_pcb")
 MM = pcbnew.FromMM
 
 board = pcbnew.LoadBoard(BOARD_PATH)
@@ -64,12 +66,15 @@ gnd_zone = add_plane("gnd", pcbnew.In1_Cu, "GND_pour")
 pwr_zone = add_plane("v5", pcbnew.In2_Cu, "5V_pour")
 
 # ---- antenna keepout ----
-# Rev 3: module mounted rotated (USB-C at the top edge), so the antenna end
+# Rev 2.0: module mounted rotated (USB-C at the top edge), so the antenna end
 # is at the BOTTOM: socket pin 1 at Y=56.34, PCB antenna starts ~4mm past it
-# and overhangs the main body's bottom edge (~Y=59.8). Keepout spans between
-# the two socket columns' courtyards (X=21.1/46.5 rows) from Y=54.5 down past
+# and overhangs the main body's bottom edge (~Y=58.5). Keepout spans between
+# the two socket columns' courtyards from Y=54.5 down past
 # the edge, so no plane copper runs up to the antenna end.
-ANT_X0, ANT_X1, ANT_Y0, ANT_Y1 = 22.7, 44.9, 54.5, 62.0
+# X span follows the socket columns (J2/J1 positions), so it tracks layout changes
+xl = board.FindFootprintByReference("J2").GetPosition().x / 1e6
+xr = board.FindFootprintByReference("J1").GetPosition().x / 1e6
+ANT_X0, ANT_X1, ANT_Y0, ANT_Y1 = xl + 1.6, xr - 1.6, 54.5, 62.0
 keep = pcbnew.ZONE(board)
 keep.SetIsRuleArea(True)
 keep.SetZoneName("ANTENNA_KEEPOUT")

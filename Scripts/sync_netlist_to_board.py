@@ -28,20 +28,41 @@ there's nothing per-net worth preserving across a re-sync the way
 placement is.
 
 Usage:
-    cd "E:\\ESP32 PC Controller\\pcb" && PYTHONIOENCODING=utf-8 ato build
-    "C:\\Program Files\\KiCad\\10.0\\bin\\python.exe" ^
-        "E:\\ESP32 PC Controller\\Scripts\\sync_netlist_to_board.py"
+    cd pcb && PYTHONIOENCODING=utf-8 ato build
+    "C:\\Program Files\\KiCad\\10.0\\bin\\python.exe" Scripts\\sync_netlist_to_board.py
 (must run under KiCad's own bundled Python -- that's the only one with
 the pcbnew module installed.)
 """
 import re
 import pcbnew
+import os
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # repo root (worktree-safe)
 
-NET_PATH = r"E:\ESP32 PC Controller\pcb\build\default.net"
-BOARD_PATH = r"E:\ESP32 PC Controller\pcb\layouts\default\default.kicad_pcb"
+NET_PATH = os.path.join(ROOT, "pcb", "build", "default.net")
+BOARD_PATH = os.path.join(ROOT, "pcb", "layouts", "default", "default.kicad_pcb")
 FPBASE = r"C:\Program Files\KiCad\10.0\share\kicad\footprints"
 # project-local custom footprints (lib name used in main.ato -> .pretty dir)
-LOCAL_LIBS = {"ESP32PCC": r"E:\ESP32 PC Controller\pcb\footprints\ESP32PCC.pretty"}
+LOCAL_LIBS = {"ESP32PCC": os.path.join(ROOT, "pcb", "footprints", "ESP32PCC.pretty")}
+# Board references are derived from the atopile INSTANCE name, not taken from
+# atopile's own U1..Un numbering: that numbering is pure declaration order,
+# so removing one part (rev 2.3 dropped the spare header) renumbered every part
+# after it -- and every ref-keyed placement/route in the later scripts with
+# it. Instance names only change when main.ato says so.
+REF_BY_INSTANCE = {"mcu.left": "J1", "mcu.right": "J2", "display1": "J3", "display2": "J4",
+                   "display3": "J5", "rst_out": "J6", "keyfob": "J7", "boost": "PS1",
+                   "led1": "D1"}
+
+
+def board_ref(inst):
+    """optoN -> UN, rN -> RN, everything else from REF_BY_INSTANCE."""
+    if inst in REF_BY_INSTANCE:
+        return REF_BY_INSTANCE[inst]
+    m = re.fullmatch(r"(opto|r)(\d+)", inst)
+    if m:
+        return ("U" if m.group(1) == "opto" else "R") + m.group(2)
+    raise SystemExit(f"no board reference for atopile instance {inst!r} -- add it to REF_BY_INSTANCE")
+
+
 INSTANCE_VALUES = {**{f"r{i}": "270R" for i in range(1, 7)}, "r7": "10k", "r8": "33R", "r9": "33R",
                    **{f"r{i}": "10k" for i in range(10, 14)}}
 
@@ -61,7 +82,8 @@ def parse_netlist(path):
         # descriptions (the 10k pull-down comes out labelled Resistor270), so
         # part values are keyed off the instance name instead.
         desc = INSTANCE_VALUES.get(m.group("inst"), m.group("desc"))
-        components[m.group("ref")] = {"footprint": m.group("fp"), "desc": desc}
+        components[m.group("ref")] = {"footprint": m.group("fp"), "desc": desc,
+                                      "board_ref": board_ref(m.group("inst"))}
 
     nets_section = text[text.index("(nets"):]
     net_start_re = re.compile(r'\(net \(code "(\d+)"\) \(name "([^"]*)"\)')
@@ -130,8 +152,9 @@ def main():
 
     placed = {}
     new_count = 0
-    for ref in sorted(components, key=lambda r: int(r[1:])):
-        info = components[ref]
+    for net_ref in sorted(components, key=lambda r: int(r[1:])):
+        info = components[net_ref]
+        ref = info["board_ref"]
         if ref in existing:
             placed[ref] = existing[ref]
             continue
@@ -147,8 +170,11 @@ def main():
         board.Add(fp)
         placed[ref] = fp
         new_count += 1
+    # netlist nodes name atopile's refs; map them to the placed footprints
+    placed_by_net_ref = {r: placed[c["board_ref"]] for r, c in components.items()
+                         if c["board_ref"] in placed}
 
-    stale = set(existing) - set(components)
+    stale = set(existing) - {c["board_ref"] for c in components.values()}
     for ref in sorted(stale):
         print(f"  ! {ref} is on the board but no longer in the netlist "
               f"-- left in place, remove it by hand if it's really gone")
@@ -173,7 +199,7 @@ def main():
             netinfo = pcbnew.NETINFO_ITEM(board, net_name)
             board.Add(netinfo)
         for ref, pin in nodes:
-            fp = placed.get(ref)
+            fp = placed_by_net_ref.get(ref)
             if fp is None:
                 continue
             pad = fp.FindPadByNumber(pin)

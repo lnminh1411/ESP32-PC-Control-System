@@ -1,6 +1,6 @@
 """
 Verifies the display-bus routing that route_spi.py lays down: every display
-net (SCK, MOSI, DC, RST + CS1-3) is F.Cu only, has no vias, has NO node
+net (SCK, MOSI, DC, RST1 + CS1-3; RST2/3 are Freerouted) is F.Cu only, has no vias, has NO node
 where 3+ track ends meet (a T-junction / star), and walks as a single chain
 from the MCU pad through each display pad in order.
 
@@ -11,11 +11,13 @@ Coordinates are compared at 1um resolution: pad centres on the 180-degree
 display sockets land ~1nm off round mm values.
 """
 import pcbnew
+import os
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # repo root (worktree-safe)
 from collections import Counter
 mm=pcbnew.ToMM
-b=pcbnew.LoadBoard(r"E:\ESP32 PC Controller\pcb\layouts\default\default.kicad_pcb")
+b=pcbnew.LoadBoard(os.path.join(ROOT, "pcb", "layouts", "default", "default.kicad_pcb"))
 fps={f.GetReference():f for f in b.GetFootprints()}
-nets=["gpio12","disp_sck","gpio11","disp_mosi","disp_dc","disp_rst"]+[fps[r].FindPadByNumber("7").GetNetname() for r in ("U4","U5","U6")]
+nets=["gpio12","disp_sck","gpio11","disp_mosi","disp_dc","disp_rst1"]+[fps[r].FindPadByNumber("7").GetNetname() for r in ("J3","J4","J5")]
 for n in nets:
     tr=[t for t in b.GetTracks() if t.GetNetname()==n]
     deg=Counter()
@@ -24,7 +26,7 @@ for n in nets:
     pads={(round(p.GetPosition().x,-3),round(p.GetPosition().y,-3)):f"{p.GetParentFootprint().GetReference()}.{p.GetNumber()}" for p in b.GetPads() if p.GetNetname()==n}
     tees=[(round(mm(x),2),round(mm(y),2),d) for (x,y),d in deg.items() if d>=3]
     order=[]  # walk chain from the MCU pad
-    start=[k for k,v in pads.items() if v.split(".")[0] not in ("U4","U5","U6")][0]  # MCU pad or its series resistor
+    start=[k for k,v in pads.items() if v.split(".")[0] not in ("J3","J4","J5")][0]  # MCU pad or its series resistor
     adj={}
     for t in tr:
         a=(round(t.GetStart().x,-3),round(t.GetStart().y,-3)); c=(round(t.GetEnd().x,-3),round(t.GetEnd().y,-3))

@@ -16,8 +16,9 @@ the pcbnew module installed.)
 """
 import pcbnew
 import os
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # repo root (worktree-safe)
 
-OUT = r"E:\ESP32 PC Controller\pcb\layouts\default\default.kicad_pcb"
+OUT = os.path.join(ROOT, "pcb", "layouts", "default", "default.kicad_pcb")
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
 
 board = pcbnew.BOARD()
@@ -29,6 +30,13 @@ board.SetCopperLayerCount(4)
 # (see pcb/README.md) so it's unambiguous in the layer picker.
 board.SetLayerName(pcbnew.In1_Cu, "GND_Plane")
 board.SetLayerName(pcbnew.In2_Cu, "Power_Planes")
+
+# title block: bump REVISION/DATE here when the layout changes
+REVISION, DATE = "2.3", "2026-10-03"
+tb = board.GetTitleBlock()
+tb.SetTitle("ESP32 PC Controller System")
+tb.SetRevision(REVISION)
+tb.SetDate(DATE)
 
 pcbnew.SaveBoard(OUT, board)
 print("wrote", OUT)

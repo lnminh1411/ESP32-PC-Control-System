@@ -5,25 +5,25 @@
 # 8MB PSRAM, dual USB-C), 5V->12V boost module (soldered on), 3x ST7789
 # display header (shared SPI bus, per-display CS), 5x EL817C/PC817
 # optocoupler bank, 1x status LED, 6x 270R + 5x 10k + 2x 33R, 1x 1x6
-# keyfob connector, 1x isolated motherboard-RST pair, and one
-# consolidated spare-pin expansion header.
+# keyfob connector and 1x isolated motherboard-RST pair. (The 1x16 spare-
+# GPIO header was dropped in rev 2.3 to shrink the board.)
 #
 # Single-MCU architecture (2026-09-30 pivot, superseding the earlier
 # dual-MCU SuperMini+DevKit design). All three displays, the 5-row
 # optocoupler bank, and the motherboard RST line are now driven from one
-# ESP32-S3-N16R8 module. Netlist reverse-engineered from
-# diagrams/circuit_image.png via pixel-level exact-color wire tracing
-# (this tool has a history of color-collision bugs in its exports, so
-# every net below was confirmed at both endpoints, not eyeballed).
+# ESP32-S3-N16R8 module. Netlist originally reverse-engineered from a
+# circuit drawing (since removed from the repo; this file is the source
+# of truth now), every net confirmed at both endpoints.
 #
 # Pin mapping (confirmed):
 #   - Display bus (shared across all 3 panels): SDA/MOSI=GPIO11 and
 #     SCL/SCK=GPIO12 (FSPI IO_MUX pins -- 80MHz-capable), each through a
-#     33R series resistor at the module. RST=GPIO10, DC=GPIO9. Per-display
-#     CS: CS1=GPIO8 (display 1), CS2=GPIO18 (display 2), CS3=GPIO17
-#     (display 3). (2026-10-02: moved from RST=6/DC=7/CS=17/16/15 so the
-#     whole bus sits on adjacent module pins 10-18 facing the displays --
-#     the module is mounted rotated 180deg, USB-C to the board's top edge.)
+#     33R series resistor at the module, DC=GPIO9. Per-display CS:
+#     CS1=GPIO8, CS2=GPIO18, CS3=GPIO17. Per-display RST (rev 2.3, was one
+#     shared GPIO10): RST1=GPIO10, RST2=GPIO16, RST3=GPIO15, so one hung
+#     panel can be reset without blanking the other two. Everything sits
+#     on module pins 8-18 facing the displays (module rotated 180deg,
+#     USB-C to the board's top edge).
 #   - Display VCC is wired to the module's 5Vin pin, not 3V3 — CONFIRMED
 #     INTENTIONAL by the user, not a bug: the final display part carries its
 #     own onboard 5V->3.3V regulator, which avoids loading the module's
@@ -33,8 +33,8 @@
 #     bussed to rows 1-4 collectors, emitters out to the 1x6 keyfob
 #     connector). Row 5 is the motherboard hardware-reset line: its
 #     collector/emitter go ONLY to the RST pair, never to the 12V bus.
-#     GPIO39 has a 10k pull-down so the reset opto stays off whenever
-#     firmware isn't driving the pin.
+#     All five opto GPIOs have a 10k pull-down so no opto can turn on
+#     while firmware isn't driving its pin (boot, flashing, crash).
 #   - Status LED: GPIO21 -> 270R -> single LED -> GND. Down from 2 LEDs
 #     in the old dual-MCU design (one per board) to 1.
 #   - USB-OTG (motherboard front-panel USB passthrough) needs NO carrier
@@ -68,17 +68,19 @@ component Resistor270:
     footprint = "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal"
 
 component Resistor10k:
-    """GPIO39 pull-down: holds the motherboard-reset opto off while firmware
-    isn't driving the pin (boot, flashing, crash, deep sleep). Must stay
-    <=~20k to beat a possible ~45k internal pull-up at reset."""
+    """Opto GPIO pull-down (5x: GPIO39 reset row + GPIO1/42/41/40 doors):
+    holds the opto off while firmware isn't driving the pin (boot,
+    flashing, crash, deep sleep). Must stay <=~20k to beat a possible ~45k
+    internal pull-up at reset."""
     signal p1 ~ pin 1
     signal p2 ~ pin 2
     footprint = "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal"
 
 component Resistor33:
-    """33R THT series (source) termination on SCK / MOSI, placed in the
-    board's top-right corner next to the module: damps reflections on the
-    ~140mm daisy-chained display bus. Fit a wire link (0R) to disable."""
+    """33R THT series (source) termination on SCK / MOSI, lying flat in the
+    board's top-right corner next to the module (MOSI's on the top row, SCK's
+    below it): damps reflections on the daisy-chained display bus. Fit a
+    wire link (0R) to disable."""
     signal p1 ~ pin 1
     signal p2 ~ pin 2
     footprint = "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal"
@@ -231,7 +233,7 @@ component DisplaySocket:
     mates with this order when the panel lies DISPLAY SIDE UP, coplanar
     with the board; back side up reverses it (panel DC lands on 5V). The
     socket overhangs the board edge slightly so the panel's header clears
-    it. Sockets sit at 57mm pitch (37mm panel + 20mm gap). Each pad is
+    it. Sockets sit at 43mm pitch (37mm panel + 6mm gap). Each pad is
     labelled on the silkscreen."""
     signal gnd  ~ pin 1
     signal vcc  ~ pin 2
@@ -266,33 +268,6 @@ component IsolatedPair:
     signal p2 ~ pin 2
     footprint = "Connector_PinSocket_2.54mm:PinSocket_1x02_P2.54mm_Horizontal"
 
-component SpareHeader:
-    """1x16 male — unused module GPIOs, for later expansion. Left-column
-    spares: 4,5,6,7,15,16,3,46,13,14. Right-column spares: 2,38,0,45,48,47.
-    Deliberately NOT broken out: GPIO35/36/37 (octal PSRAM on N16R8 --
-    touching them crashes the cache) and GPIO19/20 (USB D-/D+, carrying
-    the OTG link to the motherboard -- a header tap is a stub on the USB
-    pair). Strapping pins 0/3/45/46 are here but must not be pulled at
-    boot. GPIO48 drives the module's onboard WS2812. txd0/rxd0 left off
-    (reserved for a future serial-debug header)."""
-    signal gpio4  ~ pin 1
-    signal gpio5  ~ pin 2
-    signal gpio6  ~ pin 3
-    signal gpio7  ~ pin 4
-    signal gpio15 ~ pin 5
-    signal gpio16 ~ pin 6
-    signal gpio3  ~ pin 7
-    signal gpio46 ~ pin 8
-    signal gpio13 ~ pin 9
-    signal gpio14 ~ pin 10
-    signal gpio2  ~ pin 11
-    signal gpio38 ~ pin 12
-    signal gpio0  ~ pin 13
-    signal gpio45 ~ pin 14
-    signal gpio48 ~ pin 15
-    signal gpio47 ~ pin 16
-    footprint = "Connector_PinHeader_2.54mm:PinHeader_1x16_P2.54mm_Vertical"
-
 # ---- top level -------------------------------------------------------------
 
 module Main:
@@ -303,7 +278,6 @@ module Main:
     display3 = new DisplaySocket
     rst_out = new IsolatedPair
     keyfob = new KeyfobSocket
-    spare = new SpareHeader
 
     opto1 = new Optocoupler  # door button row 1
     opto2 = new Optocoupler  # door button row 2
@@ -320,7 +294,7 @@ module Main:
     r7 = new Resistor10k  # GPIO39 pull-down (motherboard-reset row)
     r8 = new Resistor33  # SCK series termination
     r9 = new Resistor33  # MOSI series termination
-    # rev 3.1: 10k pull-downs on the four door-button opto GPIOs, same reason
+    # rev 2.1: 10k pull-downs on the four door-button opto GPIOs, same reason
     # as r7 -- GPIO40/41/42 are JTAG pins like GPIO39 and can come up with a
     # weak (~45k) pull-up during reset/boot/flashing; ~50uA through the opto
     # LED is enough for the fob's CMOS button input to see a phantom press.
@@ -338,7 +312,9 @@ module Main:
     signal gnd
     signal v5
     signal v12
-    signal disp_rst
+    signal disp_rst1
+    signal disp_rst2
+    signal disp_rst3
     signal disp_dc
     signal disp_mosi
     signal disp_sck
@@ -348,7 +324,9 @@ module Main:
     gnd ~ mcu.gnd_l
     v5 ~ mcu.vin_5v
     v12 ~ boost.out_pos
-    disp_rst ~ mcu.gpio10
+    disp_rst1 ~ mcu.gpio10
+    disp_rst2 ~ mcu.gpio16
+    disp_rst3 ~ mcu.gpio15
     disp_dc ~ mcu.gpio9
     disp_mosi ~ r9.p2   # display side of the series resistor
     disp_sck ~ r8.p2
@@ -377,9 +355,10 @@ module Main:
     mcu.gnd_l ~ boost.in_neg
 
     # ---- display SPI (shared bus, per-display CS) ----
+    # per-display RST (rev 2.3): point-to-point, not daisy-chained
     mcu.gpio10 ~ display1.rst
-    mcu.gpio10 ~ display2.rst
-    mcu.gpio10 ~ display3.rst
+    mcu.gpio16 ~ display2.rst
+    mcu.gpio15 ~ display3.rst
 
     mcu.gpio9 ~ display1.dc
     mcu.gpio9 ~ display2.dc
@@ -454,21 +433,3 @@ module Main:
     # ---- status LED ----
     mcu.gpio21 ~ r6.p1
     r6.p2 ~ led1.a
-
-    # ---- spare / expansion header ----
-    mcu.gpio4 ~ spare.gpio4
-    mcu.gpio5 ~ spare.gpio5
-    mcu.gpio6 ~ spare.gpio6
-    mcu.gpio7 ~ spare.gpio7
-    mcu.gpio15 ~ spare.gpio15
-    mcu.gpio16 ~ spare.gpio16
-    mcu.gpio3 ~ spare.gpio3
-    mcu.gpio46 ~ spare.gpio46
-    mcu.gpio13 ~ spare.gpio13
-    mcu.gpio14 ~ spare.gpio14
-    mcu.gpio2 ~ spare.gpio2
-    mcu.gpio38 ~ spare.gpio38
-    mcu.gpio0 ~ spare.gpio0
-    mcu.gpio45 ~ spare.gpio45
-    mcu.gpio48 ~ spare.gpio48
-    mcu.gpio47 ~ spare.gpio47

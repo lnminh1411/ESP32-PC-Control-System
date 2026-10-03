@@ -15,8 +15,9 @@ KiCad scales VRML by 2.54 (1 unit = 0.1"), so everything is divided by 2.54.
 Re-run after changing BOOST_H.
 """
 import os
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # repo root (worktree-safe)
 
-OUT = r"E:\ESP32 PC Controller\pcb\footprints\ESP32PCC.3dshapes"
+OUT = os.path.join(ROOT, "pcb", "footprints", "ESP32PCC.3dshapes")
 U = 2.54
 HEADER_PLASTIC = 2.5    # standard 2.54mm male header spacer
 BOOST_PCB = 1.0         # module PCB thickness (approx.)
