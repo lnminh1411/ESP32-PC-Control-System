@@ -103,3 +103,11 @@ Refreshes `pcb/build/renders/` (every image carries the board measurements in mm
 ```bash
 python "E:\ESP32 PC Controller\Scripts\render_board.py"
 ```
+
+## gif_stream.py
+
+Streams a GIF to `firmware/s3_gif_stream_test` over the ESP32's USB-UART (3 Mbaud, default COM15) as raw big-endian RGB565: every original frame, scaled to fit 240x320, with a checksum per frame and resend on mismatch. The sketch draws each frame as it arrives, stores it in PSRAM, saves the set to its FAT partition (so it replays on every boot without the PC), then loops the whole GIF at its own frame timing (raw esp_lcd DMA push, ~15 ms/frame at 80 MHz); the script prints the device's FPS / push-time log for `--watch` seconds. Runs under the system Python (needs pyserial, numpy, Pillow).
+
+```bash
+python "E:\ESP32 PC Controller\Scripts\gif_stream.py" K:\scratch\neuro_source.gif --port COM15 --watch 15
+```
