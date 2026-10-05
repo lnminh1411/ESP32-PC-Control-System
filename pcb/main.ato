@@ -1,5 +1,5 @@
 # ============================================================
-# ESP32 PC Controller — carrier PCB
+# ESP32 PC Control System — carrier PCB
 # ============================================================
 # Houses: ESP32-S3-N16R8 DevKitC-1-style module (44-pin/2x22, 16MB flash/
 # 8MB PSRAM, dual USB-C), 5V->12V boost module (soldered on), 3x ST7789

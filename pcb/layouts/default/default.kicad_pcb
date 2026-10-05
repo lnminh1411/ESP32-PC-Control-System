@@ -8,7 +8,7 @@
 	)
 	(paper "A4")
 	(title_block
-		(title "ESP32 PC Controller System")
+		(title "ESP32 PC Control System")
 		(date "2026-10-03")
 		(rev "3.1")
 	)

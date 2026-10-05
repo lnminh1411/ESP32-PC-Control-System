@@ -14,7 +14,7 @@ Changing it means rebuilding the whole chain from make_blank_pcb.py.
 COPPER_LAYERS = 2
 REVISION = "3.1"
 DATE = "2026-10-03"
-TITLE = "ESP32 PC Controller System"
+TITLE = "ESP32 PC Control System"
 
 # Power nets (routed as tracks on the 2-layer board) -- net class "Power"
 # in pcb/layouts/default/default.kicad_pro sets their width
