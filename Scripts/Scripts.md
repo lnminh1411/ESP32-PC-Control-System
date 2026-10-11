@@ -111,3 +111,11 @@ Streams a GIF to `firmware/s3_gif_stream_test` over the ESP32's USB-UART (3 Mbau
 ```bash
 python "E:\ESP32 PC Controller\Scripts\gif_stream.py" K:\scratch\neuro_source.gif --port COM15 --watch 15
 ```
+
+## export_gerbers.py
+
+Writes the fab package to `K:\artifacts\<TITLE>_rev<REVISION>_gerbers\` plus a `.zip` beside it (`TITLE`/`REVISION` from `board_config.py`): Gerbers for copper, mask, paste, silkscreen and Edge.Cuts, Excellon drills split PTH/NPTH with Gerber X2 drill maps, and the `.gbrjob`. Files are renamed from KiCad's `default-*` to `<TITLE>-*` (e.g. `ESP32_PC_Control_System-F_Cu.gtl`), with the `.gbrjob` file list and each Gerber's X2 project id rewritten to match. It plots the zone fill already stored in the board (the one DRC checked) and clears the output folder on every run. Runs under the system Python; run it after the routing chain + DRC pass.
+
+```bash
+python "E:\ESP32 PC Controller\Scripts\export_gerbers.py"
+```
