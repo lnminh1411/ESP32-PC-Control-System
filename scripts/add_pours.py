@@ -1,35 +1,23 @@
 """
-Adds the copper pours to pcb/layouts/default/default.kicad_pcb, per
-board_config.COPPER_LAYERS:
-  4 layers (rev 2.4):
-  - In1 (GND_Plane): solid pour on net "gnd".
-  - In2 (Power_Planes): solid pour on net "v5" (the module's 5Vin rail).
-  2 layers (rev 2.4b):
-  - B.Cu: GND pour on net "gnd" (the return plane under the F.Cu routing);
-    5V becomes a routed Power-class track.
-  Both names are declared explicitly in main.ato (`signal gnd` / `signal v5`)
-  -- before that, atopile named them after a random member pin ("cathode",
-  "vcc").
-  - Antenna keepout: a rule area on ALL copper layers (no tracks, vias or
-    zone fill) under the plugged-in module's PCB antenna, which sits above
-    socket pin 1 between the two rows. Copper (especially the GND plane)
-    directly under the antenna detunes WiFi/BLE. Must exist BEFORE routing so
-    Freerouting (via the DSN export) routes around it.
+Adds the copper pours to pcb/layouts/default/default.kicad_pcb:
+  - B.Cu: GND pour on net "gnd" (the return plane under the F.Cu routing).
+    5V/12V are routed Power-class tracks, not planes. The net names are
+    declared explicitly in main.ato (`signal gnd` / `signal v5`) -- without
+    them atopile names nets after a random member pin ("cathode", "vcc").
+  - Antenna keepout: a rule area on all copper layers (no tracks, vias or
+    zone fill) under the plugged-in module's PCB antenna, between the two
+    socket rows past pin 1. Copper under the antenna detunes WiFi/BLE. Must
+    exist BEFORE routing so Freerouting (via the DSN export) routes around it.
 
-Run AFTER layout_board.py (needs final footprint positions + board outline
-to exist) and BEFORE exporting to Freerouting -- every part on this board
-is through-hole, so THT pad copper already exists on every layer by
-default; a filled zone on these two inner layers connects to same-net
-pads automatically, with no explicit traces or vias required for GND/5V.
+Run AFTER layout_board.py (needs final footprint positions + board outline).
+Every part is through-hole, so THT pad copper exists on both layers and the
+pour connects every GND pad with no explicit traces or vias.
 
-    "C:\\Program Files\\KiCad\\10.0\\bin\\python.exe" Scripts\\add_pours.py
+    <kicad-python> scripts/add_pours.py
 """
 import pcbnew
-import os
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # repo root (worktree-safe)
-from board_config import COPPER_LAYERS
+from board_config import BOARD_PATH
 
-BOARD_PATH = os.path.join(ROOT, "pcb", "layouts", "default", "default.kicad_pcb")
 MM = pcbnew.FromMM
 
 board = pcbnew.LoadBoard(BOARD_PATH)
@@ -68,20 +56,13 @@ def add_plane(net_name, layer, zone_name):
     return zone
 
 
-if COPPER_LAYERS == 4:
-    gnd_zone = add_plane("gnd", pcbnew.In1_Cu, "GND_pour")
-    pwr_zone = add_plane("v5", pcbnew.In2_Cu, "5V_pour")
-    COPPER = (pcbnew.F_Cu, pcbnew.In1_Cu, pcbnew.In2_Cu, pcbnew.B_Cu)
-    POURS = "GND pour (In1, net 'gnd'), 5V pour (In2, net 'v5')"
-else:
-    # 2-layer (rev 2.4b): bottom layer is the GND return plane; 5V is routed
-    # as a Power-class track by Freerouting
-    gnd_zone = add_plane("gnd", pcbnew.B_Cu, "GND_pour")
-    # 0.3mm (vs the 0.5 default) around the ~150 THT pads: more continuous
-    # copper under the F.Cu routing; still > the 0.2mm netclass clearance
-    gnd_zone.SetLocalClearance(MM(0.3))
-    COPPER = (pcbnew.F_Cu, pcbnew.B_Cu)
-    POURS = "GND pour (B.Cu, net 'gnd')"
+# B.Cu is the GND return plane; 5V/12V are routed as Power-class tracks
+gnd_zone = add_plane("gnd", pcbnew.B_Cu, "GND_pour")
+# 0.3mm (vs the 0.5 default) around the ~150 THT pads: more continuous
+# copper under the F.Cu routing; still > the 0.2mm netclass clearance
+gnd_zone.SetLocalClearance(MM(0.3))
+COPPER = (pcbnew.F_Cu, pcbnew.B_Cu)
+POURS = "GND pour (B.Cu, net 'gnd')"
 
 # ---- antenna keepout ----
 # Rev 2.0: module mounted rotated (USB-C at the top edge), so the antenna end

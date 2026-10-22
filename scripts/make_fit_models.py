@@ -8,7 +8,7 @@ Writes simple VRML fit-check models into pcb/footprints/ESP32PCC.3dshapes/:
       real height on the sockets (8.5mm socket + 2.5mm DevKit header plastic),
       attached to U2 by layout_board.py. Only for seeing what fits under it.
 
-    python Scripts\\make_fit_models.py
+    python scripts/make_fit_models.py
 
 Geometry in footprint-local mm with Y flipped (KiCad's 3D Y points up);
 KiCad scales VRML by 2.54 (1 unit = 0.1"), so everything is divided by 2.54.

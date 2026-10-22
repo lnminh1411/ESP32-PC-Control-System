@@ -5,7 +5,7 @@ Run AFTER sync_netlist_to_board.py (needs all 20 footprints already placed
 with correct nets; this script only repositions them + draws the outline/
 mounting holes/copper pours, it doesn't touch netlist/pad assignment).
 
-    "C:\\Program Files\\KiCad\\10.0\\bin\\python.exe" Scripts\\layout_board.py
+    <kicad-python> scripts/layout_board.py
 
 Coordinates below were derived from real measured/confirmed geometry, not
 library defaults:
@@ -31,10 +31,8 @@ this project.
 """
 import pcbnew
 import os
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # repo root (worktree-safe)
-from board_config import COPPER_LAYERS
+from board_config import BOARD_PATH, KICAD_FOOTPRINTS
 
-BOARD_PATH = os.path.join(ROOT, "pcb", "layouts", "default", "default.kicad_pcb")
 RESISTOR_PITCH_MM = 8.128  # 0.32" measured, replaces stock 10.16mm (0.4")
 
 MM = pcbnew.FromMM
@@ -200,34 +198,32 @@ layout = {
 # east, so the btn lines and the anode lines no longer cross (no jumpers).
 # Origin is pin 1, so shift by one row pitch + one pin pitch to keep the body
 # in the same place.
-OPTO_FLIP = COPPER_LAYERS == 2
 # Rev 3: slot order U1-U4 (B1-B4), U5 (RST) top-down -- the output lines
 # cross J2 in that order and run down the west channel, so they arrive at
 # the bottom with J7's lines west of J6's and GPIO2 (J2 pin 5) east-most,
 # exactly the order the sockets need (no crossings).
-if OPTO_FLIP:
-    for ref in ("U1", "U2", "U3", "U4", "U5"):
-        x, y, _ = layout[ref]
-        layout[ref] = (x + 7.62, y + 2.54, 180)
-    # LED anodes rise to the optos' east pins up the DIP corridor, west->east
-    # U1..U5; the drive GPIOs leave J2 top-down 39,40,41,42,1 = U1..U5 (main.ato,
-    # rev 3). West column rows a,b,c = R1,R2,R3 (R2/R3's anodes pass the pads
-    # above on their east side), east column rows a,b = R5,R4 (R4's anode
-    # passes R5 on its west side). Pull-downs: GPIO41/40/39 drop from their
-    # series pad 1 under the west bodies to rows d,e,f; GPIO42 and GPIO1 run
-    # down beside J2, east along the bank's bottom and up either side of the
-    # east pad-1 column (GPIO42 west of it, GPIO1 east) to their series and
-    # pull-down pads. The east column moves 0.85mm east so GPIO42 fits
-    # between it and the anode lanes.
-    EAST = XL + 14.3
-    rows = {"a": 33.3, "b": 36.6, "c": 39.9, "d": 43.2, "e": 46.5, "f": 49.8}
-    WEST = XL + 2.9
-    for ref, (x, r) in {"R1": (WEST, "a"), "R2": (WEST, "b"), "R3": (WEST, "c"),
-                        "R5": (EAST, "a"), "R4": (EAST, "b"),
-                        # 10k pull-downs (pad 1 on the GPIO, pad 2 GND)
-                        "R12": (WEST, "d"), "R13": (WEST, "e"), "R7": (WEST, "f"),
-                        "R11": (EAST, "c"), "R10": (EAST, "d")}.items():
-        layout[ref] = (x, rows[r], 0)
+for ref in ("U1", "U2", "U3", "U4", "U5"):
+    x, y, _ = layout[ref]
+    layout[ref] = (x + 7.62, y + 2.54, 180)
+# LED anodes rise to the optos' east pins up the DIP corridor, west->east
+# U1..U5; the drive GPIOs leave J2 top-down 39,40,41,42,1 = U1..U5 (main.ato,
+# rev 3). West column rows a,b,c = R1,R2,R3 (R2/R3's anodes pass the pads
+# above on their east side), east column rows a,b = R5,R4 (R4's anode
+# passes R5 on its west side). Pull-downs: GPIO41/40/39 drop from their
+# series pad 1 under the west bodies to rows d,e,f; GPIO42 and GPIO1 run
+# down beside J2, east along the bank's bottom and up either side of the
+# east pad-1 column (GPIO42 west of it, GPIO1 east) to their series and
+# pull-down pads. The east column moves 0.85mm east so GPIO42 fits
+# between it and the anode lanes.
+EAST = XL + 14.3
+rows = {"a": 33.3, "b": 36.6, "c": 39.9, "d": 43.2, "e": 46.5, "f": 49.8}
+WEST = XL + 2.9
+for ref, (x, r) in {"R1": (WEST, "a"), "R2": (WEST, "b"), "R3": (WEST, "c"),
+                    "R5": (EAST, "a"), "R4": (EAST, "b"),
+                    # 10k pull-downs (pad 1 on the GPIO, pad 2 GND)
+                    "R12": (WEST, "d"), "R13": (WEST, "e"), "R7": (WEST, "f"),
+                    "R11": (EAST, "c"), "R10": (EAST, "d")}.items():
+    layout[ref] = (x, rows[r], 0)
 AXIAL_REFS = ("R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10", "R11", "R12", "R13")
 for ref, (x, y, angle) in layout.items():
     place(fps[ref], x, y, angle)
@@ -335,11 +331,9 @@ for ref in AXIAL_REFS:
 EDGE_FLUSH = 0.4
 DISPLAY_OVERHANG = 1.0  # socket face past the east edge (panel header clearance)
 MARGIN = 0.3
-STRIP_WEST = XD - 4.3   # strip west edge: CS3 lane + room for the RSTn labels
-if COPPER_LAYERS == 2:
-    # rev 2.4b: the 5V track and the RST2/3 + BL2/3 lanes run down the strip
-    # on F.Cu (on 4 layers 5V is a plane and Freerouting tucks the rest in)
-    STRIP_WEST = XD - 7.6
+# strip west edge: CS3 lane, the 5V track and the RST2/3 + BL2/3 lanes on F.Cu,
+# plus room for the RSTn labels
+STRIP_WEST = XD - 7.6
 STRIP_REFS = ("J4", "J5")
 
 
@@ -460,7 +454,7 @@ for tx, ty in hole_targets:
         print(f"  ! no clear spot for a mounting hole near ({tx},{ty}) -- skipped")
         continue
     mount_positions.append((x, y))
-mh_lib = r"C:\Program Files\KiCad\10.0\share\kicad\footprints\MountingHole.pretty"
+mh_lib = os.path.join(KICAD_FOOTPRINTS, "MountingHole.pretty")
 for i, (x, y) in enumerate(mount_positions, start=1):
     mh = pcbnew.FootprintLoad(mh_lib, "MountingHole_2.7mm_M2.5")
     mh.SetReference(f"MH{i}")
@@ -586,7 +580,7 @@ for ref in ("U1", "U2", "U3", "U4", "U5"):
     fp.SetOrientation(angle)
     dot = pcbnew.PCB_SHAPE(board, pcbnew.SHAPE_T_CIRCLE)
     dot.SetLayer(pcbnew.F_SilkS)
-    sx = -1 if OPTO_FLIP else 1   # dot offset turns with the part
+    sx = -1                       # dot offset turns with the part (optos at 180 deg)
     cx, cy = pos.x + sx * MM(2.0), pos.y - sx * MM(0.45)
     dot.SetCenter(pcbnew.VECTOR2I(cx, cy))
     dot.SetEnd(pcbnew.VECTOR2I(cx + MM(0.35), cy))

@@ -29,18 +29,16 @@ placement is.
 
 Usage:
     cd pcb && PYTHONIOENCODING=utf-8 ato build
-    "C:\\Program Files\\KiCad\\10.0\\bin\\python.exe" Scripts\\sync_netlist_to_board.py
+    <kicad-python> scripts/sync_netlist_to_board.py
 (must run under KiCad's own bundled Python -- that's the only one with
 the pcbnew module installed.)
 """
 import re
 import pcbnew
 import os
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # repo root (worktree-safe)
+from board_config import BOARD_PATH, KICAD_FOOTPRINTS as FPBASE, ROOT
 
 NET_PATH = os.path.join(ROOT, "pcb", "build", "default.net")
-BOARD_PATH = os.path.join(ROOT, "pcb", "layouts", "default", "default.kicad_pcb")
-FPBASE = r"C:\Program Files\KiCad\10.0\share\kicad\footprints"
 # project-local custom footprints (lib name used in main.ato -> .pretty dir)
 LOCAL_LIBS = {"ESP32PCC": os.path.join(ROOT, "pcb", "footprints", "ESP32PCC.pretty")}
 # Board references are derived from the atopile INSTANCE name, not taken from

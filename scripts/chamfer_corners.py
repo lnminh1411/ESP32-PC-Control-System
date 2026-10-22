@@ -6,7 +6,7 @@ cut back by CHAMFER mm on both legs and joined with a 45-degree diagonal.
 Run AFTER route_board.py (works on both the locked hand-routed display bus
 and Freerouting's tracks):
 
-    "C:\\Program Files\\KiCad\\10.0\\bin\\python.exe" Scripts\\chamfer_corners.py
+    <kicad-python> scripts/chamfer_corners.py
 
 Each new diagonal is collision-checked (pcbnew shape Collide) against every
 other-net pad / track / via on its layer at CLEARANCE; if it would collide,
@@ -16,13 +16,11 @@ anyway). Sub-10um segments are merged into their neighbours first. Nested bus la
 lane pitch the diagonals end up 0.71mm apart, more than the straight runs.
 """
 import math
-import os
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # repo root (worktree-safe)
 from collections import defaultdict
 
 import pcbnew
 
-BOARD_PATH = os.path.join(ROOT, "pcb", "layouts", "default", "default.kicad_pcb")
+from board_config import BOARD_PATH
 MM = pcbnew.FromMM
 CHAMFER = 0.5
 MIN_CHAMFER = 0.12

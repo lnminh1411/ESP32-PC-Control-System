@@ -1,13 +1,16 @@
 """
-Streams a GIF to firmware/s3_gif_stream_test over the ESP32's USB-UART as
-raw RGB565: every frame of the original GIF (no background removal, no
-palette, no RLE), scaled to the panel width with the aspect ratio kept.
+Uploads a GIF to the carrier firmware (firmware/carrier_main) over the
+CH343 USB-UART port as raw RGB565: every frame of the original GIF, scaled
+to fit 240x320 with the aspect ratio kept. Protocol: gif_store.h.
 
-    python Scripts\\gif_stream.py <file.gif> [--port COM15] [--watch 15]
+    python scripts/gif_stream.py <file.gif> [--port COM15] [--watch 15]
 
-Prints the device's per-frame acks, waits while it saves the GIF to flash
-(it then replays on every boot without the PC), then shows its FPS / push-time log for
---watch seconds once it starts looping the frames from PSRAM.
+Resets the board, uploads in its 1.5 s boot window, prints the per-frame
+acks (a frame with a bad checksum is resent), waits while the device saves
+the GIF to flash (it then replays on every boot without the PC), then shows
+the device log for --watch seconds.
+
+Needs pyserial, numpy and Pillow.
 """
 import argparse
 import struct
@@ -49,7 +52,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("gif")
     ap.add_argument("--port", default="COM15")
-    ap.add_argument("--watch", type=float, default=15, help="seconds of FPS log to show")
+    ap.add_argument("--watch", type=float, default=15, help="seconds of device log to show")
     a = ap.parse_args()
 
     (w, h), frames, durations = load_frames(a.gif)

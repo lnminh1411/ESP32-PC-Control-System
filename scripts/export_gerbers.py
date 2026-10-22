@@ -4,9 +4,9 @@ silkscreen, Edge.Cuts) + Excellon drills (PTH/NPTH split, Gerber X2 drill
 maps) + the .gbrjob, named after the project title instead of the KiCad
 file name ("default"), zipped for upload.
 
-    python Scripts\\export_gerbers.py
+    python scripts/export_gerbers.py
 
-Output: K:\\artifacts\\<TITLE>_rev<REVISION>_gerbers\\ (+ .zip next to it),
+Output: <ARTIFACTS_DIR>/<TITLE>_rev<REVISION>_gerbers/ (+ .zip next to it),
 TITLE/REVISION from board_config.py. The folder is cleared and rewritten
 each run. Plots the zone fill stored in the board -- the one the routing
 chain made and DRC checked (no refill: a kicad-cli refill comes out
@@ -20,14 +20,11 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from board_config import REVISION, TITLE  # noqa: E402
+from board_config import ARTIFACTS_DIR, BOARD_PATH as BOARD, KICAD_CLI as KC, REVISION, TITLE  # noqa: E402
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # repo root (worktree-safe)
-KC = r"C:\Program Files\KiCad\10.0\bin\kicad-cli.exe"
-BOARD = os.path.join(ROOT, r"pcb\layouts\default\default.kicad_pcb")
 OLD = "default"                                   # KiCad names outputs after the board file
 NAME = TITLE.replace(" ", "_")                    # ESP32_PC_Control_System
-OUT = os.path.join(r"K:\artifacts", f"{NAME}_rev{REVISION}_gerbers")
+OUT = os.path.join(ARTIFACTS_DIR, f"{NAME}_rev{REVISION}_gerbers")
 LAYERS = "F.Cu,B.Cu,F.Paste,B.Paste,F.Silkscreen,B.Silkscreen,F.Mask,B.Mask,Edge.Cuts"
 
 shutil.rmtree(OUT, ignore_errors=True)
