@@ -1,5 +1,4 @@
 pcb/build/
-*.3mf
 
 # KiCad local state / Freerouting intermediates
 .history/
@@ -8,5 +7,5 @@ pcb/build/
 *.dsn
 *.ses
 
-# Firmware credentials (copy secrets.example.h -> secrets.h)
-secrets.h
+# Python
+__pycache__/

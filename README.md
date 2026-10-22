@@ -27,6 +27,28 @@ features to fit my over-engineering stuffs hobby.
 | PC power state | Read from the module's native USB link to the motherboard header (USB active = PC on, suspend = asleep/off). See [docs/pc-power-detection.md](docs/pc-power-detection.md). |
 | Status LED | 5 mm LED below the module, for a light pipe in the enclosure. |
 
+## Power control
+
+| Action | Path |
+|---|---|
+| Power on from shutdown | Wake-on-LAN magic packet on the home network |
+| Shutdown / sleep / hibernate / restart | Over the module's USB-OTG link to the PC |
+| Hard reset of a hung PC | RST opto (`reset` command) |
+| Power cut | BIOS "Always Power On after AC loss" boots the PC when power returns |
+
+What the PC needs for this:
+- BIOS: Wake-on-LAN enabled, "Restore on AC power loss" = Power On.
+- Windows: Fast Startup off (it can stop WoL from working after a shutdown), and the network
+  adapter's "Wake on Magic Packet" enabled. Updates sometimes reset these.
+- Wired Ethernet: most WiFi adapters can't wake from shutdown.
+
+`carrier_main` in this repo covers the reset pulse and the USB power-state
+sensing. WoL and the USB power commands are not in its code yet.
+
+If the ESP32 itself gets stuck, flipping the PSU switch power-cycles it, and
+the AC-loss setting brings the PC back up. See
+[docs/recovery-and-physical-access.md](docs/recovery-and-physical-access.md).
+
 ## Pin map (rev 3.1)
 
 | Signal | GPIO |
@@ -40,8 +62,10 @@ features to fit my over-engineering stuffs hobby.
 | Status LED | 2 |
 
 Every opto GPIO has a 10k pull-down, so nothing gets pressed while the chip
-boots or flashes. The full mapping and the reasons behind it are in
-[pcb/README.md](pcb/README.md).
+boots or flashes. The netlist ([pcb/main.ato](pcb/main.ato)) is the source of
+truth; the firmware's copy is
+[firmware/carrier_main/config.h](firmware/carrier_main/config.h), and
+`python scripts/check_pins.py` checks that the two agree.
 
 ## Assembly notes
 
@@ -59,37 +83,39 @@ boots or flashes. The full mapping and the reasons behind it are in
   five optos and most resistors sit underneath it.
 - Set the boost's A+B bridges for 12V and measure the output before
   connecting the keyfob.
+- Unplug the motherboard RST cable before flashing any other test firmware
+  that toggles GPIOs.
 
 ## Repository layout
 
 | Path | Contents |
 |---|---|
-| [`pcb/`](pcb/) | atopile netlist ([`main.ato`](pcb/main.ato)), KiCad board, custom footprints, the full design notes and revision history ([pcb/README.md](pcb/README.md)) |
-| [`Scripts/`](Scripts/) | Python build chain: netlist -> placement -> hand routes -> Freerouting -> chamfers -> checks -> renders, plus bench tools ([Scripts.md](Scripts/Scripts.md)) |
-| [`firmware/`](firmware/) | Arduino sketches for the ESP32-S3 (below) |
-| [`cad/`](cad/) | Parametric OpenSCAD enclosures ([cad/README.md](cad/README.md)) |
-| [`docs/`](docs/) | Bench findings and research notes |
+| [`firmware/carrier_main/`](firmware/carrier_main/) | The board's firmware (below) |
+| [`pcb/`](pcb/) | atopile netlist ([`main.ato`](pcb/main.ato)), KiCad board, custom footprints, design notes ([pcb/README.md](pcb/README.md)) |
+| [`scripts/`](scripts/) | Python build chain: netlist -> placement -> hand routes -> checks -> renders -> Gerbers, plus the GIF uploader and the pin check ([scripts/README.md](scripts/README.md)) |
+| [`docs/`](docs/) | Bench findings and design notes |
 
 ## Firmware
 
-Arduino sketches, built with `arduino-cli` and the `esp32:esp32` core
-(3.3.x):
+`firmware/carrier_main` is an Arduino sketch for the `esp32:esp32` core
+(3.3.x), split into modules:
 
-| Sketch | Purpose |
+| Module | Does |
 |---|---|
-| **`carrier_main`** | **Firmware for the assembled rev 3.1 board** (test build). Drives everything on the carrier: three panels each showing their own view, door buttons, motherboard reset, status LED, PC power detection. Details below. |
-| `s3_gif_stream_test` | Single-panel bench bring-up: the PC streams a GIF as raw RGB565 ([`Scripts/gif_stream.py`](Scripts/gif_stream.py)); the sketch saves it to flash and plays it at the GIF's native ~30 fps over SPI with DMA. Also sweeps the backlight with PWM. Uses its own bench pins (BL 4, CS 5, DC 6, RST 7, SDA 15, SCL 16). |
-| `s3_gif_player` / `s3_gif_player_lovyan` | GIF from RLE frames compiled into flash (Adafruit_GFX / LovyanGFX). Needs the 16MB flash + `app3M_fat9M_16MB` partition. |
-| `s3_gif_wifi_player` | Diagnostic build that streams frames over WiFi. Copy `secrets.example.h` to `secrets.h` first. |
-| `s3_display_fps_test` | Raw display push throughput. |
-| `s3_usb_state_test` | PC power-state detection over the native USB link. |
+| `config.h` | Pins, timings, build switches |
+| `display` | Panel init, dirty-rectangle engine, RGB444 push over SPI + DMA, backlights |
+| `views` | What each panel shows: `gif`, `status` or `stats` |
+| `optos` | Door button presses and the motherboard reset pulse |
+| `pc_state` | PC power state from USB events, status LED |
+| `gif_store` | GIF frames in PSRAM, saved to FAT, upload protocol |
+| `commands` | The text command set |
+| `console` | Serial transports for commands and GIF uploads |
 
-### carrier_main
-
-- **Displays:** three ST7789 panels, each on its own CS line and showing its
-  own view: `gif`, `status` (PC state, boot-guard countdown, uptime, last
-  action, door/RST state) or `stats` (bus load, per-panel fps and KB/s,
-  memory, chip temperature). The default is GIF / status / stats.
+What it does:
+- **Displays:** each panel shows its own view: `gif`, `status` (PC state,
+  boot-guard countdown, uptime, last action, door/RST state) or `stats` (bus
+  load, per-panel fps and KB/s, memory, chip temperature). Default: GIF /
+  status / stats.
 - **Dirty-rectangle engine:** each panel draws into a PSRAM canvas. The
   firmware compares it with what is already on screen in 8-row bands and
   sends only the changed rectangles, so a changed number costs about 1 KB
@@ -108,10 +134,9 @@ Arduino sketches, built with `arduino-cli` and the `esp32:esp32` core
   every 2 s = no USB host yet.
 - **Commands**, one per line on either USB port (the module's own USB, or
   the CH343 UART at 3 Mbaud):
-  `status | view <1|2|3> <gif|status|stats> | door <1-4> | reset | bl <1|2|3|all> <0-100> | led <auto|on|off>`.
-- **GIF upload:** run [`Scripts/gif_stream.py`](Scripts/gif_stream.py) on
-  the CH343 port. The GIF is saved to the FAT partition and replays on every
-  boot.
+  `help | status | view <1|2|3> <gif|status|stats> | door <1-4> | reset | bl <1|2|3|all> <0-100> | led <auto|on|off>`.
+- **GIF upload:** `python scripts/gif_stream.py <file.gif> --port <CH343 port>`.
+  The GIF is saved to the FAT partition and replays on every boot.
 
 Build + flash. The firmware needs `USBMode=default` (TinyUSB) for the USB
 power events. With `CDCOnBoot=cdc`, `Serial` is the module's own USB port
@@ -119,26 +144,26 @@ and `Serial0` is the UART. `UploadMode=cdc` lets you flash through the
 module's own USB port:
 
 ```bash
+arduino-cli lib install "Adafruit GFX Library"
 arduino-cli compile --fqbn esp32:esp32:esp32s3:PSRAM=opi,FlashSize=16M,PartitionScheme=app3M_fat9M_16MB,USBMode=default,CDCOnBoot=cdc,UploadMode=cdc firmware/carrier_main
 arduino-cli upload  --fqbn esp32:esp32:esp32s3:PSRAM=opi,FlashSize=16M,PartitionScheme=app3M_fat9M_16MB,USBMode=default,CDCOnBoot=cdc,UploadMode=cdc -p COM11 firmware/carrier_main
 ```
 
-Build-time test switch (defaults to 0):
-- `-DMOBO_RST_HOLD_TEST=1`: holds RST HIGH from boot, for testing with an
-  LED on J6. **Never use it on a real motherboard**: it keeps the PC in
-  reset.
+Bench-only switch: `-DMOBO_RST_HOLD_TEST=1` holds RST HIGH from boot, for
+testing with an LED on J6. On a real motherboard that keeps the PC in
+reset, so the build refuses it unless you also pass
+`-DBENCH_NO_MOTHERBOARD=1`.
 
 ### Bring-up findings (2026-10, assembled rev 3.1 board)
 
 - **SPI runs at 40 MHz.** 80 MHz gives blank panels on the carrier's long
-  shared bus, even with full drive strength on SCK/MOSI/DC. It worked on
-  short bench wires. The S3's SPI clock is 80 MHz divided by a whole
-  number, so 60 MHz is not possible: the driver rounds it down to 40.
+  shared bus, even with full drive strength on SCK/MOSI/DC. The S3's SPI
+  clock is 80 MHz divided by a whole number, so 60 MHz is not possible: the
+  driver rounds it down to 40.
 - **Bus budget:** a full 240x291 frame takes 29 ms as RGB565 at 40 MHz, or
   about 21 ms as RGB444. That is enough for one full-motion panel at about
   30 fps. More full-motion panels share the bus, which is why the
-  dashboards rely on dirty rectangles. The board stays as-is: no new
-  routing.
+  dashboards rely on dirty rectangles.
 - **Broadcast mode** (all CS lines held LOW, one frame sent to all three
   panels at once) plays the same GIF on all three at its native 29.7 fps.
   It is only useful when all three show identical content.
@@ -148,7 +173,6 @@ Build-time test switch (defaults to 0):
   firmware uses the hardware RST lines instead.
 - **Panel orientation:** MADCTL 0, which is rotation 2 in Adafruit's
   numbering.
-- **Module 5V:** the IN-OUT jumper must be bridged (see Assembly notes).
 - **Backlight:** the GMT024 panels are dim even at 100% PWM, because of the
   module's own backlight parts. Firmware can't change that.
 - **Opto resistors:** the 270R opto resistors are required. Without them
@@ -158,15 +182,20 @@ Build-time test switch (defaults to 0):
 
 Toolchain: [atopile](https://atopile.io) 0.2.x, KiCad 10 (its bundled
 Python provides `pcbnew`), Freerouting, and Python with pymupdf + Pillow for
-the renders. The full rebuild, from `ato build` to DRC and renders, is listed
-step by step in [Scripts/Scripts.md](Scripts/Scripts.md). Renders land in
-`pcb/build/renders/` (not tracked); the image above is a copy.
+the renders. The full rebuild, from `ato build` to DRC, renders and Gerbers,
+is listed step by step in [scripts/README.md](scripts/README.md). Renders
+land in `pcb/build/renders/` (not tracked); the image above is a copy.
+
+## Checks
+
+CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) builds
+`carrier_main` and runs `scripts/check_pins.py` plus a lint of the scripts
+on every push.
 
 ## Status
 
-Rev 3.1 is fabricated and assembled. The fab files come from
-[`Scripts/export_gerbers.py`](Scripts/export_gerbers.py). `carrier_main`
-has been tested on the board:
+Rev 3.1 is fabricated and assembled. `carrier_main` has been tested on the
+board:
 - all three panels work, both in broadcast and on their own CS lines;
 - the motherboard RST output was checked with an LED on J6;
 - PC power detection works over the module's own USB link;
@@ -174,6 +203,7 @@ has been tested on the board:
 
 Still to do:
 - test door buttons B1-B4 with the real keyfob connected;
+- WoL and the USB power commands in the firmware;
 - write the real dashboard content (the status and stats views are test
   placeholders);
 - move the GIF's diff and RGB444 conversion to the second core, to get from

@@ -1,67 +1,48 @@
-# PC Power-State Detection via USB PHY (2026-09-30)
+# PC power-state detection over USB
 
-## Finding
+The ESP32-S3's native USB-OTG peripheral, in TinyUSB mode, reports the host
+bus state through Arduino's `USB.onEvent()` callbacks. Confirmed on the
+bench (2026-09-30) and on the assembled board:
 
-Confirmed on bench: the ESP32-S3's native USB-OTG peripheral, in TinyUSB
-mode, reports host bus state through Arduino's `USB.onEvent()` callbacks.
-Mapped:
+| Event | Link state | Meaning |
+|---|---|---|
+| `ARDUINO_USB_STARTED_EVENT` / `ARDUINO_USB_RESUME_EVENT` | Active | PC on |
+| `ARDUINO_USB_SUSPEND_EVENT` | Suspended | PC asleep or off |
+| `ARDUINO_USB_STOPPED_EVENT` | -- | Never seen in testing; logged only |
 
-- `ARDUINO_USB_STARTED_EVENT` / `ARDUINO_USB_RESUME_EVENT` -> USB Active -> PC ON
-- `ARDUINO_USB_SUSPEND_EVENT` -> USB Suspend -> PC asleep or off
-- `ARDUINO_USB_STOPPED_EVENT` -> never actually observed in testing; logged
-  for diagnostics only, not used for any decision
+So on/off/asleep detection works over the module's existing USB link to the
+motherboard's internal header, with no extra wiring (no Power LED or
+PWR_OK tap).
 
-This means PC on/off/asleep detection is achievable through the S3's
-existing USB link (USB-C to the motherboard's internal header) with zero
-new hardware. No Power LED / ATX PWR_OK tap is required just for this.
+Needs `USBMode=default` (USB-OTG/TinyUSB) in the board config. The
+USB-Serial/JTAG mode does not report these events.
 
-## Problem: cold-boot USB blip
+## The cold-boot blip and the 30 s guard
 
-Cold boot causes a brief USB on/off blip on the S3's link (BIOS POST
-re-enumerating the USB controller before the OS is up). Taken at face
-value, that blip is indistinguishable from a real suspend event -- a naive
-suspend-to-idle transition would flicker the displays on every cold boot.
+A cold boot blips the link on and off while the BIOS re-enumerates USB
+during POST, before the OS is up. Taken at face value that looks like a
+real suspend, and the displays would flicker off on every boot.
 
-## Fix: 30s guard window
+So every time the link goes Active (fresh boot or resume) a 30 s guard
+starts:
 
-State machine, (re)armed every time the link goes ACTIVE (fresh boot or
-resume from sleep):
+- Link Active -> PC on, screens on immediately, guard starts.
+- A Suspend inside the guard is logged and ignored (assumed POST noise).
+- After 30 s, a Suspend is trusted immediately -> PC asleep/off,
+  backlights off.
 
-- USB goes Active -> monitoring screens turn on immediately, 30s guard
-  starts.
-- Any Suspend event landing inside the 30s guard is logged but ignored --
-  state stays ACTIVE (assumed POST noise, not a real suspend).
-- Once the 30s guard elapses uninterrupted, Suspend events are trusted and
-  acted on immediately, no further debounce -> screens switch to idle mode
-  (weather/etc. placeholder on the bench rig; real target is all 3 LCDs).
+Only the active side is debounced: the false positive is specific to boot
+noise, not to shutdown or sleep.
 
-No guard on the suspend-to-idle side -- only the active-side transition
-needs debouncing, since the false-positive risk is specific to boot-time
-bus noise, not to shutdown/sleep itself.
+## Implementation
 
-## Test firmware
-
-[`firmware/s3_usb_state_test/s3_usb_state_test.ino`](../firmware/s3_usb_state_test/s3_usb_state_test.ino)
-implements the above. Logs every transition with a timestamp to both
-Serial and the bench display, so the log survives the period where USB
-itself is suspended and unreadable.
-
-Requires non-default board USB config -- see the file header for the
-exact `USBMode`/`CDCOnBoot` build options. Incompatible with the plain
-`s3_display_fps_test.ino` config: different USB peripheral in use
-(native USB-Serial/JTAG vs. USB-OTG/TinyUSB), can't run both configs off
-the same flashed image.
+[`firmware/carrier_main/pc_state.cpp`](../firmware/carrier_main/pc_state.cpp).
+The `status` command shows the state and `(guard)` while the guard runs;
+the status view shows a countdown.
 
 ## Open items
 
-- Guard is applied uniformly to both fresh boot (`STARTED`) and
-  resume-from-sleep (`RESUME`), on the assumption both can produce similar
-  bus noise around the transition. Only the cold-boot blip has actually
-  been observed/confirmed on the bench -- resume-side noise is an
-  assumption, not yet tested.
-- Bench-proven on a single test display only, not yet wired into the real
-  3-display product firmware.
-- Doesn't retire the Power LED / PWR_OK tap idea outright if that's wanted
-  for other reasons (redundancy, or a lower-level signal that doesn't
-  depend on USB enumeration timing) -- just means it's no longer a hard
-  requirement for on/off detection specifically.
+- The guard also applies to resume from sleep, on the assumption that
+  resume can blip the bus too. Only the cold-boot blip has been observed.
+- A Power LED / PWR_OK tap would still be a useful second signal that does
+  not depend on USB enumeration timing, but it is no longer required.
