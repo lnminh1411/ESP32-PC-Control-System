@@ -20,7 +20,7 @@ static volatile uint32_t txDone;
 static uint32_t txIssued;
 
 static bool IRAM_ATTR onTxDone(esp_lcd_panel_io_handle_t, esp_lcd_panel_io_event_data_t *, void *) {
-  txDone++;
+  txDone = txDone + 1;   // only this ISR writes it
   return false;
 }
 

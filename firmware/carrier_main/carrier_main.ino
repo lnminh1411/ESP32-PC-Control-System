@@ -52,7 +52,7 @@ void setup() {
   bool fatOk = gifFsInit();
   logMsg("carrier rev 3.1 | %d panels, dirty-rect RGB444, SPI %d Hz%s | PSRAM free %u | fat %s",
          N_PANELS, SPI_HZ, MOBO_RST_HOLD_TEST ? " | TEST: mobo RST held HIGH" : "",
-         ESP.getFreePsram(), fatOk ? "ok" : "FAILED");
+         (unsigned)ESP.getFreePsram(), fatOk ? "ok" : "FAILED");
   HOST_UART.println("READY");
 
   // 5. GIF: 1.5 s window for a host upload, else the saved one
