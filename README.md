@@ -5,6 +5,13 @@ displays, presses the motherboard's hardware-reset line, and works a 4-button
 door remote, all from one ESP32-S3-N16R8 module plugged into a custom 2-layer
 PCB.
 
+## Why would I put myself through the suffering
+
+I needed my PC online at all time, because sometime at school or work I need to remote
+control the PC back at home. And as I measured, the idle time alone costs me ~40KWh (~7usd) per month.
+So, I built this for 30usd instead of buying a boring and expensive IP KVM, while adding a tons more
+features to fit my over-engineering stuffs hobby.
+
 ![Carrier PCB, rev 3.1: top silkscreen over F.Cu](docs/images/pcb_silkscreen_top.png)
 
 *Carrier PCB rev 3.1, top silkscreen over the top copper layer:
