@@ -11,6 +11,9 @@
 //   gif_store GIF frames in PSRAM, saved to FAT, uploaded over the UART
 //   commands  the text command set
 //   console   serial transports for commands and uploads
+//   net       Wi-Fi station, mDNS, over-the-air updates (credentials: secrets.h)
+//   ha        Home Assistant via MQTT discovery (optional, needs an HA broker)
+//   discord   Discord bot: slash commands + buttons, remote control from anywhere
 //
 // Board config (arduino-cli):
 //   --fqbn esp32:esp32:esp32s3:PSRAM=opi,FlashSize=16M,PartitionScheme=app3M_fat9M_16MB,USBMode=default,CDCOnBoot=cdc
@@ -21,6 +24,9 @@
 #include "console.h"
 #include "display.h"
 #include "gif_store.h"
+#include "discord.h"
+#include "ha.h"
+#include "net.h"
 #include "log.h"
 #include "optos.h"
 #include "pc_state.h"
@@ -32,22 +38,30 @@ void setup() {
   optosInit();
   statusLedInit();
 
-  // 2. backlights 100%
+  // 2. backlights 100%; the module's own RGB LED off
   backlightInit();
+  rgbLedWrite(ONBOARD_RGB_GPIO, 0, 0, 0);
 
   // 3. serial ports + USB power-state events
   HOST_UART.setRxBufferSize(32768);
   HOST_UART.begin(UART_BAUD);
   pcStateInit();
   Serial.begin();                      // native USB CDC (TinyUSB)
+  consoleBegin();
   delay(100);
+  netInit();                           // joins Wi-Fi in the background
+  haInit();
+  discordInit();
 
   // 4. displays: GIF / status / stats
   displayInit();
   viewEnter(0, VIEW_GIF);
   viewEnter(1, VIEW_STATUS);
   viewEnter(2, VIEW_STATS);
-  for (Panel &p : panels) displayFlush(p);   // clear all three to black
+  for (int i = 0; i < N_PANELS; i++) {
+    displaySubmit(i);
+    displayWait(i);
+  }
 
   bool fatOk = gifFsInit();
   logMsg("carrier rev 3.1 | %d panels, dirty-rect RGB444, SPI %d Hz%s | PSRAM free %u | fat %s",
@@ -65,6 +79,9 @@ void setup() {
 
 void loop() {
   consolePoll();
+  netPoll();
+  haPoll();
+  discordPoll();
   viewsService();
   delay(1);
 }

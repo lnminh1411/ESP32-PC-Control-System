@@ -9,3 +9,10 @@ pcb/build/
 
 # Python
 __pycache__/
+
+# Firmware credentials (copy secrets.example.h -> secrets.h)
+firmware/**/secrets.h
+
+host/pc_stats/vendor/
+host/pc_stats/build/
+

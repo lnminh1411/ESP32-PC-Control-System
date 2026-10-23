@@ -17,7 +17,6 @@
 
 static char lastAction[40] = "none";
 static uint32_t lastActionMs;
-static uint32_t busUsWindow, busUsLast;          // whole-bus time, this / last 1 s
 
 const char *viewName(View v) { return v == VIEW_GIF ? "gif" : v == VIEW_STATUS ? "status" : "stats"; }
 
@@ -32,22 +31,15 @@ void viewsNoteAction(const char *what) {
   lastActionMs = millis();
 }
 
-float busLoadPct() { return busUsLast / 10000.0f; }   // us per 1 s -> %
-
-// GIF frame (stored big-endian, as the old raw push wanted) -> canvas, centred.
-static void drawGifFrame(Panel &p, const uint16_t *f) {
-  uint16_t *dst = p.canvas->getBuffer();
-  int x0 = (TFT_W - gif.w) / 2, y0 = (TFT_H - gif.h) / 2;
-  for (int y = 0; y < gif.h; y++) {
-    const uint16_t *s = f + (size_t)y * gif.w;
-    uint16_t *d = dst + (size_t)(y0 + y) * TFT_W + x0;
-    for (int x = 0; x < gif.w; x++) d[x] = __builtin_bswap16(s[x]);
+void viewsShowGifFrame(int idx) {
+  for (int i = 0; i < N_PANELS; i++) {
+    Panel &p = panels[i];
+    if (p.view == VIEW_GIF) {
+      p.gifFrame = idx;
+      displaySubmit(i);
+      displayWait(i);
+    }
   }
-}
-
-void viewsShowGifFrame(const uint16_t *frame) {
-  for (Panel &p : panels)
-    if (p.view == VIEW_GIF) { drawGifFrame(p, frame); displayFlush(p); }
 }
 
 static void field(GFXcanvas16 &c, int y, int size, uint16_t col, const char *fmt, ...) {
@@ -112,42 +104,53 @@ static void drawStats(Panel &p) {
 }
 
 void viewEnter(int i, View v) {
+  displayWait(i);
   Panel &p = panels[i];
+  if (v == VIEW_GIF) {
+    p.view = VIEW_STATUS;   // normal canvas flush
+    p.canvas->fillScreen(C_BG);
+    displaySubmit(i);
+    displayWait(i);
+    p.gifShown = -1;
+  }
   p.view = v;
   p.canvas->fillScreen(C_BG);
-  p.gifIdx = gif.n ? (uint16_t)(i * gif.n / N_PANELS) : 0;   // same GIF on several panels: offset starts
+  memset(p.sent, 0xA5, (size_t)TFT_W * TFT_H * 2);
+  p.gifIdx = gif.n ? (uint16_t)(i * gif.n / N_PANELS) : 0;
   p.dueMs = millis();
 }
 
 void viewsService() {
   uint32_t now = millis();
-  for (Panel &p : panels) {
-    if ((int32_t)(now - p.dueMs) < 0) continue;
+  for (;;) {
+    int best = -1;
+    int32_t maxOverdue = -1;
+    for (int i = 0; i < N_PANELS; i++) {
+      Panel &p = panels[i];
+      if (p.busy) continue;
+      int32_t overdue = (int32_t)(now - p.dueMs);
+      if (overdue >= 0 && overdue > maxOverdue) {
+        maxOverdue = overdue;
+        best = i;
+      }
+    }
+    if (best < 0) break;
+
+    Panel &p = panels[best];
     if (p.view == VIEW_GIF) {
       if (!gif.n) { p.dueMs = now + 200; continue; }
-      if (p.gifIdx >= gif.n) p.gifIdx = 0;
-      drawGifFrame(p, gif.frames[p.gifIdx]);
-      p.dueMs += gif.durMs[p.gifIdx];
-      if ((int32_t)(now - p.dueMs) > 100) p.dueMs = now;   // fell far behind: resync
-      p.gifIdx = (p.gifIdx + 1) % gif.n;
+      uint16_t idx = p.gifIdx;
+      if (idx >= gif.n) idx = 0;
+      p.gifFrame = idx;
+      displaySubmit(best);
+      p.dueMs += gif.durMs[idx];
+      if ((int32_t)(now - p.dueMs) > (int32_t)gif.durMs[idx]) p.dueMs = now;
+      p.gifIdx = (idx + 1) % gif.n;
     } else {
-      if (p.view == VIEW_STATUS) drawStatus(p); else drawStats(p);
+      if (p.view == VIEW_STATUS) drawStatus(p);
+      else drawStats(p);
+      displaySubmit(best);
       p.dueMs = now + (p.view == VIEW_STATUS ? 250 : 500);
     }
-    busUsWindow += displayFlush(p);
-    p.frames++;
-  }
-  static uint32_t winStart = now;
-  if (now - winStart >= 1000) {
-    float dt = (now - winStart) / 1000.0f;
-    for (Panel &p : panels) {
-      p.fps = p.frames / dt;
-      p.kbps = p.bytes / 1024.0f / dt;
-      p.busMs = p.pushUs / 1000.0f / dt;
-      p.frames = p.pushUs = p.bytes = 0;
-    }
-    busUsLast = busUsWindow / dt;
-    busUsWindow = 0;
-    winStart = now;
   }
 }

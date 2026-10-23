@@ -6,27 +6,54 @@
 #include <esp32-hal-psram.h>
 #include <esp_heap_caps.h>
 #include <esp_lcd_panel_st7789.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
+#include <freertos/task.h>
+
+#include "gif_store.h"
+#include "log.h"
 
 #define BAND 8
+#define INTERNAL_RESERVE (160 * 1024)   // Wi-Fi + two TLS sessions need it
 
 Panel panels[N_PANELS];
 
-PsCanvas::PsCanvas(uint16_t w, uint16_t h) : GFXcanvas16(w, h, false) {
-  buffer = (uint16_t *)ps_calloc((size_t)w * h, 2);
+PsCanvas::PsCanvas(uint16_t w, uint16_t h, bool internal) : GFXcanvas16(w, h, false), _isInternal(false) {
+  size_t bytes = (size_t)w * h * 2;
+  if (internal && heap_caps_get_free_size(MALLOC_CAP_INTERNAL) >= bytes + INTERNAL_RESERVE) {
+    buffer = (uint16_t *)heap_caps_malloc(bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (buffer) {
+      memset(buffer, 0, bytes);
+      _isInternal = true;
+    }
+  }
+  if (!buffer) {
+    buffer = (uint16_t *)ps_calloc((size_t)w * h, 2);
+    _isInternal = false;
+  }
 }
 
 static uint8_t *dmaBuf[2];
 static volatile uint32_t txDone;
 static uint32_t txIssued;
+static QueueHandle_t flushQueue;
+static volatile float busWirePct = 0.0f;
+
+float busLoadPct() { return busWirePct; }
 
 static bool IRAM_ATTR onTxDone(esp_lcd_panel_io_handle_t, esp_lcd_panel_io_event_data_t *, void *) {
   txDone = txDone + 1;   // only this ISR writes it
   return false;
 }
 
+uint32_t displaySpinUs;   // perf: time spent waiting for DMA (temporary)
+
 static void waitTx(uint32_t inFlight) {
+  if (txIssued - txDone <= inFlight) return;
+  uint32_t t = micros();
   while (txIssued - txDone > inFlight) {
   }
+  displaySpinUs += micros() - t;
 }
 
 // Push canvas rect (x, y, w, h) of panel p as RGB444. x and w must be even.
@@ -82,7 +109,7 @@ static bool bandDiff(Panel &p, int y, int n, int &x0, int &x1) {
   return true;
 }
 
-uint32_t displayFlush(Panel &p) {
+static uint32_t displayFlush(Panel &p) {
   uint32_t t0 = micros();
   int runY = -1, rx0 = TFT_W, rx1 = -1;
   for (int y = 0; y <= TFT_H; y += BAND) {
@@ -103,7 +130,107 @@ uint32_t displayFlush(Panel &p) {
   waitTx(0);
   uint32_t us = micros() - t0;
   p.pushUs += us;
+  p.frames++;
   return us;
+}
+
+static void pushGifRect(Panel &p, const uint8_t *framePacked, int rx, int ry, int rw, int rh, int x0, int y0) {
+  int gx = x0 + rx;
+  int gy = y0 + ry;
+  waitTx(0);
+  uint8_t ca[4] = {(uint8_t)(gx >> 8), (uint8_t)gx, (uint8_t)((gx + rw - 1) >> 8), (uint8_t)(gx + rw - 1)};
+  uint8_t ra[4] = {(uint8_t)(gy >> 8), (uint8_t)gy, (uint8_t)((gy + rh - 1) >> 8), (uint8_t)(gy + rh - 1)};
+  esp_lcd_panel_io_tx_param(p.io, 0x2A, ca, 4);   // CASET
+  esp_lcd_panel_io_tx_param(p.io, 0x2B, ra, 4);   // RASET
+  size_t frameStride = (size_t)gif.pw * 3 / 2;
+  size_t xByteOffset = (size_t)rx * 3 / 2;
+  size_t rowBytes = (size_t)rw * 3 / 2;
+  int rowsPerChunk = max(1, (int)(CHUNK_BYTES / rowBytes));
+  bool first = true;
+  for (int r0 = 0; r0 < rh; r0 += rowsPerChunk) {
+    int rows = min(rowsPerChunk, rh - r0);
+    waitTx(1);
+    uint8_t *b = dmaBuf[txIssued & 1], *o = b;
+    for (int r = 0; r < rows; r++) {
+      const uint8_t *s = framePacked + (size_t)(ry + r0 + r) * frameStride + xByteOffset;
+      memcpy(o, s, rowBytes);
+      o += rowBytes;
+    }
+    txIssued++;
+    esp_lcd_panel_io_tx_color(p.io, first ? 0x2C : 0x3C, b, o - b);
+    first = false;
+  }
+  p.bytes += rowBytes * rh;
+}
+
+static void pushGif(Panel &p) {
+  if (!gif.n || !gif.packed[p.gifFrame]) return;
+  uint32_t t0 = micros();
+  uint16_t fIdx = p.gifFrame;
+  int x0 = ((TFT_W - gif.pw) / 2) & ~1;
+  int y0 = (TFT_H - gif.h) / 2;
+  uint16_t prevIdx = (fIdx == 0) ? (gif.n - 1) : (fIdx - 1);
+  if (p.gifShown == (int16_t)prevIdx) {
+    uint8_t nr = gif.nRects[fIdx];
+    for (uint8_t i = 0; i < nr; i++) {
+      const GifRect &r = gif.rects[fIdx][i];
+      pushGifRect(p, gif.packed[fIdx], r.x, r.y, r.w, r.h, x0, y0);
+    }
+  } else {
+    pushGifRect(p, gif.packed[fIdx], 0, 0, gif.pw, gif.h, x0, y0);
+  }
+  waitTx(0);
+  p.gifShown = fIdx;
+  uint32_t us = micros() - t0;
+  p.pushUs += us;
+  p.frames++;
+}
+
+static void flushTask(void *) {
+  uint32_t winStart = millis();
+  for (;;) {
+    int idx;
+    if (xQueueReceive(flushQueue, &idx, pdMS_TO_TICKS(10)) == pdTRUE) {
+      if (idx >= 0 && idx < N_PANELS) {
+        Panel &p = panels[idx];
+        if (p.view == VIEW_GIF) pushGif(p);
+        else displayFlush(p);
+        p.busy = false;
+      }
+    }
+    uint32_t now = millis();
+    if (now - winStart >= 1000) {
+      float dt = (now - winStart) / 1000.0f;
+      uint32_t totalBytes = 0;
+      for (int i = 0; i < N_PANELS; i++) {
+        Panel &p = panels[i];
+        p.fps = p.frames / dt;
+        p.kbps = p.bytes / 1024.0f / dt;
+        p.busMs = p.pushUs / 1000.0f / dt;
+        totalBytes += p.bytes;
+        p.frames = 0;
+        p.pushUs = 0;
+        p.bytes = 0;
+      }
+      busWirePct = ((float)totalBytes / dt) * 8.0f * 100.0f / (float)SPI_HZ;
+      winStart = now;
+    }
+  }
+}
+
+void displaySubmit(int panel) {
+  if (panel < 0 || panel >= N_PANELS) return;
+  panels[panel].busy = true;
+  xQueueSend(flushQueue, &panel, portMAX_DELAY);
+}
+
+void displayWait(int panel) {
+  if (panel < 0 || panel >= N_PANELS) return;
+  while (panels[panel].busy) vTaskDelay(1);
+}
+
+void displayWaitAll() {
+  for (int i = 0; i < N_PANELS; i++) displayWait(i);
 }
 
 void displayInit() {
@@ -131,6 +258,10 @@ void displayInit() {
   // long daisy chain want sharp edges.
   for (int p : {PIN_SCK, PIN_MOSI, PIN_DC})
     gpio_set_drive_capability((gpio_num_t)p, GPIO_DRIVE_CAP_3);
+
+  // Allocate the two DMA chunk buffers BEFORE the canvases
+  for (int i = 0; i < 2; i++)
+    dmaBuf[i] = (uint8_t *)heap_caps_malloc(CHUNK_BYTES, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
 
   for (int i = 0; i < N_PANELS; i++) {
     Panel &p = panels[i];
@@ -160,11 +291,19 @@ void displayInit() {
     esp_lcd_panel_io_tx_param(p.io, 0x3A, &colmod, 1);
     esp_lcd_panel_disp_on_off(p.lcd, true);    // MADCTL 0: the orientation the panels need
 
-    p.canvas = new PsCanvas(TFT_W, TFT_H);
+    p.canvas = new PsCanvas(TFT_W, TFT_H, i > 0);   // panels 2 and 3 ask internal, panel 1 stays psram
     p.sent = (uint16_t *)ps_malloc((size_t)TFT_W * TFT_H * 2);
     memset(p.sent, 0xA5, (size_t)TFT_W * TFT_H * 2);   // != any canvas: first flush sends all
+    p.busy = false;
+    p.gifShown = -1;
+    p.gifFrame = 0;
   }
-  for (int i = 0; i < 2; i++) dmaBuf[i] = (uint8_t *)heap_caps_malloc(CHUNK_BYTES, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+
+  logMsg("display: canvas 2 %s, 3 %s", panels[1].canvas->isInternal() ? "internal" : "psram",
+         panels[2].canvas->isInternal() ? "internal" : "psram");
+
+  flushQueue = xQueueCreate(N_PANELS, sizeof(int));
+  xTaskCreatePinnedToCore(flushTask, "flush", 4096, nullptr, 2, nullptr, 0);
 }
 
 // ---- backlights ----

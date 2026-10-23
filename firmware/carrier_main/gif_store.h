@@ -1,5 +1,5 @@
-// GIF frames: held in PSRAM, saved to /gif.bin in the FAT partition,
-// uploaded over the UART by scripts/gif_stream.py.
+// GIF frames: pre-packed RGB444 with precomputed dirty rects held in PSRAM,
+// saved as RGB565-BE to /gif.bin in FAT, uploaded over UART by scripts/gif_stream.py.
 //
 // Upload protocol (host -> device unless noted; little-endian):
 //   device: "READY\n" after boot, then 1.5 s for an upload to start
@@ -16,10 +16,19 @@
 
 #include "config.h"
 
+#define MAX_DIRTY_RECTS 8
+
+struct GifRect {
+  uint16_t x, y, w, h;
+};
+
 struct Gif {
   uint16_t w, h, n;
+  uint16_t pw;                    // packed width = w rounded UP to even (pad pixel black)
   uint16_t durMs[MAX_FRAMES];
-  uint16_t *frames[MAX_FRAMES];   // RGB565, big-endian (as received)
+  uint8_t *packed[MAX_FRAMES];    // pw*h*3/2 bytes each, PSRAM, exact push444 byte layout
+  uint8_t nRects[MAX_FRAMES];     // up to 8 dirty rects vs previous frame
+  GifRect rects[MAX_FRAMES][MAX_DIRTY_RECTS];
 };
 
 extern Gif gif;
@@ -27,5 +36,5 @@ extern Gif gif;
 bool gifFsInit();                               // mount FAT; false = not available
 bool gifLoad();                                 // from flash; false = none / bad
 // After the "GIF5" magic has been read: header, frames, save. onFrame is
-// called with each frame as it lands, so it can be shown during the upload.
-bool gifReceive(void (*onFrame)(const uint16_t *frame));
+// called with each frame index as it lands, so it can be shown during upload.
+bool gifReceive(void (*onFrame)(int idx));

@@ -91,6 +91,7 @@ truth; the firmware's copy is
 | Path | Contents |
 |---|---|
 | [`firmware/carrier_main/`](firmware/carrier_main/) | The board's firmware (below) |
+| [`host/pc_stats/`](host/pc_stats/) | Windows service that streams PC stats, local-AI status and Claude usage to the board over USB ([host/pc_stats/README.md](host/pc_stats/README.md)) |
 | [`pcb/`](pcb/) | atopile netlist ([`main.ato`](pcb/main.ato)), KiCad board, custom footprints, design notes ([pcb/README.md](pcb/README.md)) |
 | [`scripts/`](scripts/) | Python build chain: netlist -> placement -> hand routes -> checks -> renders -> Gerbers, plus the GIF uploader and the pin check ([scripts/README.md](scripts/README.md)) |
 | [`docs/`](docs/) | Bench findings and design notes |
@@ -103,13 +104,17 @@ truth; the firmware's copy is
 | Module | Does |
 |---|---|
 | `config.h` | Pins, timings, build switches |
-| `display` | Panel init, dirty-rectangle engine, RGB444 push over SPI + DMA, backlights |
+| `display` | Panel init, flush task on core 0, dirty-rectangle engine, RGB444 push over SPI + DMA, backlights |
 | `views` | What each panel shows: `gif`, `status` or `stats` |
 | `optos` | Door button presses and the motherboard reset pulse |
-| `pc_state` | PC power state from USB events, status LED |
-| `gif_store` | GIF frames in PSRAM, saved to FAT, upload protocol |
+| `pc_state` | PC power state from USB events, status LED (PWM) |
+| `gif_store` | GIF frames pre-packed as RGB444 with per-frame dirty rects, saved to FAT, upload protocol |
 | `commands` | The text command set |
-| `console` | Serial transports for commands and GIF uploads |
+| `console` | Command transports (USB CDC, UART, vendor HID) and GIF uploads |
+| `pcstats` | Key/value store for the stats the host service sends |
+| `net` | Wi-Fi, mDNS, OTA (off until `secrets.h` is filled in) |
+| `discord` | Discord bot: `/actions` control panel, notifications |
+| `ha` | Optional Home Assistant MQTT discovery |
 
 What it does:
 - **Displays:** each panel shows its own view: `gif`, `status` (PC state,
@@ -121,8 +126,11 @@ What it does:
   sends only the changed rectangles, so a changed number costs about 1 KB
   and a static dashboard costs nothing.
 - **RGB444 on the wire** (12 bits per pixel, 25% less data than RGB565).
-  Measured: the GIF panel runs at 27 fps and takes about 70% of the bus,
-  while the two dashboards together take under 5%.
+- **Two-core pipeline:** core 1 draws, a flush task on core 0 diffs and
+  sends. The GIF is converted once at load and only its changed regions are
+  sent. Measured: the GIF plays at its native 29.7 fps with the bus at 47%
+  and both cores mostly idle; three GIFs at once run at 20 fps each with
+  the bus at 95%. `perf` (run twice) prints per-core CPU and wire load.
 - **Door buttons B1-B4** (GPIO39-42): 500 ms presses, one at a time, with a
   500 ms gap enforced in firmware (the board has no hardware interlock).
 - **Motherboard reset** (GPIO1): 200 ms pulse, only on the `reset` command,
@@ -130,23 +138,28 @@ What it does:
 - **PC power state** from the module's own USB link to the motherboard, with
   a 30 s guard against the brief USB dropout at power-on. When the PC sleeps
   or shuts down, the backlights turn off.
-- **Status LED** (GPIO2): solid = PC on, slow blink = asleep/off, short blip
-  every 2 s = no USB host yet.
+- **Status LED** (GPIO2, PWM): solid = PC on, slow blink = asleep/off,
+  short blip every 2 s = no USB host yet. `led <0-100>` is perceptual
+  brightness, capped at 35% duty.
+- **PC stats link:** the host service in `host/pc_stats` sends stats as
+  text lines over a vendor HID interface (no driver needed, the COM port
+  stays free); `pcstats [text]` lists what arrived. No screen shows them yet.
 - **Commands**, one per line on either USB port (the module's own USB, or
   the CH343 UART at 3 Mbaud):
-  `help | status | view <1|2|3> <gif|status|stats> | door <1-4> | reset | bl <1|2|3|all> <0-100> | led <auto|on|off>`.
+  `help | status | view <1|2|3> <gif|status|stats> | door <1-4> | reset | bl <1|2|3|all> <0-100|on|off> | led <auto|on|off|sweep|0-100> | perf | pcstats [text]`.
 - **GIF upload:** `python scripts/gif_stream.py <file.gif> --port <CH343 port>`.
   The GIF is saved to the FAT partition and replays on every boot.
 
 Build + flash. The firmware needs `USBMode=default` (TinyUSB) for the USB
 power events. With `CDCOnBoot=cdc`, `Serial` is the module's own USB port
 and `Serial0` is the UART. `UploadMode=cdc` lets you flash through the
-module's own USB port:
+module's own USB port (COM12 here since the HID interface was added; it was
+COM11 before):
 
 ```bash
-arduino-cli lib install "Adafruit GFX Library"
+arduino-cli lib install "Adafruit GFX Library" "ArduinoJson" "WebSockets"
 arduino-cli compile --fqbn esp32:esp32:esp32s3:PSRAM=opi,FlashSize=16M,PartitionScheme=app3M_fat9M_16MB,USBMode=default,CDCOnBoot=cdc,UploadMode=cdc firmware/carrier_main
-arduino-cli upload  --fqbn esp32:esp32:esp32s3:PSRAM=opi,FlashSize=16M,PartitionScheme=app3M_fat9M_16MB,USBMode=default,CDCOnBoot=cdc,UploadMode=cdc -p COM11 firmware/carrier_main
+arduino-cli upload  --fqbn esp32:esp32:esp32s3:PSRAM=opi,FlashSize=16M,PartitionScheme=app3M_fat9M_16MB,USBMode=default,CDCOnBoot=cdc,UploadMode=cdc -p COM12 firmware/carrier_main
 ```
 
 Bench-only switch: `-DMOBO_RST_HOLD_TEST=1` holds RST HIGH from boot, for
@@ -206,5 +219,5 @@ Still to do:
 - WoL and the USB power commands in the firmware;
 - write the real dashboard content (the status and stats views are test
   placeholders);
-- move the GIF's diff and RGB444 conversion to the second core, to get from
-  27 fps back to the native 29.7.
+- fill `secrets.h` (Wi-Fi password, Discord bot) and test the Discord bot;
+- dashboards that show the PC stats, AI status and Claude usage.

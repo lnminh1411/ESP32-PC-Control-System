@@ -4,3 +4,7 @@
 
 void logMsg(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void logMute(bool muted);
+void logSetHook(void (*hook)(const char *line));   // extra sink (Home Assistant)
+// Also copy lines logged by the calling task into buf (NUL-terminated,
+// one per line) until logCapture(nullptr, 0): command replies for Discord.
+void logCapture(char *buf, unsigned size);

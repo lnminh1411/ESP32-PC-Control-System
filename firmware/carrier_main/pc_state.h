@@ -7,12 +7,14 @@
 // turns the backlights off; awake restores them.
 //
 // Status LED (GPIO2): solid = PC on, slow blink = asleep/off, short blip
-// every 2 s = no USB host seen yet. `led on|off` overrides it.
+// every 2 s = no USB host seen yet. `led on|off` overrides it. The LED is
+// PWM-driven (LEDC): ledBrightnessSet() scales every "on", and LED_SWEEP is
+// a test ramp, 100% -> 0% over 2 s and back over 1 s.
 #pragma once
 #include <stdint.h>
 
 enum PcState { PC_UNKNOWN, PC_ON, PC_OFF };
-enum LedMode { LED_AUTO, LED_ON, LED_OFF };
+enum LedMode { LED_AUTO, LED_ON, LED_OFF, LED_SWEEP };
 
 void pcStateInit();                // register the USB event handler (before Serial.begin())
 void statusLedInit();              // start the LED task
@@ -21,3 +23,5 @@ const char *pcStateName(PcState s);
 uint32_t bootGuardLeftMs();        // 0 = guard not running
 void ledModeSet(LedMode m);
 LedMode ledMode();
+void ledBrightnessSet(uint8_t pct);   // 0-100, applies to every "on"
+uint8_t ledBrightness();
