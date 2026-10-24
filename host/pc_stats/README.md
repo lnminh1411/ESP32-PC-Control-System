@@ -145,6 +145,34 @@ ASCII lines streamed every `@interval` ms (default 500):
 When transported over the vendor HID interface:
 Each packet is chunked into 63-byte pieces; each report starts with Report ID `0x06` followed by up to 63 payload bytes, zero-padded to 64 bytes total. The firmware discards zero bytes and reassembles lines identically.
 
+## Power Control and Wake-on-LAN
+
+The service supports bidirectional power management with the carrier board:
+
+### Protocol
+- **Device -> Host (Power Requests)**: Sent as HID INPUT reports on report ID 6 (63-byte ASCII payload, zero-padded, `\n`-terminated; also accepted over serial CDC fallback). Format:
+  ```
+  !power <action> <nonce>
+  ```
+  where `<action>` is strictly allowlisted to `sleep`, `hibernate`, `restart`, or `shutdown`, and `<nonce>` is 1-8 hex digits. Any command not matching this exact format is logged and ignored without acking. Duplicate nonces within 60 seconds are discarded to prevent repeated executions.
+- **Host -> Device (Ack)**: Sent in the regular sample stream as a text stat `@t power.ack <action> <nonce>` (e.g. `@t power.ack sleep 3f2a`) in every sample for 10 seconds after accepting the request. If an action is rejected (e.g. hibernation disabled), it acks `@t power.ack error <nonce> <reason>` (e.g. `error <nonce> hibernate disabled`).
+- **Execution Timing**: The host performs the requested power transition ~1.5 seconds after first sending the ack, ensuring the ack packet is transmitted on the wire before the host suspends or restarts.
+- **Wake-on-LAN Target**: The host discovers and continuously advertises its primary network adapter MAC address and interface name in every sample:
+  ```
+  @t pc.mac AA:BB:CC:DD:EE:FF
+  @t pc.mac_if Ethernet
+  ```
+  The adapter is chosen by priority: (1) operational wired Ethernet adapter with an IPv4 gateway, (2) any Ethernet adapter, (3) any up adapter with a gateway (skipping virtual adapters such as Hyper-V, VirtualBox, VMware, TAP, Loopback, Bluetooth, WAN Miniport). Refreshed every 30 seconds.
+
+### Hardware Fallback
+The service strictly executes only the four software power actions (`sleep`, `hibernate`, `restart`, `shutdown`). When the service is not running (e.g. PC is powered off in S5, hung, or booting), the carrier board controls the physical front-panel power switch header via hardware optocoupler pulses (power button press).
+
+### Wake-on-LAN Prerequisites
+To wake the PC from sleep or powered-off state (S5) using Magic Packets:
+1. **NIC Configuration**: In Windows Device Manager, open the Ethernet adapter Properties -> *Power Management* tab (or *Advanced* tab) and enable **Wake on Magic Packet** and allow the device to wake the computer.
+2. **BIOS / UEFI Settings**: Disable **ErP Ready** / **Deep Sleep** (or set to Disabled) and enable **Wake on LAN** / **Power On By PCI-E Device**. If ErP is enabled, the motherboard cuts standby power (+5VSB) to the Ethernet controller when shutdown, preventing the NIC from receiving magic packets.
+
+
 ## USB COM Port Notice
 
 When connected over the vendor HID interface (default in `auto` mode), the ESP32-S3's USB CDC COM port is completely unused by the service. Firmware can be flashed and serial consoles opened without stopping the service.
