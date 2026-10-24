@@ -196,7 +196,7 @@ Streamed by the host PC stats service over USB HID / CDC:
 | `agy.active` | text | Active Antigravity agent name | string |
 | `agy2.flash_pct` | number | Antigravity flash quota consumed | % |
 | `agy2.flash_reset_at` | text | Antigravity flash quota reset time | string |
-| `ai.status`, `ai.guard` | text | Local LLM status and safety guard state | string |
+| `ai.phase_name`, `ai.guard_name` | text | Local agent phase and guard state | string |
 
 ---
 

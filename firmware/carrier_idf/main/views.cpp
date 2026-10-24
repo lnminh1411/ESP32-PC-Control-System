@@ -574,7 +574,9 @@ void viewsService() {
 
     Panel &p = panels[best];
     float expected = getExpectedBytes(best);
-    bool canSubmit = (bestPrio == PRIO_HIGH) || (tokenBucket >= (double)expected);
+    // a full bucket always admits one frame, else a frame bigger than the bucket never goes
+    double need = (double)expected < getBucketCapacity() ? (double)expected : getBucketCapacity();
+    bool canSubmit = (bestPrio == PRIO_HIGH) || (tokenBucket >= need);
 
     if (!canSubmit) {
       if (!wasDeferred[best]) {
@@ -598,6 +600,7 @@ void viewsService() {
       p.dueMs += gif.durMs[idx];
       if ((int32_t)(now - p.dueMs) > (int32_t)gif.durMs[idx]) p.dueMs = now;
       p.gifIdx = (idx + 1) % gif.n;
+      panelFirstFrame[best] = false;
     } else {
       if (p.view == VIEW_STATUS) drawStatus(p);
       else if (p.view == VIEW_STATS) drawStats(p);

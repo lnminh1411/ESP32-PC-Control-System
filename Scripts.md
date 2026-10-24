@@ -43,10 +43,13 @@ Validates firmware GPIO definitions against the atopile hardware pin map. Helps 
 Streams RGB565 GIF frames over USB-UART to the ESP32-S3 for storage in FAT and playback. Validates transmission integrity using per-frame checksums. Located at `scripts/gif_stream.py`.
 
 ### idf_flash.py
-Builds and flashes `firmware/carrier_idf` over the native USB port hands-off: stops the ESP32PcStats service, does a 1200-baud touch on COM12, waits for the ROM downloader port and runs `idf.py flash`. Run it with the ESP-IDF Python (`C:spressif\python_env\idf5.5_py3.12_env\Scripts\python.exe scripts\idf_flash.py [--no-build]`). Located at `scripts/idf_flash.py`.
+Builds and flashes `firmware/carrier_idf` over the native USB port hands-off: stops the ESP32PcStats service, does a 1200-baud touch on COM12, waits for the ROM downloader port and runs `idf.py flash`. Run it with the ESP-IDF Python (`C:\Espressif\python_env\idf5.5_py3.12_env\Scripts\python.exe scripts\idf_flash.py [--no-build]`). Located at `scripts/idf_flash.py`.
 
 ### ota_upload.py
 Uploads `firmware/carrier_idf/build/carrier.bin` to the board over Wi-Fi (HTTP POST /ota, password from secrets.h). Located at `scripts/ota_upload.py`.
 
 ### make_vlw.py
 Converts a TTF/OTF font into an anti-aliased LovyanGFX VLW font as a C array (`font_*.cpp` in firmware/carrier_idf/main). Usage: `python scripts/make_vlw.py FONT.otf SIZE NAME OUT.cpp [--extra U+F2C9]`. Located at `scripts/make_vlw.py`.
+### layout_upload.py
+Uploads a dashboard layout JSON (format in docs/layouts.md) to the board without reflashing: serial in base64 chunks (`--port COM12`) or HTTP `PUT /layout` (`--host esp32-pc-control.local`, password from secrets.h). Usage: `python scripts/layout_upload.py FILE.json --port COM12`; the board rejects invalid JSON and keeps the old layout. Located at `scripts/layout_upload.py`.
+

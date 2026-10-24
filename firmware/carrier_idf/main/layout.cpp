@@ -158,7 +158,7 @@ static const char BUILTIN_LAYOUT_JSON[] = R"json({
         {"type":"value", "x":124, "y":218, "font":"body", "key":"c_total", "fmt":"%.0f GB", "color":"#888888", "w":108, "align":"right"},
         {"type":"line",  "x":8, "y":240, "w":224, "color":"#333333"},
         {"type":"label", "x":8, "y":246, "font":"small", "color":"#888888", "text":"UPTIME"},
-        {"type":"value", "x":60, "y":246, "font":"small", "key":"uptime", "fmt":"%.0fs", "color":"#CCCCCC", "w":172, "align":"right"},
+        {"type":"value", "x":60, "y":246, "font":"small", "key":"uptime", "fmt":"%.1f h", "scale":0.000277777778, "color":"#CCCCCC", "w":172, "align":"right"},
         {"type":"label", "x":8, "y":266, "font":"small", "color":"#888888", "text":"PLAN"},
         {"type":"text",  "x":8, "y":282, "font":"small", "key":"claude.plan", "w":224, "color":"#58A6FF"}
       ]
@@ -217,13 +217,13 @@ static const char BUILTIN_LAYOUT_JSON[] = R"json({
         {"type":"label", "x":8, "y":168, "font":"small", "color":"#666666", "text":"Reset:"},
         {"type":"text",  "x":52, "y":168, "font":"small", "key":"agy2.flash_reset_at", "w":180, "color":"#AAAAAA"},
         {"type":"line",  "x":8, "y":186, "w":224, "color":"#333333"},
-        {"type":"label", "x":8, "y":192, "font":"small", "color":"#888888", "text":"ACTIVE AGENT"},
+        {"type":"label", "x":8, "y":192, "font":"small", "color":"#888888", "text":"AGY ACCOUNT"},
         {"type":"text",  "x":8, "y":208, "font":"body", "key":"agy.active", "w":224, "color":"#58A6FF"},
         {"type":"label", "x":8, "y":230, "font":"small", "color":"#888888", "text":"CLAUDE PLAN"},
         {"type":"text",  "x":8, "y":246, "font":"small", "key":"claude.plan", "w":224, "color":"#E6EDF3"},
-        {"type":"label", "x":8, "y":264, "font":"small", "color":"#888888", "text":"STATUS / GUARD"},
-        {"type":"text",  "x":8, "y":280, "font":"small", "key":"ai.status", "w":224, "color":"#8B949E"},
-        {"type":"text",  "x":8, "y":296, "font":"small", "key":"ai.guard", "w":224, "color":"#FFA500"}
+        {"type":"label", "x":8, "y":264, "font":"small", "color":"#888888", "text":"LOCAL AGENT / GUARD"},
+        {"type":"text",  "x":8, "y":280, "font":"small", "key":"ai.phase_name", "w":224, "color":"#8B949E"},
+        {"type":"text",  "x":8, "y":296, "font":"small", "key":"ai.guard_name", "w":224, "color":"#FFA500"}
       ]
     }
   ]

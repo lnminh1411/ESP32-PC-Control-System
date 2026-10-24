@@ -240,13 +240,9 @@ static void on_cdc_line_state(int itf, cdcacm_event_t *event) {
     }
   }
 
-  if (s_lineState == 0) {
-    if (dtr && rts && !s_cdc_connected) {
-      s_cdc_connected = true;
-    } else if (!dtr && s_cdc_connected) {
-      s_cdc_connected = false;
-    }
-  }
+  // a terminal is listening while DTR is up; gating on lineState lost every other
+  // pyserial open (RTS-then-DTR walks the reset sequence to step 2 and parks there)
+  s_cdc_connected = dtr;
 }
 
 static void on_cdc_line_coding(int itf, cdcacm_event_t *event) {
