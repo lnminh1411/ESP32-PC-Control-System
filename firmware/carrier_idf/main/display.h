@@ -3,36 +3,40 @@
 // Core 1 draws into canvas or selects GIF frames; core 0 flush task diffs,
 // packs and pushes pixels over SPI. ONLY the flush task touches SPI/esp_lcd.
 // Each panel has its own SPI device (own CS) and two frame buffers:
-//   canvas -- what the panel should show (Adafruit GFXcanvas16, RGB565;
-//             internal RAM for status/stats when fitting, PSRAM for GIF);
+//   canvas -- what the panel should show (LovyanGFX LGFX_Sprite, RGB565;
+//             internal RAM when fitting, PSRAM otherwise);
 //   sent   -- what the panel shows now (PSRAM).
 // The flush task diffs canvas vs sent in 8-row bands and pushes RGB444
 // (12 bpp, 2 px in 3 bytes). GIF panels bypass canvas and copy pre-packed
 // RGB444 rows straight to DMA.
 #pragma once
-#include <Adafruit_GFX.h>
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
 #include <stdint.h>
 
 #include "config.h"
 
-enum View { VIEW_GIF, VIEW_STATUS, VIEW_STATS };
-
-class PsCanvas : public GFXcanvas16 {   // GFXcanvas16 with buffer in internal RAM or PSRAM
- public:
-  PsCanvas(uint16_t w, uint16_t h, bool internal = false);
-  bool isInternal() const { return _isInternal; }
-
- private:
-  bool _isInternal;
+enum View : uint8_t {
+  VIEW_GIF,
+  VIEW_STATUS,
+  VIEW_STATS,
+  VIEW_METRICS,
+  VIEW_COUNT
 };
+
+namespace lgfx {
+inline namespace v1 {
+class LGFX_Sprite;
+}
+}
+using LGFX_Sprite = lgfx::LGFX_Sprite;
 
 struct Panel {
   esp_lcd_panel_io_handle_t io;
   esp_lcd_panel_handle_t lcd;
-  PsCanvas *canvas;
+  LGFX_Sprite *canvas;
   uint16_t *sent;
+  bool canvasInternal;
   View view;
   uint16_t gifIdx;
   uint32_t dueMs;
@@ -44,11 +48,13 @@ struct Panel {
 };
 
 extern Panel panels[N_PANELS];
+extern uint32_t displaySpinUs;
 
 void displayInit();                 // reset + init all panels, start flush task
 void displaySubmit(int panel);      // busy=true, queue it; caller must not touch canvas until !busy
 void displayWait(int panel);        // block (vTaskDelay(1) loop) until !busy
 void displayWaitAll();
+float busLoadPct();
 
 // Backlights: a per-panel user setting, forced dark while the PC is idle.
 void backlightInit();

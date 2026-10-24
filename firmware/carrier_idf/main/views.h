@@ -1,7 +1,8 @@
 // Views: what each panel shows.
-//   gif    -- pre-packed RGB444 frames with precomputed dirty rects, DMA bypass
-//   status -- PC state, boot-guard countdown, uptime, last action, door/RST
-//   stats  -- bus load, per-panel fps and KB/s, memory, chip temperature
+//   gif     -- pre-packed RGB444 frames with precomputed dirty rects, DMA bypass
+//   status  -- PC state, boot-guard countdown, uptime, last action, door/RST
+//   stats   -- bus load, per-panel fps and KB/s, memory, chip temperature
+//   metrics -- all streamed PC metrics sliced across panels with 5s paging
 // Core 1 draws into canvas / selects GIF frame; core 0 flush task diffs/sends.
 #pragma once
 #include <stdint.h>
