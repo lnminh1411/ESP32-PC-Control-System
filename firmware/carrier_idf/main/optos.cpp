@@ -46,13 +46,13 @@ void optosInit() {
   esp_timer_create(&ta, &rstTimer);
 }
 
-const char *doorPress(int n) {
+const char *doorPress(int n, uint32_t ms) {
   if (n < 1 || n > 4) return "button must be 1-4";
   if (doorActive >= 0) return "another button is being pressed";
   if (esp_timer_get_time() < doorFreeAtUs) return "too soon after the last press (500 ms gap)";
   doorActive = n - 1;
   gpio_set_level((gpio_num_t)PIN_DOOR[n - 1], 1);
-  esp_timer_start_once(doorTimer, DOOR_PRESS_MS * 1000ULL);
+  esp_timer_start_once(doorTimer, (ms ? ms : DOOR_PRESS_MS) * 1000ULL);
   return nullptr;
 }
 

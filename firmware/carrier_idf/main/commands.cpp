@@ -126,10 +126,12 @@ static void cmdView(const char *a1, const char *a2) {
   logMsg("view: panel %d -> %s", n, a2);
 }
 
-static void cmdDoor(const char *a1, const char *) {
-  const char *err = doorPress(a1 ? atoi(a1) : 0);
+static void cmdDoor(const char *a1, const char *a2) {
+  int ms = a2 ? atoi(a2) : DOOR_PRESS_MS;   // some keyfobs need a longer hold
+  if (ms < 50 || ms > 5000) { logMsg("door: usage door <1-4> [50-5000 ms]"); return; }
+  const char *err = doorPress(a1 ? atoi(a1) : 0, (uint32_t)ms);
   if (err) { logMsg("door: refused, %s", err); return; }
-  logMsg("door: B%s pressed for %d ms", a1, DOOR_PRESS_MS);
+  logMsg("door: B%s pressed for %d ms", a1, ms);
   char what[16];
   snprintf(what, sizeof what, "door B%s", a1);
   viewsNoteAction(what);
@@ -295,7 +297,7 @@ static const Command COMMANDS[] = {
   {"help",    "",                                    cmdHelp},
   {"status",  "",                                    cmdStatus},
   {"view",    "<1|2|3> <gif|status|stats|metrics|dash>", cmdView},
-  {"door",    "<1-4>",                               cmdDoor},
+  {"door",    "<1-4> [ms]",                          cmdDoor},
   {"reset",   "",                                    cmdReset},
   {"wake",    "[force | mac <AA:BB:..>]",            cmdWake},
   {"going",   "<restart|shutdown|update_restart|update_shutdown|sleep|clear>", cmdGoing},
