@@ -6,13 +6,6 @@
 #define WIFI_SSID "your-wifi"
 #define WIFI_PASS "your-wifi-password"
 
-// Home Assistant's MQTT broker (the Mosquitto broker add-on). Leave
-// MQTT_HOST empty to run without Home Assistant.
-#define MQTT_HOST ""            // e.g. "192.168.1.20" or "homeassistant.local"
-#define MQTT_PORT 1883
-#define MQTT_USER ""
-#define MQTT_PASS ""
-
 // Discord bot (discord.h has the setup steps). Empty token = bot off.
 #define DISCORD_TOKEN      ""
 #define DISCORD_APP_ID     ""   // application id

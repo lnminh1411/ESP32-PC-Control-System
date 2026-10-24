@@ -50,9 +50,8 @@ static constexpr int PIN_DOOR[4] = {39, 40, 41, 42};   // keyfob B1-B4 (opto row
 // "RGB" solder jumper bridged). Held off. ----
 #define ONBOARD_RGB_GPIO 48
 
-// ---- network / Home Assistant (credentials in secrets.h) ----
+// ---- network (credentials in secrets.h) ----
 #define NET_HOSTNAME "esp32-pc-control"   // mDNS + OTA name
-#define MQTT_BASE    "esp32pc"            // topic root: esp32pc/cmd, /state, /avail, /log
 
 // ---- GIF storage / upload ----
 #define UART_BAUD  3000000

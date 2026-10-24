@@ -22,6 +22,7 @@ bool gifFsInit() {
     .format_if_mount_failed = true,
     .max_files = 4,
     .allocation_unit_size = 4096,
+    .disk_status_check_enable = false,
     .use_one_fat = false,
   };
   esp_err_t err = esp_vfs_fat_spiflash_mount_rw_wl("/ffat", "ffat", &mount_config, &s_wl_handle);

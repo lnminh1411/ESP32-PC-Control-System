@@ -22,6 +22,7 @@ void hostUartBegin() {
     .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
     .rx_flow_ctrl_thresh = 122,
     .source_clk = UART_SCLK_DEFAULT,
+    .flags = {},
   };
   ESP_ERROR_CHECK(uart_param_config(UART_NUM_0, &cfg));
   ESP_ERROR_CHECK(uart_driver_install(UART_NUM_0, 32768, 4096, 0, NULL, 0));

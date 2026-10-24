@@ -12,7 +12,6 @@
 #include "discord.h"
 #include "display.h"
 #include "gif_store.h"
-#include "ha.h"
 #include "log.h"
 #include "net.h"
 #include "optos.h"
@@ -80,8 +79,8 @@ static void cmdStatus(const char *, const char *) {
     logMsg("  panel %d: %-6s %5.1f fps %6.1f KB/s  bus %5.1f ms/s", i + 1, viewName(panels[i].view),
            panels[i].fps, panels[i].kbps, panels[i].busMs);
   logMsg("  gif: %u frames %ux%u", gif.n, gif.w, gif.h);
-  logMsg("  wifi %s %d dBm | discord %s | home assistant %s", netUp() ? netIp() : "down", netRssi(),
-         discordUp() ? "online" : "offline", haUp() ? "connected" : "off");
+  logMsg("  wifi %s %d dBm | discord %s", netUp() ? netIp() : "down", netRssi(),
+         discordUp() ? "online" : "offline");
   logMsg("  pc stats: %d numbers, %d texts, %s", pcStatsCount(), pcTextCount(), pcStatsFresh() ? "live" : "no data");
 }
 
@@ -129,7 +128,6 @@ static void cmdReset(const char *, const char *) {
 }
 
 // bl <n|all> <0-100|on|off>: "on" brings back the last non-zero level
-// (Home Assistant's light on/off sends these).
 static void cmdBacklight(const char *a1, const char *a2) {
   static uint8_t lastOn[N_PANELS] = {100, 100, 100};
   bool on = a2 && !strcmp(a2, "on"), off = a2 && !strcmp(a2, "off");

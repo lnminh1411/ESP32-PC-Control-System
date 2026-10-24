@@ -11,7 +11,6 @@
 #include "usb.h"
 
 static volatile bool s_muted = false;
-static void (*s_hook)(const char *) = nullptr;
 static char *s_capBuf = nullptr;
 static unsigned s_capSize = 0, s_capLen = 0;
 static TaskHandle_t s_capTask = nullptr;
@@ -24,7 +23,6 @@ void logCapture(char *buf, unsigned size) {
   if (buf && size) buf[0] = 0;
 }
 
-void logSetHook(void (*h)(const char *)) { s_hook = h; }
 
 void logMute(bool m) { s_muted = m; }
 
@@ -34,7 +32,6 @@ static void logEmit(const char *buf, size_t len) {
     usbCdcWrite(buf, len);
     usbCdcWrite("\n", 1);
   }
-  if (s_hook) s_hook(buf);
   if (s_capBuf && s_capTask == xTaskGetCurrentTaskHandle() && s_capLen + 2 < s_capSize) {
     s_capLen += snprintf(s_capBuf + s_capLen, s_capSize - s_capLen, "%s\n", buf);
     if (s_capLen > s_capSize - 1) s_capLen = s_capSize - 1;

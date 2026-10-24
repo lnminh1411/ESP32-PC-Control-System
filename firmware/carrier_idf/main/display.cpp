@@ -47,14 +47,22 @@ static void waitTx(uint32_t inFlight) {
   displaySpinUs += nowUs() - t;
 }
 
-// Push canvas rect (x, y, w, h) of panel p as RGB444. x and w must be even.
-static void push444(Panel &p, int x, int y, int w, int h) {
-  const uint16_t *src = (const uint16_t *)p.canvas->getBuffer();
-  waitTx(0);
+// CASET/RASET for a canvas rect, shifted by the panel's RAM offsets
+static void setWindow(Panel &p, int x, int y, int w, int h) {
+  const PanelConfig &cfg = displayPanels[&p - panels];
+  x += cfg.colStart;
+  y += cfg.rowStart;
   uint8_t ca[4] = {(uint8_t)(x >> 8), (uint8_t)x, (uint8_t)((x + w - 1) >> 8), (uint8_t)(x + w - 1)};
   uint8_t ra[4] = {(uint8_t)(y >> 8), (uint8_t)y, (uint8_t)((y + h - 1) >> 8), (uint8_t)(y + h - 1)};
   esp_lcd_panel_io_tx_param(p.io, 0x2A, ca, 4);   // CASET
   esp_lcd_panel_io_tx_param(p.io, 0x2B, ra, 4);   // RASET
+}
+
+// Push canvas rect (x, y, w, h) of panel p as RGB444. x and w must be even.
+static void push444(Panel &p, int x, int y, int w, int h) {
+  const uint16_t *src = (const uint16_t *)p.canvas->getBuffer();
+  waitTx(0);
+  setWindow(p, x, y, w, h);
   size_t rowBytes = (size_t)w * 3 / 2;
   int rowsPerChunk = std::max(1, (int)(CHUNK_BYTES / rowBytes));
   bool first = true;
@@ -130,10 +138,7 @@ static void pushGifRect(Panel &p, const uint8_t *framePacked, int rx, int ry, in
   int gx = x0 + rx;
   int gy = y0 + ry;
   waitTx(0);
-  uint8_t ca[4] = {(uint8_t)(gx >> 8), (uint8_t)gx, (uint8_t)((gx + rw - 1) >> 8), (uint8_t)(gx + rw - 1)};
-  uint8_t ra[4] = {(uint8_t)(gy >> 8), (uint8_t)gy, (uint8_t)((gy + rh - 1) >> 8), (uint8_t)(gy + rh - 1)};
-  esp_lcd_panel_io_tx_param(p.io, 0x2A, ca, 4);   // CASET
-  esp_lcd_panel_io_tx_param(p.io, 0x2B, ra, 4);   // RASET
+  setWindow(p, gx, gy, rw, rh);
   size_t frameStride = (size_t)gif.pw * 3 / 2;
   size_t xByteOffset = (size_t)rx * 3 / 2;
   size_t rowBytes = (size_t)rw * 3 / 2;
@@ -291,7 +296,8 @@ void displayInit() {
     if (cfg.invert) esp_lcd_panel_invert_color(p.lcd, true);   // IPS ST7789
     const uint8_t colmod = 0x53;                               // 12 bpp RGB444 (esp_lcd set 16 bpp)
     esp_lcd_panel_io_tx_param(p.io, 0x3A, &colmod, 1);
-    esp_lcd_panel_disp_on_off(p.lcd, true);                    // MADCTL 0: the orientation the panels need
+    esp_lcd_panel_io_tx_param(p.io, 0x36, &cfg.madctl, 1);    // MADCTL: orientation / RGB order
+    esp_lcd_panel_disp_on_off(p.lcd, true);
 
     size_t canvasBytes = (size_t)cfg.w * cfg.h * 2;
     uint16_t *buf = nullptr;

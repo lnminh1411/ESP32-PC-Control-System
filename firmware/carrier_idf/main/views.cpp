@@ -160,7 +160,7 @@ static void drawMetrics(Panel &p, int panelIdx) {
   c.fillRect(0, 0, TFT_W, 20, C_BG);
 
   // Header line: "PC METRICS k/n" plus "live" / "no data"
-  char hdr[32];
+  char hdr[48];
   snprintf(hdr, sizeof(hdr), "PC METRICS %d/%d", k + 1, n);
 
   c.setFont(&fonts::Font0);

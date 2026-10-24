@@ -62,7 +62,7 @@ void pcStatsLine(const char *line) {
       if (idx >= 0) {
         table[idx].val = v;
       } else if (count < PCSTATS_MAX) {
-        strncpy(table[count].key, kbuf, sizeof(table[count].key) - 1);
+        snprintf(table[count].key, sizeof(table[count].key), "%s", kbuf);
         table[count].key[sizeof(table[count].key) - 1] = '\0';
         table[count].val = v;
         count++;
@@ -99,12 +99,12 @@ void pcStatsLine(const char *line) {
       }
     }
     if (idx >= 0) {
-      strncpy(textTable[idx].val, tbuf, sizeof(textTable[idx].val) - 1);
+      snprintf(textTable[idx].val, sizeof(textTable[idx].val), "%s", tbuf);
       textTable[idx].val[sizeof(textTable[idx].val) - 1] = '\0';
     } else if (textCount < PCSTATS_TEXT_MAX) {
-      strncpy(textTable[textCount].key, kbuf, sizeof(textTable[textCount].key) - 1);
+      snprintf(textTable[textCount].key, sizeof(textTable[textCount].key), "%s", kbuf);
       textTable[textCount].key[sizeof(textTable[textCount].key) - 1] = '\0';
-      strncpy(textTable[textCount].val, tbuf, sizeof(textTable[textCount].val) - 1);
+      snprintf(textTable[textCount].val, sizeof(textTable[textCount].val), "%s", tbuf);
       textTable[textCount].val[sizeof(textTable[textCount].val) - 1] = '\0';
       textCount++;
     }

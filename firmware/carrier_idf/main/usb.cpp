@@ -15,10 +15,16 @@
 #include "tinyusb.h"
 #include "tinyusb_cdc_acm.h"
 
-#include "esp32s3/rom/usb/chip_usb_dw_wrapper.h"
-#include "esp32s3/rom/usb/usb_persist.h"
+#include <driver/gpio.h>
+#include <esp_intr_alloc.h>
+#include <freertos/semphr.h>
+#include <initializer_list>
+
+#include "hal/clk_gate_ll.h"
+#include "hal/usb_serial_jtag_ll.h"
 #include "soc/rtc_cntl_reg.h"
 #include "soc/soc.h"
+#include "soc/usb_serial_jtag_reg.h"
 
 #define TUD_HID_REPORT_DESC_GENERIC_INOUT_FEATURE(report_size, ...) \
   HID_USAGE_PAGE_N(HID_USAGE_PAGE_VENDOR, 2), HID_USAGE(0x01), HID_COLLECTION(HID_COLLECTION_APPLICATION), \
@@ -99,9 +105,54 @@ static volatile bool s_cdc_connected = false;
 static volatile bool s_dtr = false;
 static volatile bool s_rts = false;
 static volatile uint8_t s_lineState = 0;
+static SemaphoreHandle_t s_cdc_tx_lock;   // logMsg writes from several tasks
+
+static void IRAM_ATTR busResetIsr(void *arg) {
+  BaseType_t woken = pdFALSE;
+  uint32_t st = usb_serial_jtag_ll_get_intsts_mask();
+  usb_serial_jtag_ll_clr_intsts_mask(st);
+  if (st & USB_SERIAL_JTAG_INTR_BUS_RESET) xSemaphoreGiveFromISR((SemaphoreHandle_t)arg, &woken);
+  if (woken) portYIELD_FROM_ISR();
+}
+
+// Hand the USB pads back to the USB-Serial-JTAG peripheral before rebooting
+// into the ROM downloader: the PHY select lives in the RTC domain and
+// survives esp_restart(), and the ROM only downloads over USB-Serial-JTAG.
+// Port of usb_switch_to_cdc_jtag() in Arduino's esp32-hal-tinyusb.c.
+static void switchToUsbSerialJtag() {
+  periph_ll_reset(PERIPH_USB_MODULE);               // stop USB-OTG
+  periph_ll_disable_clk_set_rst(PERIPH_USB_MODULE);
+  CLEAR_PERI_REG_MASK(RTC_CNTL_USB_CONF_REG, RTC_CNTL_SW_HW_USB_PHY_SEL | RTC_CNTL_SW_USB_PHY_SEL | RTC_CNTL_USB_PAD_ENABLE);
+  CLEAR_PERI_REG_MASK(USB_SERIAL_JTAG_CONF0_REG, USB_SERIAL_JTAG_PHY_SEL);         // internal PHY
+  CLEAR_PERI_REG_MASK(USB_SERIAL_JTAG_CONF0_REG, USB_SERIAL_JTAG_USB_PAD_ENABLE);  // pads off
+  // D- (GPIO19) and D+ (GPIO20) low: the host sees a disconnect and re-enumerates
+  for (gpio_num_t pin : {GPIO_NUM_19, GPIO_NUM_20}) {
+    gpio_set_direction(pin, GPIO_MODE_OUTPUT_OD);
+    gpio_set_level(pin, 0);
+  }
+  const usb_serial_jtag_pull_override_vals_t pulls = {.dp_pu = 1, .dm_pu = 0, .dp_pd = 0, .dm_pd = 0};
+  usb_serial_jtag_ll_phy_enable_pull_override(&pulls);
+  usb_serial_jtag_ll_phy_disable_pull_override();
+  usb_serial_jtag_ll_disable_intr_mask(USB_SERIAL_JTAG_LL_INTR_MASK);
+  usb_serial_jtag_ll_clr_intsts_mask(USB_SERIAL_JTAG_LL_INTR_MASK);
+  usb_serial_jtag_ll_ena_intr_mask(USB_SERIAL_JTAG_INTR_BUS_RESET);
+  intr_handle_t intr = nullptr;
+  SemaphoreHandle_t resetSeen = xSemaphoreCreateBinary();
+  if (resetSeen && esp_intr_alloc(ETS_USB_SERIAL_JTAG_INTR_SOURCE, 0, busResetIsr, resetSeen, &intr) != ESP_OK) {
+    vSemaphoreDelete(resetSeen);
+    resetSeen = nullptr;
+  }
+  SET_PERI_REG_MASK(USB_SERIAL_JTAG_CONF0_REG, USB_SERIAL_JTAG_USB_PAD_ENABLE);    // pads to USB-Serial-JTAG
+  if (resetSeen) {                                  // host's bus reset = it saw the new device
+    xSemaphoreTake(resetSeen, pdMS_TO_TICKS(1000));
+    usb_serial_jtag_ll_disable_intr_mask(USB_SERIAL_JTAG_LL_INTR_MASK);
+    esp_intr_free(intr);
+    vSemaphoreDelete(resetSeen);
+  }
+}
 
 static void usbResetToBootloader() {
-  chip_usb_set_persist_flags(USBDC_PERSIST_ENA);
+  switchToUsbSerialJtag();
   REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
   esp_restart();
 }
@@ -161,20 +212,20 @@ static void on_cdc_line_state(int itf, cdcacm_event_t *event) {
   // DTR/RTS bootloader state machine ported from USBCDC.cpp
   if (!dtr && rts) {
     if (s_lineState == 0) {
-      s_lineState++;
+      s_lineState = s_lineState + 1;
       s_cdc_connected = false;
     } else {
       s_lineState = 0;
     }
   } else if (dtr && rts) {
     if (s_lineState == 1) {
-      s_lineState++;
+      s_lineState = s_lineState + 1;
     } else {
       s_lineState = 0;
     }
   } else if (dtr && !rts) {
     if (s_lineState == 2) {
-      s_lineState++;
+      s_lineState = s_lineState + 1;
     } else {
       s_lineState = 0;
     }
@@ -241,9 +292,10 @@ void usbInit() {
     snprintf(s_serial_str, sizeof(s_serial_str), "%02X%02X%02X%02X%02X%02X",
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
   } else {
-    strncpy(s_serial_str, "000000000000", sizeof(s_serial_str) - 1);
+    snprintf(s_serial_str, sizeof(s_serial_str), "000000000000");
   }
 
+  s_cdc_tx_lock = xSemaphoreCreateMutex();
   s_hid_stream = xStreamBufferCreate(4096, 1);
   s_cdc_stream = xStreamBufferCreate(4096, 1);
 
@@ -313,9 +365,9 @@ bool usbCdcConnected() {
 }
 
 void usbCdcWrite(const char *buf, size_t len) {
-  if (!s_cdc_connected || !buf || !len) return;
+  if (!s_cdc_connected || !buf || !len || !s_cdc_tx_lock) return;
+  if (xSemaphoreTake(s_cdc_tx_lock, pdMS_TO_TICKS(2)) != pdTRUE) return;
   size_t queued = tinyusb_cdcacm_write_queue(TINYUSB_CDC_ACM_0, (const uint8_t *)buf, len);
-  if (queued > 0) {
-    tinyusb_cdcacm_write_flush(TINYUSB_CDC_ACM_0, pdMS_TO_TICKS(2));
-  }
+  if (queued > 0) tinyusb_cdcacm_write_flush(TINYUSB_CDC_ACM_0, 0);
+  xSemaphoreGive(s_cdc_tx_lock);
 }

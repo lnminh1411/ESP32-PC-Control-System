@@ -7,7 +7,6 @@
 #include "discord.h"
 #include "display.h"
 #include "gif_store.h"
-#include "ha.h"
 #include "host_uart.h"
 #include "log.h"
 #include "net.h"
@@ -44,7 +43,6 @@ extern "C" void app_main() {
   pcStateInit();
 
   netInit();                           // joins Wi-Fi in the background
-  haInit();
   discordInit();
 
   // 4. displays: GIF / status / stats (testing request: panels 1-3 all VIEW_METRICS)
@@ -73,7 +71,6 @@ extern "C" void app_main() {
   for (;;) {
     consolePoll();
     netPoll();
-    haPoll();
     discordPoll();
     viewsService();
     sleepMs(1);
