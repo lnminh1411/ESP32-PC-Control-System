@@ -39,6 +39,9 @@ static GoingKind parseKind(const char *s) {
   return GO_NONE;
 }
 
+// Discord messages are capped at NOTIFY_MSG_LEN; cutting a long reason is fine
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-truncation"
 static void buildNotifyMsg(char *buf, size_t size, GoingKind k, const char *by, const char *why) {
   const char *action;
   switch (k) {
@@ -61,6 +64,7 @@ static void buildNotifyMsg(char *buf, size_t size, GoingKind k, const char *by, 
     snprintf(buf, size, "%s", action);
   }
 }
+#pragma GCC diagnostic pop
 
 static void syncScreenHold() {
   bool holdNow = pcGoingHoldsScreens();
