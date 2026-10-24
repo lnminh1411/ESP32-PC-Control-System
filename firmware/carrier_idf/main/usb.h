@@ -19,6 +19,10 @@ void usbInit();
 
 int usbHidAvailable();
 int usbHidRead();
+bool usbHidSendLine(const char *line);
+bool usbSystemControl(uint8_t usage);
+bool usbSuspended();
+bool usbRemoteWakeup();
 
 int usbCdcAvailable();
 int usbCdcRead();

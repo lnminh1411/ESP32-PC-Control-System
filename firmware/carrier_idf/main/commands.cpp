@@ -18,6 +18,9 @@
 #include "optos.h"
 #include "pc_state.h"
 #include "pcstats.h"
+#include "power.h"
+#include "usb.h"
+#include "wol.h"
 #include "sys.h"
 #include "views.h"
 
@@ -83,6 +86,8 @@ static void cmdStatus(const char *, const char *) {
   logMsg("  wifi %s %d dBm | discord %s", netUp() ? netIp() : "down", netRssi(),
          discordUp() ? "online" : "offline");
   logMsg("  pc stats: %d numbers, %d texts, %s", pcStatsCount(), pcTextCount(), pcStatsFresh() ? "live" : "no data");
+  const char *mac = wolMacStr();
+  logMsg("  wol mac %s | usb %s", (mac && *mac) ? mac : "unknown", usbSuspended() ? "suspended" : "active");
 }
 
 // pcstats [text]: stats whose key contains text (case-insensitive)
@@ -130,6 +135,38 @@ static void cmdReset(const char *, const char *) {
   discordNotify("PC reset");
 }
 
+static void cmdWake(const char *a1, const char *a2) {
+  if (a1 && !strcmp(a1, "mac")) {
+    if (!a2 || !wolSetMac(a2)) {
+      logMsg("wake: usage wake mac <AA:BB:CC:DD:EE:FF>");
+      return;
+    }
+    return;
+  }
+  if (a1) {
+    logMsg("wake: usage wake [mac <AA:BB:CC:DD:EE:FF>]");
+    return;
+  }
+  const char *err = powerWake();
+  if (err) {
+    logMsg("wake: refused, %s", err);
+    return;
+  }
+  logMsg("wake: wake initiated");
+}
+
+static void cmdPower(const char *a1, const char *) {
+  if (!a1) {
+    logMsg("power: usage power <sleep|hibernate|restart|shutdown>");
+    return;
+  }
+  const char *err = powerRequest(a1);
+  if (err) {
+    logMsg("power: refused, %s", err);
+    return;
+  }
+}
+
 // bl <n|all> <0-100|on|off>: "on" brings back the last non-zero level
 static void cmdBacklight(const char *a1, const char *a2) {
   static uint8_t lastOn[N_PANELS] = {100, 100, 100};
@@ -163,6 +200,8 @@ static const Command COMMANDS[] = {
   {"view",    "<1|2|3> <gif|status|stats|metrics>", cmdView},
   {"door",    "<1-4>",                               cmdDoor},
   {"reset",   "",                                    cmdReset},
+  {"wake",    "[mac <AA:BB:..>]",                    cmdWake},
+  {"power",   "<sleep|hibernate|restart|shutdown>",  cmdPower},
   {"bl",      "<1|2|3|all> <0-100|on|off>",          cmdBacklight},
   {"led",     "<auto|on|off|sweep|0-100>",           cmdLed},
   {"perf",    "",                                    cmdPerf},
@@ -170,7 +209,7 @@ static const Command COMMANDS[] = {
 };
 
 static void cmdHelp(const char *, const char *) {
-  char buf[200];
+  char buf[300];
   int n = snprintf(buf, sizeof buf, "commands:");
   for (const Command &c : COMMANDS)
     n += snprintf(buf + n, sizeof buf - n, " %s%s%s%s", &c == COMMANDS ? "" : "| ", c.name, *c.usage ? " " : "", c.usage);
