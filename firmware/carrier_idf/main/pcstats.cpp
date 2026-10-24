@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "pc_going.h"
 #include "sys.h"
 
 struct StatEntry {
@@ -112,6 +113,7 @@ void pcStatsLine(const char *line) {
   } else if (line[1] == 'e') {
     lastSampleMs = nowMs();
     sampleSeq++;
+    pcGoingOnSample();
   }
 }
 

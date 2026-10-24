@@ -81,7 +81,7 @@ static void runAndGetFirstLine(const char *cmd, char *out, size_t outSize) {
 
 // ---- action notifications (FreeRTOS queue from main loop) ----
 #define NOTIFY_QUEUE_DEPTH 6
-#define NOTIFY_MSG_LEN 48
+#define NOTIFY_MSG_LEN 128
 
 struct NotifyMsg {
   char text[NOTIFY_MSG_LEN];

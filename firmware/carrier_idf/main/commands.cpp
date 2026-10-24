@@ -17,6 +17,7 @@
 #include "log.h"
 #include "net.h"
 #include "optos.h"
+#include "pc_going.h"
 #include "pc_state.h"
 #include "pcstats.h"
 #include "power.h"
@@ -76,10 +77,15 @@ static void cmdPerf(const char *, const char *) {
 
 static void cmdStatus(const char *, const char *) {
   LedMode led = ledMode();
-  logMsg("pc %s%s | bus %.0f%% | bl %u/%u/%u%% %s | door %s | led %s",
+  char goingBuf[48] = "";
+  if (pcGoing() != GO_NONE) {
+    snprintf(goingBuf, sizeof goingBuf, " | going %s %lus", pcGoingLabel(), (unsigned long)(pcGoingAgeMs() / 1000));
+  }
+  logMsg("pc %s%s | bus %.0f%% | bl %u/%u/%u%% %s | door %s | led %s%s",
          pcStateName(pcState()), bootGuardLeftMs() ? " (guard)" : "", busLoadPct(),
          backlightPct(0), backlightPct(1), backlightPct(2), backlightIsIdle() ? "(idle: off)" : "",
-         doorPressed() ? "pressing" : "idle", led == LED_AUTO ? "auto" : led == LED_ON ? "on" : led == LED_SWEEP ? "sweep" : "off");
+         doorPressed() ? "pressing" : "idle", led == LED_AUTO ? "auto" : led == LED_ON ? "on" : led == LED_SWEEP ? "sweep" : "off",
+         goingBuf);
   for (int i = 0; i < N_PANELS; i++)
     logMsg("  panel %d: %-6s %5.1f fps %6.1f KB/s  bus %5.1f ms/s", i + 1, viewName(panels[i].view),
            panels[i].fps, panels[i].kbps, panels[i].busMs);
@@ -146,9 +152,17 @@ static void cmdWake(const char *a1, const char *a2) {
     }
     return;
   }
-  if (a1) {
-    logMsg("wake: usage wake [mac <AA:BB:CC:DD:EE:FF>]");
+  bool force = (a1 && !strcmp(a1, "force"));
+  if (a1 && !force) {
+    logMsg("wake: usage wake [force | mac <AA:BB:CC:DD:EE:FF>]");
     return;
+  }
+  if (!force) {
+    const char *block = pcGoingWakeBlock();
+    if (block) {
+      logMsg("wake: refused, %s", block);
+      return;
+    }
   }
   const char *err = powerWake();
   if (err) {
@@ -156,6 +170,19 @@ static void cmdWake(const char *a1, const char *a2) {
     return;
   }
   logMsg("wake: wake initiated");
+}
+
+static void cmdGoing(const char *a1, const char *) {
+  if (!a1 || (strcmp(a1, "restart") &&
+              strcmp(a1, "shutdown") &&
+              strcmp(a1, "update_restart") &&
+              strcmp(a1, "update_shutdown") &&
+              strcmp(a1, "sleep") &&
+              strcmp(a1, "clear"))) {
+    logMsg("going: usage going <restart|shutdown|update_restart|update_shutdown|sleep|clear>");
+    return;
+  }
+  pcGoingInject(a1);
 }
 
 static void cmdPower(const char *a1, const char *) {
@@ -270,7 +297,8 @@ static const Command COMMANDS[] = {
   {"view",    "<1|2|3> <gif|status|stats|metrics|dash>", cmdView},
   {"door",    "<1-4>",                               cmdDoor},
   {"reset",   "",                                    cmdReset},
-  {"wake",    "[mac <AA:BB:..>]",                    cmdWake},
+  {"wake",    "[force | mac <AA:BB:..>]",            cmdWake},
+  {"going",   "<restart|shutdown|update_restart|update_shutdown|sleep|clear>", cmdGoing},
   {"power",   "<sleep|hibernate|restart|shutdown>",  cmdPower},
   {"bl",      "<1|2|3|all> <0-100|on|off>",          cmdBacklight},
   {"led",     "<auto|on|off|sweep|0-100>",           cmdLed},
