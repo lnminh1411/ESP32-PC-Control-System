@@ -2,6 +2,7 @@
 
 #include <ctype.h>
 #include <esp_heap_caps.h>
+#include <math.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <stdio.h>
@@ -90,7 +91,9 @@ static void cmdPcStats(const char *a1, const char *) {
   for (int i = 0; i < n; i++) {
     const char *k = pcStatKey(i);
     if (!k || (a1 && !strcasestr(k, a1))) continue;
-    logMsg("  %-23s  %10.3f", k, pcStatAt(i));
+    double v = pcStatAt(i);
+    if (v == floor(v) && fabs(v) < 1e12) logMsg("  %-23s  %13.0f", k, v);
+    else logMsg("  %-23s  %13.3f", k, v);
   }
   int tn = pcTextCount();
   for (int i = 0; i < tn; i++) {

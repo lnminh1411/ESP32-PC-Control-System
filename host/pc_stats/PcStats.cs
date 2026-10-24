@@ -1019,7 +1019,7 @@ class PcStats : ServiceBase {
           tokens.Add("claude.s_pct=" + Fmt(live.FiveHour.Utilization));
           if (live.FiveHour.ResetsAtUtc != DateTime.MinValue) {
             double remSec = Math.Max(0.0, (live.FiveHour.ResetsAtUtc - nowUtc).TotalSeconds);
-            tokens.Add("claude.s_reset_s=" + Fmt((float)remSec));
+            tokens.Add("claude.s_reset_s=" + Fmt((double)remSec));
             texts.Add(new KeyValuePair<string, string>("claude.s_reset_at", live.FiveHour.ResetsAtUtc.ToLocalTime().ToString("HH:mm")));
 
             ClaudePace pace = ComputePace(live.FiveHour.Utilization, live.FiveHour.ResetsAtUtc, SessionWindowMs, nowUtc);
@@ -1034,7 +1034,7 @@ class PcStats : ServiceBase {
           tokens.Add("claude.w_pct=" + Fmt(live.SevenDay.Utilization));
           if (live.SevenDay.ResetsAtUtc != DateTime.MinValue) {
             double remSec = Math.Max(0.0, (live.SevenDay.ResetsAtUtc - nowUtc).TotalSeconds);
-            tokens.Add("claude.w_reset_s=" + Fmt((float)remSec));
+            tokens.Add("claude.w_reset_s=" + Fmt((double)remSec));
             texts.Add(new KeyValuePair<string, string>("claude.w_reset_at", live.SevenDay.ResetsAtUtc.ToLocalTime().ToString("ddd dd MMM HH:mm", CultureInfo.InvariantCulture)));
 
             ClaudePace pace = ComputePace(live.SevenDay.Utilization, live.SevenDay.ResetsAtUtc, WeeklyWindowMs, nowUtc);
@@ -1089,12 +1089,12 @@ class PcStats : ServiceBase {
           }
         }
 
-        tokens.Add("claude.tok_5h=" + Fmt((float)tok5h));
-        tokens.Add("claude.tok_today=" + Fmt((float)tokToday));
-        tokens.Add("claude.tok_7d=" + Fmt((float)tok7d));
-        tokens.Add("claude.tok_30d=" + Fmt((float)tok30d));
-        tokens.Add("claude.usd_today=" + Fmt((float)usdToday));
-        tokens.Add("claude.usd_30d=" + Fmt((float)usd30d));
+        tokens.Add("claude.tok_5h=" + Fmt((double)tok5h));
+        tokens.Add("claude.tok_today=" + Fmt((double)tokToday));
+        tokens.Add("claude.tok_7d=" + Fmt((double)tok7d));
+        tokens.Add("claude.tok_30d=" + Fmt((double)tok30d));
+        tokens.Add("claude.usd_today=" + Fmt((double)usdToday));
+        tokens.Add("claude.usd_30d=" + Fmt((double)usd30d));
       }
 
       if (!string.IsNullOrEmpty(plan)) {
@@ -1326,9 +1326,13 @@ class PcStats : ServiceBase {
     return p;
   }
 
-  static string Fmt(float? v) {
-    if (!v.HasValue || float.IsNaN(v.Value) || float.IsInfinity(v.Value)) return "";
-    return v.Value.ToString("G7", CultureInfo.InvariantCulture);
+  // Whole numbers go out exact up to 12 digits (uptime, token counts); the
+  // rest with 7 significant digits.
+  static string Fmt(double? v) {
+    if (!v.HasValue || double.IsNaN(v.Value) || double.IsInfinity(v.Value)) return "";
+    double d = v.Value;
+    if (d == Math.Floor(d) && Math.Abs(d) < 1e12) return d.ToString("0", CultureInfo.InvariantCulture);
+    return d.ToString("G7", CultureInfo.InvariantCulture);
   }
 
   static bool WildcardMatch(string pattern, string input) {
@@ -1572,9 +1576,9 @@ class PcStats : ServiceBase {
     return false;
   }
 
-  static float? EvalStat(StatRule r) {
+  static double? EvalStat(StatRule r) {
     if (r.Kind == StatKind.Uptime) {
-      return (float)(GetTickCount64() / 1000.0);
+      return (double)(GetTickCount64() / 1000);   // whole seconds
     }
     if (r.Kind == StatKind.Counter || r.Kind == StatKind.CpuMhz) {
       if (r.Counter == null) return null;
@@ -1775,7 +1779,7 @@ class PcStats : ServiceBase {
         if (rules != null) {
           for (int i = 0; i < rules.Count; i++) {
             StatRule r = rules[i];
-            float? val = EvalStat(r);
+            double? val = EvalStat(r);
             tokens.Add(r.Key + "=" + Fmt(val));
           }
         }

@@ -9,7 +9,7 @@
 
 struct StatEntry {
   char key[24];
-  float val;
+  double val;   // double: integers stay exact to 12+ digits (uptime)
 };
 
 struct TextEntry {
@@ -45,10 +45,10 @@ void pcStatsLine(const char *line) {
       kbuf[klen] = '\0';
 
       p++; // skip '='
-      float v = NAN;
+      double v = NAN;
       if (*p && *p != ' ') {
         char *end;
-        v = strtof(p, &end);
+        v = strtod(p, &end);
         p = end;
       }
 
@@ -113,7 +113,7 @@ void pcStatsLine(const char *line) {
   }
 }
 
-float pcStat(const char *key) {
+double pcStat(const char *key) {
   if (!lastSampleMs || (uint32_t)(nowMs() - lastSampleMs) >= 5000) return NAN;
   if (!key) return NAN;
   for (int i = 0; i < count; i++) {
@@ -134,7 +134,7 @@ const char *pcStatKey(int i) {
   return (i >= 0 && i < count) ? table[i].key : nullptr;
 }
 
-float pcStatAt(int i) {
+double pcStatAt(int i) {
   return (i >= 0 && i < count) ? table[i].val : NAN;
 }
 

@@ -43,11 +43,11 @@
 #define PCSTATS_TEXT_MAX 24
 
 void pcStatsLine(const char *line);   // console hands '@' lines here (already wired in console.cpp)
-float pcStat(const char *key);        // NAN if unknown, empty, or no sample for 5 s
+double pcStat(const char *key);        // NAN if unknown, empty, or no sample for 5 s
 bool pcStatsFresh();                  // an "@e" arrived in the last 3 s
 int pcStatsCount();
 const char *pcStatKey(int i);         // for listing
-float pcStatAt(int i);                // raw last value (NAN = empty)
+double pcStatAt(int i);               // raw last value (NAN = empty)
 
 const char *pcText(const char *key);  // "" if unknown or no sample for 5 s
 int pcTextCount();

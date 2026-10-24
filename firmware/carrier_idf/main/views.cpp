@@ -205,9 +205,11 @@ static void drawMetrics(Panel &p, int panelIdx) {
 
     if (globalIdx < numCount) {
       rawKey = pcStatKey(globalIdx);
-      float val = pcStatAt(globalIdx);
+      double val = pcStatAt(globalIdx);
       if (isnan(val)) {
         snprintf(valBuf, sizeof(valBuf), "--");
+      } else if (val == floor(val) && fabs(val) < 1e12) {
+        snprintf(valBuf, sizeof(valBuf), "%.0f", val);   // whole numbers in full (uptime)
       } else {
         snprintf(valBuf, sizeof(valBuf), "%.6g", val);
       }
