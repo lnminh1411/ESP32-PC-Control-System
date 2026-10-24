@@ -34,6 +34,7 @@ esp32-pcstats.exe --bench              # Benchmark sensor update latencies
 esp32-pcstats.exe --transport auto     # Transport mode: auto (default), hid, or serial
 esp32-pcstats.exe --port COM4          # Manually specify COM port instead of VID_303A auto-detect
 esp32-pcstats.exe --claude <dir>        # Test Claude live fetch & local token totals and exit
+esp32-pcstats.exe --going               # Test restart/update detection and exit
 ```
 
 ## stats.ini Format
@@ -172,6 +173,42 @@ To wake the PC from sleep or powered-off state (S5) using Magic Packets:
 1. **NIC Configuration**: In Windows Device Manager, open the Ethernet adapter Properties -> *Power Management* tab (or *Advanced* tab) and enable **Wake on Magic Packet** and allow the device to wake the computer.
 2. **BIOS / UEFI Settings**: Disable **ErP Ready** / **Deep Sleep** (or set to Disabled) and enable **Wake on LAN** / **Power On By PCI-E Device**. If ErP is enabled, the motherboard cuts standby power (+5VSB) to the Ethernet controller when shutdown, preventing the NIC from receiving magic packets.
 
+
+## Restart / Update Detection
+
+The service watches for Windows restart, shutdown, and sleep transitions in real time, and detects when a reboot is pending for Windows Update. This allows the ESP32 carrier board to distinguish between clean restarts, Windows updates, deliberate shutdowns, sleep, and unexpected power cuts/crashes before the USB connection drops.
+
+### Keys Streamed
+
+In every sample packet:
+- `@t pc.going <kind>`: One of `restart`, `shutdown`, `update_restart`, `update_shutdown`, `sleep`, or literal `none` when nothing is announced.
+- `@t pc.going_by <process>`: Initiating process name (e.g. `MoUsoCoreWorker.exe`), or `-` when none.
+- `@t pc.going_why <reason>`: Reason text truncated to 60 characters, or `-` when none.
+- `@s pc.going_id=<n>`: `EventRecordID` from System event 1074, or a synthetic fallback counter (`0x40000000 + counter`) for sleep / service shutdown fallbacks; `0` when nothing is announced. A change of ID signals a new announcement.
+- `@s pc.update_pending=0|1`: `1` if a reboot is pending (`RebootRequired` or `RebootPending` registry key exists in the 64-bit view, polled every 30 seconds), else `0`.
+- `@t pc.last_down <kind>`: How the PC last went down before this boot: `restart`, `shutdown`, `update_restart`, `update_shutdown`, `unexpected` (crash / power loss), or `unknown`.
+- `@t pc.last_down_at <text>`: Local time of the last down event in `ddd HH:mm` format (InvariantCulture day names, e.g. `Fri 13:00`), or `-` if unknown.
+
+### Classification Rules
+
+When a System event 1074 (`User32`) occurs:
+- **Base Type**: If Property [4] contains `"restart"` (case-insensitive) -> `restart`, else `shutdown`.
+- **Update Classification**: Classified as `update_restart` or `update_shutdown` if ANY of:
+  1. Process file name (with path and machine suffix stripped) matches any of `MoUsoCoreWorker.exe`, `TrustedInstaller.exe`, `usoclient.exe`, `wuauclt.exe`, `MusNotification.exe`, `MusNotifyIcon.exe`, or `UsoClient.exe` (case-insensitive);
+  2. Reason code hex has major code `((code >> 16) & 0xFF) == 2` (Operating System) and minor code `(code & 0xFFFF)` in `{0x3, 0x10, 0x11, 0x12}`;
+  3. `pc.update_pending` is `1` at the time of the event.
+- **Cancellation**: If a shutdown is aborted (`shutdown /a`), Windows does not log a cancellation event; the service clears the `pc.going*` fields 120 seconds after announcement if the service is still running.
+- **Fallbacks**:
+  - `OnPowerEvent(Suspend)`: Sets kind `sleep` (`pc.going_id` fallback counter, process `-`, reason `sleep`), pushes immediately, and waits up to 500 ms for transmission. `ResumeSuspend` and `ResumeAutomatic` clear the going fields.
+  - `OnShutdown()`: If no event 1074 announcement occurred in the preceding 60 seconds, sets kind `shutdown`, pushes immediately, waits up to 1 second, and stops.
+
+### Console Verification
+
+Run with `--going` to inspect historical 1074 events and verified classification:
+```cmd
+esp32-pcstats.exe --going
+```
+Prints the last 15 event 1074 entries (`time | process | type | code | reason -> kind`), followed by the computed `pc.last_down` / `pc.last_down_at` and `pc.update_pending`.
 
 ## USB COM Port Notice
 

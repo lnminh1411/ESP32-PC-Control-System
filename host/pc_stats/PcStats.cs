@@ -25,6 +25,7 @@
 //        --port COMn                  skip VID auto-detect, force serial COMn
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.Eventing.Reader;
 using System.Globalization;
 using System.IO;
 using System.IO.Ports;
@@ -39,6 +40,7 @@ using System.Threading;
 using System.Web.Script.Serialization;
 using LibreHardwareMonitor.Hardware;
 using LHWMWrapperNameSpace;
+using Microsoft.Win32;
 using Microsoft.Win32.SafeHandles;
 
 class PcStats : ServiceBase {
@@ -698,6 +700,242 @@ class PcStats : ServiceBase {
   static bool consoleMode;
   static string fixedPort;
   static string logPath;
+
+  // Shutdown / Restart / Update / Sleep detection
+  static readonly HashSet<string> UpdateProcesses = new HashSet<string>(StringComparer.OrdinalIgnoreCase) {
+    "MoUsoCoreWorker.exe",
+    "TrustedInstaller.exe",
+    "usoclient.exe",
+    "wuauclt.exe",
+    "MusNotification.exe",
+    "MusNotifyIcon.exe",
+    "UsoClient.exe"
+  };
+
+  static readonly object goingLock = new object();
+  static string goingKind = "none";
+  static string goingBy = "-";
+  static string goingWhy = "-";
+  static long goingId = 0;
+  static DateTime goingSetUtc = DateTime.MinValue;
+  static DateTime last1074TimeUtc = DateTime.MinValue;
+  static int fallbackCounter = 0;
+
+  static EventLogWatcher goingWatcher = null;
+  static readonly AutoResetEvent sendNow = new AutoResetEvent(false);
+  static readonly AutoResetEvent sendCompleted = new AutoResetEvent(false);
+
+  static string lastDownKind = "unknown";
+  static string lastDownAt = "-";
+
+  static bool updatePending = false;
+  static DateTime nextUpdatePendingCheckUtc = DateTime.MinValue;
+
+  static string ExtractProcessName(string process) {
+    if (string.IsNullOrEmpty(process)) return "";
+    string p = process.Trim();
+    if (p.EndsWith(")")) {
+      int lastSlash = Math.Max(p.LastIndexOf('\\'), p.LastIndexOf('/'));
+      int lastOpen = p.LastIndexOf(" (");
+      if (lastOpen > lastSlash) {
+        p = p.Substring(0, lastOpen).Trim();
+      }
+    }
+    int slash = Math.Max(p.LastIndexOf('\\'), p.LastIndexOf('/'));
+    if (slash >= 0) {
+      p = p.Substring(slash + 1).Trim();
+    }
+    return p;
+  }
+
+  public static string ClassifyShutdown(string process, string type, string codeHex, bool updatePending) {
+    bool isRestart = !string.IsNullOrEmpty(type) &&
+                     type.IndexOf("restart", StringComparison.OrdinalIgnoreCase) >= 0;
+
+    bool isUpdate = updatePending;
+
+    if (!isUpdate) {
+      string procName = ExtractProcessName(process);
+      if (UpdateProcesses.Contains(procName)) {
+        isUpdate = true;
+      }
+    }
+
+    if (!isUpdate && !string.IsNullOrEmpty(codeHex)) {
+      string s = codeHex.Trim();
+      if (s.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) {
+        s = s.Substring(2);
+      }
+      uint code;
+      if (uint.TryParse(s, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out code)) {
+        uint major = (code >> 16) & 0xFF;
+        uint minor = code & 0xFFFF;
+        if (major == 2 && (minor == 0x3 || minor == 0x10 || minor == 0x11 || minor == 0x12)) {
+          isUpdate = true;
+        }
+      }
+    }
+
+    if (isUpdate) {
+      return isRestart ? "update_restart" : "update_shutdown";
+    }
+    return isRestart ? "restart" : "shutdown";
+  }
+
+  static void ClearGoing() {
+    goingKind = "none";
+    goingBy = "-";
+    goingWhy = "-";
+    goingId = 0;
+    goingSetUtc = DateTime.MinValue;
+  }
+
+  static bool CheckUpdatePending() {
+    try {
+      using (var hklm = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64)) {
+        if (hklm != null) {
+          using (var k1 = hklm.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired")) {
+            if (k1 != null) return true;
+          }
+          using (var k2 = hklm.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending")) {
+            if (k2 != null) return true;
+          }
+        }
+      }
+    } catch (Exception ex) {
+      Log("going: CheckUpdatePending failed: " + ex.Message);
+    }
+    return false;
+  }
+
+  static bool GetUpdatePendingCached() {
+    DateTime now = DateTime.UtcNow;
+    if (now >= nextUpdatePendingCheckUtc) {
+      updatePending = CheckUpdatePending();
+      nextUpdatePendingCheckUtc = now.AddSeconds(30);
+    }
+    return updatePending;
+  }
+
+  static void OnGoingEventRecordWritten(object sender, EventRecordWrittenEventArgs e) {
+    if (e == null) return;
+    if (e.EventException != null) {
+      Log("going: watcher exception: " + e.EventException.Message);
+      return;
+    }
+    if (e.EventRecord == null) return;
+
+    try {
+      using (EventRecord rec = e.EventRecord) {
+        long recId = rec.RecordId.HasValue ? rec.RecordId.Value : 0;
+        string rawProcess = rec.Properties.Count > 0 && rec.Properties[0].Value != null ? rec.Properties[0].Value.ToString() : "";
+        string rawReason = rec.Properties.Count > 2 && rec.Properties[2].Value != null ? rec.Properties[2].Value.ToString() : "";
+        string rawCode = rec.Properties.Count > 3 && rec.Properties[3].Value != null ? rec.Properties[3].Value.ToString() : "";
+        string rawType = rec.Properties.Count > 4 && rec.Properties[4].Value != null ? rec.Properties[4].Value.ToString() : "";
+
+        bool updPending = GetUpdatePendingCached();
+        string kind = ClassifyShutdown(rawProcess, rawType, rawCode, updPending);
+        string procName = ExtractProcessName(rawProcess);
+        if (string.IsNullOrEmpty(procName)) procName = "-";
+
+        string reason = Clean(rawReason);
+        if (reason.Length > 60) reason = reason.Substring(0, 60);
+        if (string.IsNullOrEmpty(reason)) reason = "-";
+
+        lock (goingLock) {
+          goingKind = kind;
+          goingBy = procName;
+          goingWhy = reason;
+          goingId = recId;
+          goingSetUtc = DateTime.UtcNow;
+          last1074TimeUtc = DateTime.UtcNow;
+        }
+
+        Log("going: " + kind + " by " + procName + " (" + reason + ") id=" + recId);
+        sendNow.Set();
+      }
+    } catch (Exception ex) {
+      Log("going: OnEventRecordWritten exception: " + ex.Message);
+    }
+  }
+
+  static void ComputeLastShutdown() {
+    lastDownKind = "unknown";
+    lastDownAt = "-";
+    try {
+      ulong uptimeMs = GetTickCount64();
+      DateTime bootTime = DateTime.Now.AddMilliseconds(-(double)uptimeMs);
+
+      string queryStr = "*[System[(EventID=1074 or EventID=41 or EventID=6008)]]";
+      var query = new EventLogQuery("System", PathType.LogName, queryStr);
+      query.ReverseDirection = true;
+
+      using (var reader = new EventLogReader(query)) {
+        for (EventRecord rec = reader.ReadEvent(); rec != null; rec = reader.ReadEvent()) {
+          using (rec) {
+            if (!rec.TimeCreated.HasValue) continue;
+            DateTime t = rec.TimeCreated.Value.ToLocalTime();
+            bool match = (t < bootTime) || ((rec.Id == 41 || rec.Id == 6008) && t <= bootTime.AddMinutes(5));
+            if (!match) continue;
+
+            if (rec.Id == 41 || rec.Id == 6008) {
+              lastDownKind = "unexpected";
+              lastDownAt = t.ToString("ddd HH:mm", CultureInfo.InvariantCulture);
+            } else if (rec.Id == 1074) {
+              string rawProcess = rec.Properties.Count > 0 && rec.Properties[0].Value != null ? rec.Properties[0].Value.ToString() : "";
+              string rawCode = rec.Properties.Count > 3 && rec.Properties[3].Value != null ? rec.Properties[3].Value.ToString() : "";
+              string rawType = rec.Properties.Count > 4 && rec.Properties[4].Value != null ? rec.Properties[4].Value.ToString() : "";
+
+              lastDownKind = ClassifyShutdown(rawProcess, rawType, rawCode, false);
+              lastDownAt = t.ToString("ddd HH:mm", CultureInfo.InvariantCulture);
+            }
+            return;
+          }
+        }
+      }
+    } catch (Exception ex) {
+      Log("going: ComputeLastShutdown failed: " + ex.Message);
+    }
+  }
+
+  static void PrintGoingTest() {
+    try {
+      string queryStr = "*[System[(EventID=1074)]]";
+      var query = new EventLogQuery("System", PathType.LogName, queryStr);
+      query.ReverseDirection = true;
+
+      int count = 0;
+      using (var reader = new EventLogReader(query)) {
+        for (EventRecord rec = reader.ReadEvent(); rec != null && count < 15; rec = reader.ReadEvent()) {
+          using (rec) {
+            DateTime t = rec.TimeCreated.HasValue ? rec.TimeCreated.Value.ToLocalTime() : DateTime.MinValue;
+            string rawProcess = rec.Properties.Count > 0 && rec.Properties[0].Value != null ? rec.Properties[0].Value.ToString() : "";
+            string rawReason = rec.Properties.Count > 2 && rec.Properties[2].Value != null ? rec.Properties[2].Value.ToString() : "";
+            string rawCode = rec.Properties.Count > 3 && rec.Properties[3].Value != null ? rec.Properties[3].Value.ToString() : "";
+            string rawType = rec.Properties.Count > 4 && rec.Properties[4].Value != null ? rec.Properties[4].Value.ToString() : "";
+
+            string proc = ExtractProcessName(rawProcess);
+            if (string.IsNullOrEmpty(proc)) proc = "-";
+            string kind = ClassifyShutdown(proc, rawType, rawCode, false);
+            string timeStr = t.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
+
+            Console.WriteLine("{0} | {1} | {2} | {3} | {4} -> {5}",
+              timeStr, proc, rawType, rawCode, Clean(rawReason), kind);
+            count++;
+          }
+        }
+      }
+    } catch (Exception ex) {
+      Console.WriteLine("Error reading 1074 events: " + ex.Message);
+    }
+
+    ComputeLastShutdown();
+    bool updPending = CheckUpdatePending();
+
+    Console.WriteLine("pc.last_down: " + lastDownKind);
+    Console.WriteLine("pc.last_down_at: " + lastDownAt);
+    Console.WriteLine("pc.update_pending: " + (updPending ? "1" : "0"));
+  }
 
   Thread worker;
   volatile bool stop;
@@ -1591,6 +1829,7 @@ class PcStats : ServiceBase {
       else if (args[i] == "--list") { List(); return; }
       else if (args[i] == "--bench") { Bench(); return; }
       else if (args[i] == "--claude" && i + 1 < args.Length) { ClaudeTest(args[++i]); return; }
+      else if (args[i] == "--going") { PrintGoingTest(); return; }
     }
     string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ESP32PcStats");
     Directory.CreateDirectory(dir);
@@ -1604,7 +1843,7 @@ class PcStats : ServiceBase {
     }
   }
 
-  public PcStats() { ServiceName = "ESP32PcStats"; CanStop = true; CanShutdown = true; }
+  public PcStats() { ServiceName = "ESP32PcStats"; CanStop = true; CanShutdown = true; CanHandlePowerEvent = true; }
 
   protected override void OnStart(string[] args) {
     for (int i = 0; i < args.Length; i++) {
@@ -1615,8 +1854,56 @@ class PcStats : ServiceBase {
     worker.Start();
   }
 
-  protected override void OnStop() { stop = true; if (worker != null) worker.Join(5000); }
-  protected override void OnShutdown() { OnStop(); }
+  protected override void OnStop() { stop = true; sendNow.Set(); if (worker != null) worker.Join(5000); }
+  protected override void OnShutdown() {
+    bool hasRecent1074 = false;
+    lock (goingLock) {
+      if (last1074TimeUtc != DateTime.MinValue && (DateTime.UtcNow - last1074TimeUtc).TotalSeconds < 60.0) {
+        hasRecent1074 = true;
+      }
+    }
+    if (!hasRecent1074) {
+      long id = 0x40000000L + (long)Interlocked.Increment(ref fallbackCounter);
+      lock (goingLock) {
+        goingKind = "shutdown";
+        goingBy = "-";
+        goingWhy = "-";
+        goingId = id;
+        goingSetUtc = DateTime.UtcNow;
+      }
+      Log("going: shutdown (fallback OnShutdown) id=" + id);
+      sendCompleted.Reset();
+      sendNow.Set();
+      sendCompleted.WaitOne(1000);
+    }
+    OnStop();
+  }
+
+  protected override bool OnPowerEvent(PowerBroadcastStatus powerStatus) {
+    if (powerStatus == PowerBroadcastStatus.Suspend) {
+      long id = 0x40000000L + (long)Interlocked.Increment(ref fallbackCounter);
+      lock (goingLock) {
+        goingKind = "sleep";
+        goingBy = "-";
+        goingWhy = "sleep";
+        goingId = id;
+        goingSetUtc = DateTime.UtcNow;
+      }
+      Log("going: sleep (OnPowerEvent Suspend) id=" + id);
+      sendCompleted.Reset();
+      sendNow.Set();
+      sendCompleted.WaitOne(500);
+      return true;
+    }
+    if (powerStatus == PowerBroadcastStatus.ResumeSuspend || powerStatus == PowerBroadcastStatus.ResumeAutomatic) {
+      lock (goingLock) {
+        ClearGoing();
+      }
+      Log("going: cleared on resume (" + powerStatus + ")");
+      return true;
+    }
+    return true;
+  }
 
   static void Log(string msg) {
     string line = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss ") + msg;
@@ -2100,6 +2387,21 @@ class PcStats : ServiceBase {
       computer.HardwareRemoved += delegate(IHardware h) { hardwareChanged = true; };
       var visitor = new UpdateVisitor();
 
+      ComputeLastShutdown();
+      Log("last shutdown: " + lastDownKind + " at " + lastDownAt);
+      updatePending = CheckUpdatePending();
+      nextUpdatePendingCheckUtc = DateTime.UtcNow.AddSeconds(30);
+
+      try {
+        var query = new EventLogQuery("System", PathType.LogName, "*[System[(EventID=1074)]]");
+        goingWatcher = new EventLogWatcher(query);
+        goingWatcher.EventRecordWritten += OnGoingEventRecordWritten;
+        goingWatcher.Enabled = true;
+      } catch (Exception ex) {
+        Log("going: EventLogWatcher failed: " + ex.Message);
+        goingWatcher = null;
+      }
+
       RefreshWolTarget();
       nextMacRefreshUtc = DateTime.UtcNow.AddSeconds(30);
 
@@ -2117,6 +2419,18 @@ class PcStats : ServiceBase {
             Log("port faulted");
             try { link.Close(); } catch (Exception) { }
             link = null;
+          }
+        }
+
+        if (DateTime.UtcNow >= nextUpdatePendingCheckUtc) {
+          updatePending = CheckUpdatePending();
+          nextUpdatePendingCheckUtc = DateTime.UtcNow.AddSeconds(30);
+        }
+
+        lock (goingLock) {
+          if (goingKind != "none" && (DateTime.UtcNow - goingSetUtc).TotalSeconds >= 120.0) {
+            ClearGoing();
+            Log("going: cleared after 120 s timeout");
           }
         }
 
@@ -2297,6 +2611,25 @@ class PcStats : ServiceBase {
           }
         }
 
+        // Wire contract: pc.going*, pc.update_pending, pc.last_down*
+        string curGoingKind, curGoingBy, curGoingWhy;
+        long curGoingId;
+        lock (goingLock) {
+          curGoingKind = goingKind;
+          curGoingBy = goingBy;
+          curGoingWhy = goingWhy;
+          curGoingId = goingId;
+        }
+
+        tokens.Add("pc.going_id=" + curGoingId);
+        tokens.Add("pc.update_pending=" + (updatePending ? "1" : "0"));
+
+        texts.Add(new KeyValuePair<string, string>("pc.going", curGoingKind));
+        texts.Add(new KeyValuePair<string, string>("pc.going_by", curGoingBy));
+        texts.Add(new KeyValuePair<string, string>("pc.going_why", curGoingWhy));
+        texts.Add(new KeyValuePair<string, string>("pc.last_down", lastDownKind));
+        texts.Add(new KeyValuePair<string, string>("pc.last_down_at", lastDownAt));
+
         // Console mode: print full @s line and @t lines each tick
         if (consoleMode) {
           string fullLine = "@s" + (tokens.Count > 0 ? " " + string.Join(" ", tokens.ToArray()) : "");
@@ -2348,6 +2681,8 @@ class PcStats : ServiceBase {
           }
         }
 
+        sendCompleted.Set();
+
         // Execute scheduled power action ~1.5s after ack was first sent
         string actionToExecute = null;
         lock (powerLock) {
@@ -2362,7 +2697,11 @@ class PcStats : ServiceBase {
         }
 
         int wait = intervalMs - (int)(DateTime.UtcNow - t0).TotalMilliseconds;
-        if (wait > 0) Thread.Sleep(wait);
+        if (wait > 0) {
+          sendNow.WaitOne(wait);
+        } else {
+          sendNow.WaitOne(0);
+        }
       }
     } catch (Exception e) {
       Log("fatal: " + e);
@@ -2375,6 +2714,13 @@ class PcStats : ServiceBase {
       }
       if (link != null) try { link.Close(); } catch (Exception) { }
       if (computer != null) computer.Close();
+      if (goingWatcher != null) {
+        try {
+          goingWatcher.Enabled = false;
+          goingWatcher.Dispose();
+        } catch (Exception) { }
+        goingWatcher = null;
+      }
       Log("stop");
     }
   }
