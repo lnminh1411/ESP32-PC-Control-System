@@ -13,6 +13,7 @@
 #include "layout.h"
 #include "optos.h"
 #include "pc_state.h"
+#include "pc_going.h"
 #include "pcstats.h"
 #include "sys.h"
 
@@ -51,6 +52,8 @@ struct StatusSnapshot {
   int door;
   bool moboReset;
   uint32_t lastActionMs;
+  GoingKind going;
+  uint32_t goingLeftSec;
 };
 static StatusSnapshot lastStatusSnap;
 static uint32_t lastStatsSeq = 0;
@@ -214,10 +217,51 @@ static void drawStatus(Panel &p) {
   PcState pc = pcState();
   field(c, 6, F_HEAD, C_ACCENT, "PC STATUS");
   c.drawFastHLine(8, 32, TFT_W - 16, C_DIM);
-  uint16_t pcCol = pc == PC_ON ? C_GOOD : pc == PC_OFF ? C_WARN : C_DIM;
-  field(c, 38, F_BIG, pcCol, "%s", pc == PC_ON ? "ON" : pc == PC_OFF ? "ASLEEP" : "NO HOST");
-  uint32_t guardLeft = bootGuardLeftMs();
-  field(c, 74, F_SMALL, C_DIM, guardLeft ? "boot guard: %lus left" : "", (unsigned long)(guardLeft / 1000));
+  GoingKind going = pcGoing();
+  if (going != GO_NONE) {
+    field(c, 38, F_BIG, C_WARN, "%s", pcGoingLabel());
+    char sub[64] = "";
+    const char *by = pcGoingBy();
+    if (going == GO_RESTART || going == GO_UPDATE_RESTART || going == GO_UPDATE_SHUTDOWN) {
+      uint32_t leftSec = (pcGoingLeftMs() + 999) / 1000;
+      if (by && by[0]) {
+        snprintf(sub, sizeof sub, "by %s  %02lu:%02lu left", by,
+                 (unsigned long)(leftSec / 60), (unsigned long)(leftSec % 60));
+      } else {
+        snprintf(sub, sizeof sub, "%02lu:%02lu left",
+                 (unsigned long)(leftSec / 60), (unsigned long)(leftSec % 60));
+      }
+    } else {
+      uint32_t ageSec = pcGoingAgeMs() / 1000;
+      if (by && by[0]) {
+        snprintf(sub, sizeof sub, "by %s  %02lu:%02lu", by,
+                 (unsigned long)(ageSec / 60), (unsigned long)(ageSec % 60));
+      } else {
+        snprintf(sub, sizeof sub, "%02lu:%02lu",
+                 (unsigned long)(ageSec / 60), (unsigned long)(ageSec % 60));
+      }
+    }
+    field(c, 74, F_SMALL, C_DIM, "%s", sub);
+  } else {
+    uint16_t pcCol = pc == PC_ON ? C_GOOD : pc == PC_OFF ? C_WARN : C_DIM;
+    field(c, 38, F_BIG, pcCol, "%s", pc == PC_ON ? "ON" : pc == PC_OFF ? "ASLEEP" : "NO HOST");
+    uint32_t guardLeft = bootGuardLeftMs();
+    if (guardLeft) {
+      field(c, 74, F_SMALL, C_DIM, "boot guard: %lus left", (unsigned long)(guardLeft / 1000));
+    } else {
+      const char *ld = pcLastDown();
+      const char *lda = pcLastDownAt();
+      if (ld && ld[0] && strcmp(ld, "-") != 0 && strcmp(ld, "unknown") != 0) {
+        if (lda && lda[0] && strcmp(lda, "-") != 0) {
+          field(c, 74, F_SMALL, C_DIM, "last down: %s %s", ld, lda);
+        } else {
+          field(c, 74, F_SMALL, C_DIM, "last down: %s", ld);
+        }
+      } else {
+        field(c, 74, F_SMALL, C_DIM, "");
+      }
+    }
+  }
   field(c, 96, F_SMALL, C_DIM, "UPTIME");
   field(c, 112, F_BIG, C_TEXT, "%02lu:%02lu:%02lu", (unsigned long)(up / 3600), (unsigned long)(up / 60 % 60), (unsigned long)(up % 60));
   field(c, 152, F_SMALL, C_DIM, "LAST ACTION");
@@ -471,17 +515,22 @@ void viewsService() {
 
   // Event: status snapshot changed -> status panels dirty
   uint32_t gLeft = bootGuardLeftMs();
+  uint32_t gGoingLeft = pcGoingLeftMs();
+  uint32_t goingSec = gGoingLeft ? ((gGoingLeft + 999) / 1000) : (pcGoing() != GO_NONE ? (pcGoingAgeMs() / 1000) : 0);
   StatusSnapshot curSnap = {
     pcState(),
     gLeft ? ((gLeft + 999) / 1000) : 0,
     doorPressed(),
     moboResetActive(),
-    lastActionMs
+    lastActionMs,
+    pcGoing(),
+    goingSec
   };
   // field compare: memcmp would see the struct's uninitialised padding
   if (curSnap.pc != lastStatusSnap.pc || curSnap.guardSec != lastStatusSnap.guardSec ||
       curSnap.door != lastStatusSnap.door || curSnap.moboReset != lastStatusSnap.moboReset ||
-      curSnap.lastActionMs != lastStatusSnap.lastActionMs) {
+      curSnap.lastActionMs != lastStatusSnap.lastActionMs ||
+      curSnap.going != lastStatusSnap.going || curSnap.goingLeftSec != lastStatusSnap.goingLeftSec) {
     lastStatusSnap = curSnap;
     for (int i = 0; i < N_PANELS; i++) {
       if (panels[i].view == VIEW_STATUS) panelDirty[i] = true;

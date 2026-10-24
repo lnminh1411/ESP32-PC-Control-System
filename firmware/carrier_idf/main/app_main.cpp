@@ -14,6 +14,7 @@
 #include "net.h"
 #include "optos.h"
 #include "pc_state.h"
+#include "pc_going.h"
 #include "sys.h"
 #include "usb.h"
 #include "views.h"
@@ -79,6 +80,7 @@ extern "C" void app_main() {
     consolePoll();
     wolPoll();
     powerPoll();
+    pcGoingPoll();
     netPoll();
     discordPoll();
     viewsService();
