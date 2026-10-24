@@ -6,8 +6,10 @@
 #include "console.h"
 #include "discord.h"
 #include "display.h"
+#include "display_config.h"
 #include "gif_store.h"
 #include "host_uart.h"
+#include "layout.h"
 #include "log.h"
 #include "net.h"
 #include "optos.h"
@@ -26,10 +28,7 @@ extern "C" void app_main() {
   optosInit();
   statusLedInit();
 
-  // 2. backlights 100%
-  backlightInit();
-
-  // 3. serial ports + USB power-state events
+  // 2. serial ports + USB power-state events
   hostUartBegin();
 
   esp_err_t ret = nvs_flash_init();
@@ -38,6 +37,10 @@ extern "C" void app_main() {
     ret = nvs_flash_init();
   }
   ESP_ERROR_CHECK(ret);
+
+  // 3. backlights: restored from NVS (else 100%)
+  backlightInit();
+
   wolInit();
 
   ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -48,17 +51,18 @@ extern "C" void app_main() {
   netInit();                           // joins Wi-Fi in the background
   discordInit();
 
-  // 4. displays: GIF / status / stats (testing request: panels 1-3 all VIEW_METRICS)
+  // 4. displays: restore stored view else defaultView
   displayInit();
-  viewEnter(0, VIEW_METRICS);
-  viewEnter(1, VIEW_METRICS);
-  viewEnter(2, VIEW_METRICS);
+  for (int i = 0; i < N_PANELS; i++) {
+    viewEnter(i, displayStoredView(i));
+  }
   for (int i = 0; i < N_PANELS; i++) {
     displaySubmit(i);
     displayWait(i);
   }
 
   bool fatOk = gifFsInit();
+  layoutInit();
   logMsg("carrier rev 3.1 | %d panels, dirty-rect RGB444, SPI %d Hz%s | PSRAM free %u | fat %s",
          N_PANELS, SPI_HZ, MOBO_RST_HOLD_TEST ? " | TEST: mobo RST held HIGH" : "",
          (unsigned)freePsram(), fatOk ? "ok" : "FAILED");

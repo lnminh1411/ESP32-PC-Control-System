@@ -45,6 +45,7 @@
 void pcStatsLine(const char *line);   // console hands '@' lines here (already wired in console.cpp)
 double pcStat(const char *key);        // NAN if unknown, empty, or no sample for 5 s
 bool pcStatsFresh();                  // an "@e" arrived in the last 3 s
+uint32_t pcStatsSeq();                // increments on every @e (end of a sample)
 int pcStatsCount();
 const char *pcStatKey(int i);         // for listing
 double pcStatAt(int i);               // raw last value (NAN = empty)

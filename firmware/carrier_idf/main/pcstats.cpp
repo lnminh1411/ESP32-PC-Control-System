@@ -24,6 +24,7 @@ static TextEntry textTable[PCSTATS_TEXT_MAX];
 static int textCount;
 
 static uint32_t lastSampleMs;
+static uint32_t sampleSeq;
 
 void pcStatsLine(const char *line) {
   if (!line || line[0] != '@') return;
@@ -110,6 +111,7 @@ void pcStatsLine(const char *line) {
     }
   } else if (line[1] == 'e') {
     lastSampleMs = nowMs();
+    sampleSeq++;
   }
 }
 
@@ -157,4 +159,8 @@ const char *pcTextKey(int i) {
 
 const char *pcTextAt(int i) {
   return (i >= 0 && i < textCount) ? textTable[i].val : "";
+}
+
+uint32_t pcStatsSeq() {
+  return sampleSeq;
 }

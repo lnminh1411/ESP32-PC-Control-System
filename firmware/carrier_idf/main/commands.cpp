@@ -12,6 +12,7 @@
 #include "config.h"
 #include "discord.h"
 #include "display.h"
+#include "layout.h"
 #include "gif_store.h"
 #include "log.h"
 #include "net.h"
@@ -112,8 +113,10 @@ static void cmdPcStats(const char *a1, const char *) {
 static void cmdView(const char *a1, const char *a2) {
   int n = a1 ? atoi(a1) : 0;
   View v;
-  if (n < 1 || n > N_PANELS || !a2 || !viewParse(a2, v)) { logMsg("view: usage view <1|2|3> <gif|status|stats|metrics>"); return; }
+  if (n < 1 || n > N_PANELS || !a2 || !viewParse(a2, v)) { logMsg("view: usage view <1|2|3> <gif|status|stats|metrics|dash>"); return; }
   viewEnter(n - 1, v);
+  displaySaveView(n - 1, v);
+  viewsBoost(n - 1);
   logMsg("view: panel %d -> %s", n, a2);
 }
 
@@ -178,6 +181,8 @@ static void cmdBacklight(const char *a1, const char *a2) {
     if (backlightPct(i)) lastOn[i] = backlightPct(i);
     int v = on ? lastOn[i] : pct;
     backlightSet(i, v);
+    displaySaveBacklight(i, v);
+    viewsBoost(i);
     if (v) lastOn[i] = v;
   }
   logMsg("bl: %u/%u/%u%%", backlightPct(0), backlightPct(1), backlightPct(2));
@@ -194,18 +199,85 @@ static void cmdLed(const char *a1, const char *) {
   logMsg("led: %s (brightness %u%%)", a1, ledBrightness());
 }
 
+static void cmdFps(const char *a1, const char *a2) {
+  if (!a1) {
+    for (int i = 0; i < N_PANELS; i++) {
+      Panel &p = panels[i];
+      uint8_t cap = viewsPanelCap(i);
+      char capBuf[16];
+      if (cap >= 1 && cap <= 60) snprintf(capBuf, sizeof(capBuf), "%u", cap);
+      else snprintf(capBuf, sizeof(capBuf), "20");
+
+      if (p.view == VIEW_GIF) {
+        logMsg("panel %d: %-7s %-6s target %-3s %4.1f fps %5.0f KB/s  deferred %lu  stretch %.2f",
+               i + 1, viewName(p.view), viewsPanelPriorityName(i), capBuf,
+               p.fps, p.kbps, (unsigned long)p.deferred, p.gifStretch);
+      } else {
+        logMsg("panel %d: %-7s %-6s target %-3s %4.1f fps %5.0f KB/s  deferred %lu",
+               i + 1, viewName(p.view), viewsPanelPriorityName(i), capBuf,
+               p.fps, p.kbps, (unsigned long)p.deferred);
+      }
+    }
+    logMsg("budget %u%% | bus load %.0f%% | bucket %d B",
+           viewsBusBudget(), busLoadPct(), (int)viewsBucketLevel());
+    return;
+  }
+  if (!strcmp(a1, "budget")) {
+    if (!a2 || !isdigit((unsigned char)*a2)) {
+      logMsg("fps: usage fps budget <20-95>");
+      return;
+    }
+    int b = atoi(a2);
+    if (b < 20 || b > 95) {
+      logMsg("fps: budget must be 20-95");
+      return;
+    }
+    viewsSetBusBudget((uint8_t)b);
+    logMsg("fps: budget set to %d%%", b);
+    return;
+  }
+  if (!strcmp(a1, "cap")) {
+    int p = a2 ? atoi(a2) : 0;
+    char *a3 = strtok(nullptr, " \t");
+    if (p < 1 || p > N_PANELS || !a3) {
+      logMsg("fps: usage fps cap <1|2|3> <1-60|off>");
+      return;
+    }
+    if (!strcmp(a3, "off")) {
+      viewsSetPanelCap(p - 1, 0);
+      logMsg("fps: panel %d cap off", p);
+      return;
+    }
+    int cap = atoi(a3);
+    if (cap < 1 || cap > 60) {
+      logMsg("fps: cap must be 1-60 or off");
+      return;
+    }
+    viewsSetPanelCap(p - 1, (uint8_t)cap);
+    logMsg("fps: panel %d cap %d fps", p, cap);
+    return;
+  }
+  logMsg("fps: usage fps [budget <20-95> | cap <1|2|3> <1-60|off>]");
+}
+
+static void cmdLayout(const char *a1, const char *a2) {
+  layoutCommand(a1, a2);
+}
+
 static const Command COMMANDS[] = {
   {"help",    "",                                    cmdHelp},
   {"status",  "",                                    cmdStatus},
-  {"view",    "<1|2|3> <gif|status|stats|metrics>", cmdView},
+  {"view",    "<1|2|3> <gif|status|stats|metrics|dash>", cmdView},
   {"door",    "<1-4>",                               cmdDoor},
   {"reset",   "",                                    cmdReset},
   {"wake",    "[mac <AA:BB:..>]",                    cmdWake},
   {"power",   "<sleep|hibernate|restart|shutdown>",  cmdPower},
   {"bl",      "<1|2|3|all> <0-100|on|off>",          cmdBacklight},
   {"led",     "<auto|on|off|sweep|0-100>",           cmdLed},
-  {"perf",    "",                                    cmdPerf},
-  {"pcstats", "[text]",                              cmdPcStats},
+  {"perf",    "",                                             cmdPerf},
+  {"pcstats", "[text]",                                       cmdPcStats},
+  {"fps",     "[budget <20-95> | cap <1|2|3> <1-60|off>]",   cmdFps},
+  {"layout",  "<show|reload|default|begin|data <b64>|end>",  cmdLayout},
 };
 
 static void cmdHelp(const char *, const char *) {

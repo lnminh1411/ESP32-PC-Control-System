@@ -21,6 +21,7 @@ enum View : uint8_t {
   VIEW_STATUS,
   VIEW_STATS,
   VIEW_METRICS,
+  VIEW_DASH,
   VIEW_COUNT
 };
 
@@ -45,6 +46,12 @@ struct Panel {
   volatile bool busy;
   int16_t gifShown;                 // index on glass, -1 = unknown
   uint16_t gifFrame;                // frame index to push
+
+  // Dynamic FPS engine fields
+  uint32_t lastFrameBytes;          // bytes sent in the most recent flush
+  float emaBytes;                   // EMA of bytes per frame
+  uint32_t deferred;                // deferred frames in last 1 s window
+  float gifStretch;                 // actual / nominal frame interval last window (GIF only)
 };
 
 extern Panel panels[N_PANELS];
@@ -62,3 +69,10 @@ void backlightSet(int panel, uint8_t pct);   // 0-100
 uint8_t backlightPct(int panel);
 void backlightIdle(bool idle);
 bool backlightIsIdle();
+
+// Screen setup persistence (NVS namespace "disp")
+View displayStoredView(int panel);
+void displaySaveView(int panel, View v);
+uint8_t displayStoredBacklight(int panel);
+void displaySaveBacklight(int panel, uint8_t pct);
+void displayNvsPoll();

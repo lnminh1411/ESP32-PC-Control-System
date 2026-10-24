@@ -1,5 +1,6 @@
 #include "display.h"
 #include "display_config.h"
+#include <nvs.h>
 
 #include <driver/gpio.h>
 #include <driver/spi_master.h>
@@ -190,8 +191,16 @@ static void flushTask(void *) {
     if (xQueueReceive(flushQueue, &idx, pdMS_TO_TICKS(10)) == pdTRUE) {
       if (idx >= 0 && idx < N_PANELS) {
         Panel &p = panels[idx];
+        uint32_t bytesBefore = p.bytes;
         if (p.view == VIEW_GIF) pushGif(p);
         else displayFlush(p);
+        uint32_t frameBytes = p.bytes - bytesBefore;
+        p.lastFrameBytes = frameBytes;
+        if (p.emaBytes <= 0.0f) {
+          p.emaBytes = (float)frameBytes;
+        } else {
+          p.emaBytes = 0.8f * p.emaBytes + 0.2f * (float)frameBytes;
+        }
         p.busy = false;
       }
     }
@@ -326,6 +335,10 @@ void displayInit() {
     p.busy = false;
     p.gifShown = -1;
     p.gifFrame = 0;
+    p.lastFrameBytes = 0;
+    p.emaBytes = (float)(cfg.w * cfg.h * 3 / 2);
+    p.deferred = 0;
+    p.gifStretch = 1.0f;
   }
 
   logMsg("display: canvas 2 %s, 3 %s", panels[1].canvasInternal ? "internal" : "psram",
@@ -335,9 +348,90 @@ void displayInit() {
   xTaskCreatePinnedToCore(flushTask, "flush", 4096, nullptr, 2, nullptr, 0);
 }
 
-// ---- backlights ----
+// ---- backlights & NVS persistence ----
 static uint8_t blPct[N_PANELS] = {100, 100, 100};   // user setting
 static bool screensIdle;                            // PC asleep/off -> all dark
+
+struct NvsSlot {
+  uint8_t val;
+  bool dirty;
+  uint32_t lastWriteMs;
+};
+
+static NvsSlot nvsViews[N_PANELS];
+static NvsSlot nvsBls[N_PANELS];
+
+void displayNvsPoll() {
+  uint32_t now = nowMs();
+  for (int i = 0; i < N_PANELS; i++) {
+    if (nvsViews[i].dirty && (now - nvsViews[i].lastWriteMs >= 2000)) {
+      nvs_handle_t h;
+      if (nvs_open("disp", NVS_READWRITE, &h) == ESP_OK) {
+        char key[16];
+        snprintf(key, sizeof(key), "view%d", i);
+        nvs_set_u8(h, key, nvsViews[i].val);
+        nvs_commit(h);
+        nvs_close(h);
+        nvsViews[i].lastWriteMs = now;
+        nvsViews[i].dirty = false;
+      }
+    }
+    if (nvsBls[i].dirty && (now - nvsBls[i].lastWriteMs >= 2000)) {
+      nvs_handle_t h;
+      if (nvs_open("disp", NVS_READWRITE, &h) == ESP_OK) {
+        char key[16];
+        snprintf(key, sizeof(key), "bl%d", i);
+        nvs_set_u8(h, key, nvsBls[i].val);
+        nvs_commit(h);
+        nvs_close(h);
+        nvsBls[i].lastWriteMs = now;
+        nvsBls[i].dirty = false;
+      }
+    }
+  }
+}
+
+View displayStoredView(int panel) {
+  if (panel < 0 || panel >= N_PANELS) return VIEW_METRICS;
+  nvs_handle_t h;
+  uint8_t val = 0xFF;
+  if (nvs_open("disp", NVS_READONLY, &h) == ESP_OK) {
+    char key[16];
+    snprintf(key, sizeof(key), "view%d", panel);
+    nvs_get_u8(h, key, &val);
+    nvs_close(h);
+  }
+  if (val < VIEW_COUNT) return (View)val;
+  return displayPanels[panel].defaultView;
+}
+
+void displaySaveView(int panel, View v) {
+  if (panel < 0 || panel >= N_PANELS) return;
+  nvsViews[panel].val = (uint8_t)v;
+  nvsViews[panel].dirty = true;
+  displayNvsPoll();
+}
+
+uint8_t displayStoredBacklight(int panel) {
+  if (panel < 0 || panel >= N_PANELS) return 100;
+  nvs_handle_t h;
+  uint8_t val = 0xFF;
+  if (nvs_open("disp", NVS_READONLY, &h) == ESP_OK) {
+    char key[16];
+    snprintf(key, sizeof(key), "bl%d", panel);
+    nvs_get_u8(h, key, &val);
+    nvs_close(h);
+  }
+  if (val <= 100) return val;
+  return 100;
+}
+
+void displaySaveBacklight(int panel, uint8_t pct) {
+  if (panel < 0 || panel >= N_PANELS) return;
+  nvsBls[panel].val = pct;
+  nvsBls[panel].dirty = true;
+  displayNvsPoll();
+}
 
 static void blApply() {
   for (int i = 0; i < N_PANELS; i++) {
@@ -348,6 +442,7 @@ static void blApply() {
 
 void backlightInit() {
   for (int i = 0; i < N_PANELS; i++) {
+    blPct[i] = displayStoredBacklight(i);
     pwmAttach(displayPanels[i].bl, PWM_CH_BL(i));
     gpio_set_drive_capability((gpio_num_t)displayPanels[i].bl, GPIO_DRIVE_CAP_3);
   }

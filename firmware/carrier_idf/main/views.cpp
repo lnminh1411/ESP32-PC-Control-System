@@ -10,6 +10,7 @@
 #include "display_config.h"
 #include "fonts.h"
 #include "gif_store.h"
+#include "layout.h"
 #include "optos.h"
 #include "pc_state.h"
 #include "pcstats.h"
@@ -26,18 +27,140 @@
 static char lastAction[40] = "none";
 static uint32_t lastActionMs = 0;
 
+// Dynamic FPS engine state
+static uint8_t busBudgetPct = 85;
+static uint8_t panelCapFps[N_PANELS] = {0, 0, 0};   // 0 = off (default 20 cap)
+static uint32_t boostUntilMs[N_PANELS] = {0, 0, 0};
+static bool panelDirty[N_PANELS] = {true, true, true};
+static bool panelFirstFrame[N_PANELS] = {true, true, true};
+static uint32_t lastFrameMs[N_PANELS] = {0, 0, 0};
+
+static uint32_t deferredCount[N_PANELS] = {0, 0, 0};
+static bool wasDeferred[N_PANELS] = {false, false, false};
+static uint32_t gifNominalMs[N_PANELS] = {0, 0, 0};
+static uint32_t statsWinStart = 0;
+
+static double tokenBucket = 0.0;
+static uint32_t lastRefillUs = 0;
+
+enum PanelPriority { PRIO_LOW = 0, PRIO_NORMAL = 1, PRIO_HIGH = 2 };
+
+struct StatusSnapshot {
+  PcState pc;
+  uint32_t guardSec;
+  int door;
+  bool moboReset;
+  uint32_t lastActionMs;
+};
+static StatusSnapshot lastStatusSnap;
+static uint32_t lastStatsSeq = 0;
+static uint32_t lastUptimeSec = 0;
+static uint32_t lastStatsHeartbeatMs = 0;
+static uint32_t lastMetricsHeartbeatMs = 0;
+static uint32_t lastDashHeartbeatMs[N_PANELS] = {0, 0, 0};
+static bool wasIdle = false;
+
+static double getBucketCapacity() {
+  double ratePerUs = ((double)displayBus.hz / 8.0 * (double)busBudgetPct / 100.0) / 1000000.0;
+  return ratePerUs * 100000.0;   // ~100 ms worth
+}
+
+static void refillBucket() {
+  uint32_t now = nowUs();
+  double ratePerUs = ((double)displayBus.hz / 8.0 * (double)busBudgetPct / 100.0) / 1000000.0;
+  double cap = ratePerUs * 100000.0;
+  if (lastRefillUs == 0) {
+    lastRefillUs = now;
+    tokenBucket = cap;
+  } else {
+    uint32_t dt = now - lastRefillUs;
+    lastRefillUs = now;
+    tokenBucket += (double)dt * ratePerUs;
+    if (tokenBucket > cap) tokenBucket = cap;
+  }
+}
+
+uint8_t viewsBusBudget() { return busBudgetPct; }
+void viewsSetBusBudget(uint8_t pct) {
+  if (pct >= 20 && pct <= 95) busBudgetPct = pct;
+}
+
+uint8_t viewsPanelCap(int panel) {
+  if (panel >= 0 && panel < N_PANELS) return panelCapFps[panel];
+  return 0;
+}
+
+void viewsSetPanelCap(int panel, uint8_t capFps) {
+  if (panel >= 0 && panel < N_PANELS) {
+    panelCapFps[panel] = (capFps <= 60) ? capFps : 60;
+  }
+}
+
+static PanelPriority getPriority(int panel, uint32_t now) {
+  if ((int32_t)(boostUntilMs[panel] - now) > 0) return PRIO_HIGH;
+  if (panels[panel].view == VIEW_GIF) return PRIO_LOW;
+  return PRIO_NORMAL;
+}
+
+const char *viewsPanelPriorityName(int panel) {
+  if (panel < 0 || panel >= N_PANELS) return "?";
+  PanelPriority p = getPriority(panel, nowMs());
+  switch (p) {
+    case PRIO_HIGH:   return "HIGH";
+    case PRIO_NORMAL: return "NORMAL";
+    case PRIO_LOW:    return "LOW";
+    default:          return "?";
+  }
+}
+
+double viewsBucketLevel() { return tokenBucket; }
+double viewsBucketCapacity() { return getBucketCapacity(); }
+
+void viewsBoost(int panel) {
+  uint32_t t = nowMs() + 2000;
+  if (panel < 0) {
+    for (int i = 0; i < N_PANELS; i++) boostUntilMs[i] = t;
+  } else if (panel < N_PANELS) {
+    boostUntilMs[panel] = t;
+  }
+}
+
+void viewsMarkDirty(int panel) {
+  if (panel < 0) {
+    for (int i = 0; i < N_PANELS; i++) panelDirty[i] = true;
+  } else if (panel < N_PANELS) {
+    panelDirty[panel] = true;
+  }
+}
+
+static uint32_t getMinFrameMs(int panel) {
+  uint8_t cap = panelCapFps[panel];
+  if (cap >= 1 && cap <= 60) return 1000 / cap;
+  return 50;   // default 20 fps cap (MIN_FRAME_MS)
+}
+
+static float getExpectedBytes(int panel) {
+  Panel &p = panels[panel];
+  if (panelFirstFrame[panel] || p.gifShown == -1) {
+    return (float)(TFT_W * TFT_H * 3 / 2);
+  }
+  if (p.emaBytes <= 1000.0f) return 1000.0f;
+  return p.emaBytes;
+}
+
 const char *viewName(View v) {
   switch (v) {
     case VIEW_GIF:     return "gif";
     case VIEW_STATUS:  return "status";
     case VIEW_STATS:   return "stats";
     case VIEW_METRICS: return "metrics";
+    case VIEW_DASH:    return "dash";
     default:           return "?";
   }
 }
 
 bool viewParse(const char *name, View &v) {
-  for (View c : {VIEW_GIF, VIEW_STATUS, VIEW_STATS, VIEW_METRICS}) {
+  for (View c : {VIEW_GIF, VIEW_STATUS, VIEW_STATS, VIEW_METRICS, VIEW_DASH}) {
     if (!strcmp(name, viewName(c))) {
       v = c;
       return true;
@@ -49,6 +172,12 @@ bool viewParse(const char *name, View &v) {
 void viewsNoteAction(const char *what) {
   snprintf(lastAction, sizeof lastAction, "%s", what);
   lastActionMs = nowMs();
+  for (int i = 0; i < N_PANELS; i++) {
+    if (panels[i].view == VIEW_STATUS) {
+      panelDirty[i] = true;
+      viewsBoost(i);
+    }
+  }
 }
 
 void viewsShowGifFrame(int idx) {
@@ -259,6 +388,14 @@ static void drawMetrics(Panel &p, int panelIdx) {
   c.fillRect(0, bottom, TFT_W, TFT_H - bottom, C_BG);
 }
 
+static void drawDash(Panel &p, int panelIdx, bool full) {
+  int dashIdx = 0;
+  for (int i = 0; i < panelIdx; i++) {
+    if (panels[i].view == VIEW_DASH) dashIdx++;
+  }
+  layoutDraw(dashIdx, *p.canvas, full);
+}
+
 void viewEnter(int i, View v) {
   displayWait(i);
   Panel &p = panels[i];
@@ -274,31 +411,190 @@ void viewEnter(int i, View v) {
   memset(p.sent, 0xA5, (size_t)TFT_W * TFT_H * 2);
   p.gifIdx = gif.n ? (uint16_t)(i * gif.n / N_PANELS) : 0;
   p.dueMs = nowMs();
+  panelDirty[i] = true;
+  panelFirstFrame[i] = true;
+  lastFrameMs[i] = 0;
 }
 
 void viewsService() {
   uint32_t now = nowMs();
+
+  // NVS debounced writes
+  displayNvsPoll();
+
+  // Idle check: PC asleep/off -> submit nothing at all
+  if (backlightIsIdle()) {
+    wasIdle = true;
+    return;
+  }
+  if (wasIdle) {
+    wasIdle = false;
+    for (int i = 0; i < N_PANELS; i++) {
+      memset(panels[i].sent, 0xA5, (size_t)TFT_W * TFT_H * 2);
+      panels[i].gifShown = -1;
+      panelDirty[i] = true;
+      panelFirstFrame[i] = true;
+      panels[i].dueMs = now;
+      viewsBoost(i);
+    }
+  }
+
+  // Refill SPI wire byte bucket
+  refillBucket();
+
+  // 1-second rolling metrics for deferred frames & gifStretch
+  if (now - statsWinStart >= 1000) {
+    float dt = (now - statsWinStart) / 1000.0f;
+    for (int i = 0; i < N_PANELS; i++) {
+      panels[i].deferred = deferredCount[i];
+      deferredCount[i] = 0;
+      if (panels[i].view == VIEW_GIF && gifNominalMs[i] > 0) {
+        panels[i].gifStretch = (dt * 1000.0f) / (float)gifNominalMs[i];
+      } else {
+        panels[i].gifStretch = 1.0f;
+      }
+      gifNominalMs[i] = 0;
+    }
+    statsWinStart = now;
+  }
+
+  // Event: pcStatsSeq() changed -> metrics, dash, stats dirty
+  uint32_t curSeq = pcStatsSeq();
+  if (curSeq != lastStatsSeq) {
+    lastStatsSeq = curSeq;
+    for (int i = 0; i < N_PANELS; i++) {
+      if (panels[i].view == VIEW_METRICS || panels[i].view == VIEW_DASH || panels[i].view == VIEW_STATS) {
+        panelDirty[i] = true;
+      }
+    }
+  }
+
+  // Event: status snapshot changed -> status panels dirty
+  uint32_t gLeft = bootGuardLeftMs();
+  StatusSnapshot curSnap = {
+    pcState(),
+    gLeft ? ((gLeft + 999) / 1000) : 0,
+    doorPressed(),
+    moboResetActive(),
+    lastActionMs
+  };
+  // field compare: memcmp would see the struct's uninitialised padding
+  if (curSnap.pc != lastStatusSnap.pc || curSnap.guardSec != lastStatusSnap.guardSec ||
+      curSnap.door != lastStatusSnap.door || curSnap.moboReset != lastStatusSnap.moboReset ||
+      curSnap.lastActionMs != lastStatusSnap.lastActionMs) {
+    lastStatusSnap = curSnap;
+    for (int i = 0; i < N_PANELS; i++) {
+      if (panels[i].view == VIEW_STATUS) panelDirty[i] = true;
+    }
+  }
+
+  // Heartbeats:
+  // Status: 1000 ms aligned to uptime second
+  uint32_t curUptimeSec = now / 1000;
+  if (curUptimeSec != lastUptimeSec) {
+    lastUptimeSec = curUptimeSec;
+    for (int i = 0; i < N_PANELS; i++) {
+      if (panels[i].view == VIEW_STATUS) panelDirty[i] = true;
+    }
+  }
+
+  // Stats: 1000 ms
+  if (now - lastStatsHeartbeatMs >= 1000) {
+    lastStatsHeartbeatMs = now;
+    for (int i = 0; i < N_PANELS; i++) {
+      if (panels[i].view == VIEW_STATS) panelDirty[i] = true;
+    }
+  }
+
+  // Metrics: 1000 ms (paging)
+  if (now - lastMetricsHeartbeatMs >= 1000) {
+    lastMetricsHeartbeatMs = now;
+    for (int i = 0; i < N_PANELS; i++) {
+      if (panels[i].view == VIEW_METRICS) panelDirty[i] = true;
+    }
+  }
+
+  // Dash: layoutPeriodMs(dashIdx) if non-zero else 1000 ms
+  for (int i = 0; i < N_PANELS; i++) {
+    if (panels[i].view == VIEW_DASH) {
+      int dashIdx = 0;
+      for (int j = 0; j < i; j++) {
+        if (panels[j].view == VIEW_DASH) dashIdx++;
+      }
+      uint32_t pMs = layoutPeriodMs(dashIdx);
+      uint32_t hb = pMs ? pMs : 1000;
+      if (now - lastDashHeartbeatMs[i] >= hb) {
+        lastDashHeartbeatMs[i] = now;
+        panelDirty[i] = true;
+      }
+    }
+  }
+
+  // Schedule due panels
   for (;;) {
     int best = -1;
+    PanelPriority bestPrio = PRIO_LOW;
     int32_t maxOverdue = -1;
+
     for (int i = 0; i < N_PANELS; i++) {
       Panel &p = panels[i];
       if (p.busy) continue;
-      int32_t overdue = (int32_t)(now - p.dueMs);
-      if (overdue >= 0 && overdue > maxOverdue) {
-        maxOverdue = overdue;
+
+      uint32_t minMs = getMinFrameMs(i);
+      bool isDue = false;
+      int32_t overdue = 0;
+
+      if (p.view == VIEW_GIF) {
+        if (!gif.n) {
+          p.dueMs = now + 200;
+          continue;
+        }
+        if ((now - lastFrameMs[i] >= minMs) && ((int32_t)(now - p.dueMs) >= 0)) {
+          isDue = true;
+          overdue = (int32_t)(now - p.dueMs);
+        }
+      } else {
+        if (panelDirty[i] && (now - lastFrameMs[i] >= minMs)) {
+          isDue = true;
+          overdue = (int32_t)(now - p.dueMs);
+        }
+      }
+
+      if (!isDue) continue;
+
+      PanelPriority prio = getPriority(i, now);
+      if (best < 0 || prio > bestPrio || (prio == bestPrio && overdue > maxOverdue)) {
         best = i;
+        bestPrio = prio;
+        maxOverdue = overdue;
       }
     }
+
     if (best < 0) break;
 
     Panel &p = panels[best];
+    float expected = getExpectedBytes(best);
+    bool canSubmit = (bestPrio == PRIO_HIGH) || (tokenBucket >= (double)expected);
+
+    if (!canSubmit) {
+      if (!wasDeferred[best]) {
+        deferredCount[best]++;
+        wasDeferred[best] = true;
+      }
+      break;
+    }
+
+    tokenBucket -= (double)expected;
+    wasDeferred[best] = false;
+    lastFrameMs[best] = now;
+
     if (p.view == VIEW_GIF) {
-      if (!gif.n) { p.dueMs = now + 200; continue; }
       uint16_t idx = p.gifIdx;
       if (idx >= gif.n) idx = 0;
       p.gifFrame = idx;
       displaySubmit(best);
+      gifNominalMs[best] += gif.durMs[idx];
+      // keep the GIF's own cadence; once a whole frame behind, slip instead of bursting
       p.dueMs += gif.durMs[idx];
       if ((int32_t)(now - p.dueMs) > (int32_t)gif.durMs[idx]) p.dueMs = now;
       p.gifIdx = (idx + 1) % gif.n;
@@ -306,8 +602,12 @@ void viewsService() {
       if (p.view == VIEW_STATUS) drawStatus(p);
       else if (p.view == VIEW_STATS) drawStats(p);
       else if (p.view == VIEW_METRICS) drawMetrics(p, best);
+      else if (p.view == VIEW_DASH) drawDash(p, best, panelFirstFrame[best]);
+
+      panelFirstFrame[best] = false;
+      panelDirty[best] = false;
       displaySubmit(best);
-      p.dueMs = now + (p.view == VIEW_STATUS ? 250 : 500);
+      p.dueMs = now + getMinFrameMs(best);
     }
   }
 }
