@@ -1,8 +1,8 @@
 #include "optos.h"
 
-#include <Arduino.h>
 #include <driver/gpio.h>
 #include <esp_timer.h>
+#include <stdint.h>
 
 #include "config.h"
 
@@ -13,7 +13,14 @@ static volatile bool rstActive;
 
 static void optoPinInit(int pin) {
   gpio_set_level((gpio_num_t)pin, 0);         // latch LOW while still Hi-Z
-  pinMode(pin, OUTPUT);                       // Hi-Z (10k pull-down) -> driven LOW
+  gpio_config_t io_conf = {};
+  io_conf.pin_bit_mask = (1ULL << pin);
+  io_conf.mode = GPIO_MODE_OUTPUT;
+  io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
+  io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+  io_conf.intr_type = GPIO_INTR_DISABLE;
+  gpio_config(&io_conf);
+  gpio_set_level((gpio_num_t)pin, 0);
 }
 
 static void doorRelease(void *) {

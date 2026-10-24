@@ -1,16 +1,17 @@
 #include "console.h"
 
-#include <Arduino.h>
-#include <USBHIDVendor.h>
+#include <stdint.h>
+#include <string.h>
 
 #include "commands.h"
 #include "config.h"
 #include "gif_store.h"
+#include "host_uart.h"
 #include "log.h"
 #include "pcstats.h"
+#include "sys.h"
+#include "usb.h"
 #include "views.h"
-
-static USBHIDVendor vendorHID(63, false);
 
 struct LineBuf { char buf[400]; uint16_t n; };   // PC stats dictionary lines run long
 
@@ -39,37 +40,37 @@ static void waitMagicThenReceive() {
   logMute(true);
   for (;;) {
     uint8_t m = 0;
-    uint32_t t0 = millis();
-    while (m < 4 && millis() - t0 < 3000) {
-      if (HOST_UART.available()) m = (HOST_UART.read() == magic[m]) ? m + 1 : 0;
+    uint32_t t0 = nowMs();
+    while (m < 4 && nowMs() - t0 < 3000) {
+      if (hostUartAvailable()) m = (hostUartRead() == magic[m]) ? m + 1 : 0;
     }
     if (m < 4) break;                  // not an upload after all
-    if (gifReceive(viewsShowGifFrame)) { HOST_UART.println("PLAY"); break; }
+    if (gifReceive(viewsShowGifFrame)) { hostUartPrintln("PLAY"); break; }
   }
   logMute(false);
 }
 
-void consoleBegin() {
-  vendorHID.setRxBufferSize(4096);
-  vendorHID.begin();
-}
-
 void consolePoll() {
-  while (HOST_UART.available()) {
-    if (!uartLine.n && HOST_UART.peek() == 'G') { waitMagicThenReceive(); return; }
-    if (feed(uartLine, HOST_UART.read())) dispatch(uartLine.buf);
+  while (hostUartAvailable()) {
+    if (!uartLine.n && hostUartPeek() == 'G') { waitMagicThenReceive(); return; }
+    if (feed(uartLine, hostUartRead())) dispatch(uartLine.buf);
   }
-  while (Serial.available())
-    if (feed(usbLine, Serial.read())) dispatch(usbLine.buf);
-  while (vendorHID.available() > 0) {
-    int c = vendorHID.read();
-    if (c > 0)
+  while (usbCdcAvailable() > 0) {
+    int c = usbCdcRead();
+    if (c >= 0) {
+      if (feed(usbLine, c)) dispatch(usbLine.buf);
+    }
+  }
+  while (usbHidAvailable() > 0) {
+    int c = usbHidRead();
+    if (c > 0) {
       if (feed(hidLine, c)) dispatch(hidLine.buf);
+    }
   }
 }
 
 void consoleUploadWindow(uint32_t ms) {
-  uint32_t t0 = millis();
-  while (!HOST_UART.available() && millis() - t0 < ms) delay(5);
-  if (HOST_UART.available()) waitMagicThenReceive();
+  uint32_t t0 = nowMs();
+  while (!hostUartAvailable() && nowMs() - t0 < ms) sleepMs(5);
+  if (hostUartAvailable()) waitMagicThenReceive();
 }

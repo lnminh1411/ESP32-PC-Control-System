@@ -1,33 +1,51 @@
 #include "gif_store.h"
 
-#include <Arduino.h>
-#include <FFat.h>
-#include <esp32-hal-psram.h>
+#include <algorithm>
+#include <esp_heap_caps.h>
+#include <esp_vfs_fat.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "display.h"
+#include "host_uart.h"
+#include "sys.h"
 
 #define BAND 8
 
 Gif gif;
 static bool fatOk;
+static wl_handle_t s_wl_handle = WL_INVALID_HANDLE;
 
 bool gifFsInit() {
-  fatOk = FFat.begin(true);
+  const esp_vfs_fat_mount_config_t mount_config = {
+    .format_if_mount_failed = true,
+    .max_files = 4,
+    .allocation_unit_size = 4096,
+    .use_one_fat = false,
+  };
+  esp_err_t err = esp_vfs_fat_spiflash_mount_rw_wl("/ffat", "ffat", &mount_config, &s_wl_handle);
+  fatOk = (err == ESP_OK);
   return fatOk;
 }
 
 static bool readExact(void *dst, size_t len, uint32_t timeoutMs = 5000) {
   uint8_t *p = (uint8_t *)dst;
-  uint32_t last = millis();
+  uint32_t last = nowMs();
   while (len) {
-    int avail = HOST_UART.available();
+    int avail = hostUartAvailable();
     if (avail > 0) {
-      size_t got = HOST_UART.readBytes(p, min((size_t)avail, len));
-      p += got;
-      len -= got;
-      last = millis();
-    } else if (millis() - last > timeoutMs) {
+      size_t toRead = std::min((size_t)avail, len);
+      size_t got = hostUartReadBytes(p, toRead, 0);
+      if (got > 0) {
+        p += got;
+        len -= got;
+        last = nowMs();
+      }
+    } else if (nowMs() - last > timeoutMs) {
       return false;
+    } else {
+      sleepMs(1);
     }
   }
   return true;
@@ -63,14 +81,14 @@ static bool bandDiffGif(const uint8_t *cur, const uint8_t *prev, int y, int n, i
       a++;
     }
     if (a == pairs) continue;
-    lo = min(lo, a);
+    lo = std::min(lo, a);
     int b = pairs - 1;
     while (b > hi) {
       int off = b * 3;
       if (cr[off] != pr[off] || cr[off + 1] != pr[off + 1] || cr[off + 2] != pr[off + 2]) break;
       b--;
     }
-    hi = max(hi, b);
+    hi = std::max(hi, b);
   }
   if (hi < 0) return false;
   x0 = lo * 2;
@@ -93,11 +111,11 @@ static void computeFrameRects(int i) {
     bool end = y >= gif.h;
     if (end) y = gif.h;
     int x0, x1;
-    bool dirty = !end && bandDiffGif(cur, prv, y, min(BAND, gif.h - y), gif.pw, x0, x1);
+    bool dirty = !end && bandDiffGif(cur, prv, y, std::min(BAND, gif.h - y), gif.pw, x0, x1);
     if (dirty) {
       if (runY < 0) runY = y;
-      rx0 = min(rx0, x0);
-      rx1 = max(rx1, x1);
+      rx0 = std::min(rx0, x0);
+      rx1 = std::max(rx1, x1);
     } else if (runY >= 0) {
       if (count < MAX_DIRTY_RECTS) {
         gif.rects[i][count++] = {(uint16_t)rx0, (uint16_t)runY, (uint16_t)(rx1 - rx0 + 1), (uint16_t)(y - runY)};
@@ -119,7 +137,7 @@ static void computeFrameRects(int i) {
 
 static bool allocFrames() {
   if (gif.w == 0 || gif.w > TFT_W || gif.h == 0 || gif.h > TFT_H || gif.n == 0 || gif.n > MAX_FRAMES) {
-    HOST_UART.printf("ERR bad size %ux%u x%u\n", gif.w, gif.h, gif.n);
+    hostUartPrintf("ERR bad size %ux%u x%u\n", gif.w, gif.h, gif.n);
     return false;
   }
   displayWaitAll();
@@ -137,8 +155,8 @@ static bool allocFrames() {
   gif.pw = (gif.w + 1) & ~1;
   size_t pBytes = (size_t)gif.pw * gif.h * 3 / 2;
   for (uint16_t i = 0; i < gif.n; i++) {
-    gif.packed[i] = (uint8_t *)ps_malloc(pBytes);
-    if (!gif.packed[i]) { HOST_UART.printf("ERR psram alloc frame %u\n", i); return false; }
+    gif.packed[i] = (uint8_t *)heap_caps_malloc(pBytes, MALLOC_CAP_SPIRAM);
+    if (!gif.packed[i]) { hostUartPrintf("ERR psram alloc frame %u\n", i); return false; }
   }
   return true;
 }
@@ -146,73 +164,74 @@ static bool allocFrames() {
 bool gifReceive(void (*onFrame)(int idx)) {
   displayWaitAll();
   uint16_t hdr[3];
-  if (!readExact(hdr, sizeof hdr)) { HOST_UART.println("ERR header timeout"); return false; }
+  if (!readExact(hdr, sizeof hdr)) { hostUartPrintln("ERR header timeout"); return false; }
   gif.w = hdr[0]; gif.h = hdr[1]; gif.n = hdr[2];
-  if (gif.n == 0 || gif.n > MAX_FRAMES) { HOST_UART.printf("ERR bad count %u\n", gif.n); return false; }
-  if (!readExact(gif.durMs, gif.n * 2)) { HOST_UART.println("ERR duration timeout"); return false; }
+  if (gif.n == 0 || gif.n > MAX_FRAMES) { hostUartPrintf("ERR bad count %u\n", gif.n); return false; }
+  if (!readExact(gif.durMs, gif.n * 2)) { hostUartPrintln("ERR duration timeout"); return false; }
   if (!allocFrames()) return false;
 
   size_t rawBytes = (size_t)gif.w * gif.h * 2;
-  uint8_t *temp = (uint8_t *)ps_malloc(rawBytes);
-  if (!temp) { HOST_UART.println("ERR psram alloc temp"); return false; }
+  uint8_t *temp = (uint8_t *)heap_caps_malloc(rawBytes, MALLOC_CAP_SPIRAM);
+  if (!temp) { hostUartPrintln("ERR psram alloc temp"); return false; }
 
-  File f = fatOk ? FFat.open(GIF_FILE, FILE_WRITE) : File();
-  bool fileOk = (bool)f;
+  FILE *f = fatOk ? fopen(GIF_FILE, "wb") : nullptr;
+  bool fileOk = (f != nullptr);
   if (fileOk) {
     uint16_t h[3] = {gif.w, gif.h, gif.n};
-    fileOk = f.write((const uint8_t *)"GIF5", 4) == 4 &&
-             f.write((const uint8_t *)h, 6) == 6 &&
-             f.write((const uint8_t *)gif.durMs, gif.n * 2) == gif.n * 2u;
+    fileOk = (fwrite("GIF5", 1, 4, f) == 4) &&
+             (fwrite(h, 1, 6, f) == 6) &&
+             (fwrite(gif.durMs, 1, gif.n * 2, f) == (size_t)(gif.n * 2));
   }
-  HOST_UART.println("OK");
+  hostUartPrintln("OK");
 
   for (uint16_t i = 0; i < gif.n;) {
     uint32_t sum = 0, want;
     if (!readExact(temp, rawBytes) || !readExact(&want, 4)) {
-      HOST_UART.printf("ERR frame %u timeout\n", i);
-      if (f) f.close();
+      hostUartPrintf("ERR frame %u timeout\n", i);
+      if (f) fclose(f);
       free(temp);
       return false;
     }
     for (size_t k = 0; k < rawBytes; k++) sum += temp[k];
-    if (sum != want) { HOST_UART.printf("E%u\n", i); continue; }
+    if (sum != want) { hostUartPrintf("E%u\n", i); continue; }
     if (fileOk) {
-      if (f.write(temp, rawBytes) != rawBytes) fileOk = false;
+      if (fwrite(temp, 1, rawBytes, f) != rawBytes) fileOk = false;
     }
     packFrame(gif.packed[i], temp, gif.w, gif.pw, gif.h);
     if (onFrame) onFrame(i);
-    HOST_UART.printf("K%u\n", i);
+    hostUartPrintf("K%u\n", i);
     i++;
   }
-  if (f) f.close();
+  if (f) fclose(f);
   free(temp);
-  HOST_UART.println(fileOk ? "SAVED" : "ERR save");
+  hostUartPrintln(fileOk ? "SAVED" : "ERR save");
   for (uint16_t i = 0; i < gif.n; i++) computeFrameRects(i);
   return true;
 }
 
 bool gifLoad() {
-  if (!fatOk || !FFat.exists(GIF_FILE)) return false;
-  File f = FFat.open(GIF_FILE, FILE_READ);
+  if (!fatOk) return false;
+  FILE *f = fopen(GIF_FILE, "rb");
+  if (!f) return false;
   char magic[4];
   uint16_t h[3];
-  bool ok = f.read((uint8_t *)magic, 4) == 4 && !memcmp(magic, "GIF5", 4) && f.read((uint8_t *)h, 6) == 6;
-  if (!ok) { f.close(); return false; }
+  bool ok = (fread(magic, 1, 4, f) == 4) && !memcmp(magic, "GIF5", 4) && (fread(h, 1, 6, f) == 6);
+  if (!ok) { fclose(f); return false; }
   gif.w = h[0]; gif.h = h[1]; gif.n = h[2];
-  if (!allocFrames()) { f.close(); gif.n = 0; return false; }
-  ok = f.read((uint8_t *)gif.durMs, gif.n * 2) == gif.n * 2u;
-  if (!ok) { f.close(); gif.n = 0; return false; }
+  if (!allocFrames()) { fclose(f); gif.n = 0; return false; }
+  ok = (fread(gif.durMs, 1, gif.n * 2, f) == (size_t)(gif.n * 2));
+  if (!ok) { fclose(f); gif.n = 0; return false; }
 
   size_t rawBytes = (size_t)gif.w * gif.h * 2;
-  uint8_t *temp = (uint8_t *)ps_malloc(rawBytes);
-  if (!temp) { f.close(); gif.n = 0; return false; }
+  uint8_t *temp = (uint8_t *)heap_caps_malloc(rawBytes, MALLOC_CAP_SPIRAM);
+  if (!temp) { fclose(f); gif.n = 0; return false; }
 
   for (uint16_t i = 0; ok && i < gif.n; i++) {
-    if (f.read(temp, rawBytes) != rawBytes) { ok = false; break; }
+    if (fread(temp, 1, rawBytes, f) != rawBytes) { ok = false; break; }
     packFrame(gif.packed[i], temp, gif.w, gif.pw, gif.h);
   }
   free(temp);
-  f.close();
+  fclose(f);
   if (!ok) { gif.n = 0; return false; }
 
   for (uint16_t i = 0; i < gif.n; i++) computeFrameRects(i);

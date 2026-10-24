@@ -26,13 +26,6 @@ static constexpr int PIN_DOOR[4] = {39, 40, 41, 42};   // keyfob B1-B4 (opto row
 #define CHUNK_LINES 32
 #define CHUNK_BYTES (TFT_W * CHUNK_LINES * 2)
 
-#define BL_PWM_HZ   20000
-#define BL_PWM_BITS 10
-#define BL_MAX      ((1u << BL_PWM_BITS) - 1)
-
-#define LED_PWM_HZ   20000   // status LED (GPIO2) dimming
-#define LED_PWM_BITS 10
-#define LED_PWM_MAX  ((1u << LED_PWM_BITS) - 1)
 #define LED_DUTY_CEIL 0.35f  // green LED glares above ~35% duty; brightness 100 maps here
 #define LED_GAMMA     2.2f   // brightness % is perceptual, not linear duty
 
@@ -62,7 +55,6 @@ static constexpr int PIN_DOOR[4] = {39, 40, 41, 42};   // keyfob B1-B4 (opto row
 #define MQTT_BASE    "esp32pc"            // topic root: esp32pc/cmd, /state, /avail, /log
 
 // ---- GIF storage / upload ----
-#define HOST_UART  Serial0     // CH343 USB-C port (Serial is the native USB CDC)
 #define UART_BAUD  3000000
 #define MAX_FRAMES 64
-#define GIF_FILE   "/gif.bin"  // "GIF5" + w,h,n + durations + frames
+#define GIF_FILE   "/ffat/gif.bin"  // "GIF5" + w,h,n + durations + frames

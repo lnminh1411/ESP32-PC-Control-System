@@ -16,7 +16,7 @@
 enum PcState { PC_UNKNOWN, PC_ON, PC_OFF };
 enum LedMode { LED_AUTO, LED_ON, LED_OFF, LED_SWEEP };
 
-void pcStateInit();                // register the USB event handler (before Serial.begin())
+void pcStateInit();                // register the USB event handler
 void statusLedInit();              // start the LED task
 PcState pcState();
 const char *pcStateName(PcState s);

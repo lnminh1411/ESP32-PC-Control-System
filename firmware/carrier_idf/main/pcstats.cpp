@@ -1,8 +1,11 @@
 #include "pcstats.h"
 
-#include <Arduino.h>
 #include <math.h>
+#include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
+
+#include "sys.h"
 
 struct StatEntry {
   char key[24];
@@ -106,12 +109,12 @@ void pcStatsLine(const char *line) {
       textCount++;
     }
   } else if (line[1] == 'e') {
-    lastSampleMs = millis();
+    lastSampleMs = nowMs();
   }
 }
 
 float pcStat(const char *key) {
-  if (!lastSampleMs || (uint32_t)(millis() - lastSampleMs) >= 5000) return NAN;
+  if (!lastSampleMs || (uint32_t)(nowMs() - lastSampleMs) >= 5000) return NAN;
   if (!key) return NAN;
   for (int i = 0; i < count; i++) {
     if (!strcmp(table[i].key, key)) return table[i].val;
@@ -120,7 +123,7 @@ float pcStat(const char *key) {
 }
 
 bool pcStatsFresh() {
-  return lastSampleMs && (uint32_t)(millis() - lastSampleMs) < 3000;
+  return lastSampleMs && (uint32_t)(nowMs() - lastSampleMs) < 3000;
 }
 
 int pcStatsCount() {
@@ -136,7 +139,7 @@ float pcStatAt(int i) {
 }
 
 const char *pcText(const char *key) {
-  if (!lastSampleMs || (uint32_t)(millis() - lastSampleMs) >= 5000) return "";
+  if (!lastSampleMs || (uint32_t)(nowMs() - lastSampleMs) >= 5000) return "";
   if (!key) return "";
   for (int i = 0; i < textCount; i++) {
     if (!strcmp(textTable[i].key, key)) return textTable[i].val;

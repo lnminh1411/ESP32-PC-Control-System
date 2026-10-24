@@ -1,18 +1,24 @@
 #include "commands.h"
 
-#include <Arduino.h>
+#include <ctype.h>
 #include <esp_heap_caps.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "config.h"
+#include "discord.h"
 #include "display.h"
 #include "gif_store.h"
-#include "log.h"
-#include "discord.h"
 #include "ha.h"
+#include "log.h"
 #include "net.h"
 #include "optos.h"
 #include "pc_state.h"
 #include "pcstats.h"
+#include "sys.h"
 #include "views.h"
 
 typedef void (*Handler)(const char *a1, const char *a2);
@@ -37,7 +43,7 @@ static void cmdPerf(const char *, const char *) {
   TaskStatus_t cur[40];
   uint32_t total;
   UBaseType_t n = uxTaskGetSystemState(cur, 40, &total);
-  uint32_t nowUs = micros(), dt = nowUs - prevUs;
+  uint32_t nowUsVal = nowUs(), dt = nowUsVal - prevUs;
   if (!prevUs) { logMsg("perf: baseline taken, run again"); }
   else {
     uint32_t idle[2] = {0, 0};
@@ -53,15 +59,15 @@ static void cmdPerf(const char *, const char *) {
            100 - idle[0] * 100.0f / dt, 100 - idle[1] * 100.0f / dt, busLoadPct());
     logMsg("  flush DMA wait %.1f%%  fps %.1f / %.1f / %.1f", spin * 100.0f / dt,
            panels[0].fps, panels[1].fps, panels[2].fps);
-    logMsg("  canvas internal %d/%d/%d  internal heap free %uK", panels[0].canvas->isInternal(),
-           panels[1].canvas->isInternal(), panels[2].canvas->isInternal(),
-           (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024));
+    logMsg("  canvas internal %d/%d/%d  internal heap free %uK", panels[0].canvasInternal,
+           panels[1].canvasInternal, panels[2].canvasInternal,
+           (unsigned)(freeInternal() / 1024));
     float kb = panels[0].kbps + panels[1].kbps + panels[2].kbps;
     logMsg("  wire %.0f KB/s = %.1f%% of %d MHz", kb, kb * 1024 * 8 * 100 / SPI_HZ, SPI_HZ / 1000000);
   }
   memcpy(prev, cur, n * sizeof *cur);
   nPrev = n;
-  prevUs = nowUs;
+  prevUs = nowUsVal;
 }
 
 static void cmdStatus(const char *, const char *) {
@@ -99,7 +105,7 @@ static void cmdPcStats(const char *a1, const char *) {
 static void cmdView(const char *a1, const char *a2) {
   int n = a1 ? atoi(a1) : 0;
   View v;
-  if (n < 1 || n > N_PANELS || !a2 || !viewParse(a2, v)) { logMsg("view: usage view <1|2|3> <gif|status|stats>"); return; }
+  if (n < 1 || n > N_PANELS || !a2 || !viewParse(a2, v)) { logMsg("view: usage view <1|2|3> <gif|status|stats|metrics>"); return; }
   viewEnter(n - 1, v);
   logMsg("view: panel %d -> %s", n, a2);
 }
@@ -151,15 +157,15 @@ static void cmdLed(const char *a1, const char *) {
 }
 
 static const Command COMMANDS[] = {
-  {"help",   "",                               cmdHelp},
-  {"status", "",                               cmdStatus},
-  {"view",   "<1|2|3> <gif|status|stats>",     cmdView},
-  {"door",   "<1-4>",                          cmdDoor},
-  {"reset",  "",                               cmdReset},
-  {"bl",     "<1|2|3|all> <0-100|on|off>",     cmdBacklight},
-  {"led",    "<auto|on|off|sweep|0-100>",      cmdLed},
-  {"perf",   "",                               cmdPerf},
-  {"pcstats", "[text]",                         cmdPcStats},
+  {"help",    "",                                    cmdHelp},
+  {"status",  "",                                    cmdStatus},
+  {"view",    "<1|2|3> <gif|status|stats|metrics>", cmdView},
+  {"door",    "<1-4>",                               cmdDoor},
+  {"reset",   "",                                    cmdReset},
+  {"bl",      "<1|2|3|all> <0-100|on|off>",          cmdBacklight},
+  {"led",     "<auto|on|off|sweep|0-100>",           cmdLed},
+  {"perf",    "",                                    cmdPerf},
+  {"pcstats", "[text]",                              cmdPcStats},
 };
 
 static void cmdHelp(const char *, const char *) {
