@@ -240,7 +240,13 @@ static void registerCommands() {
 }
 
 // ---- UI builders ----
-enum PanelView { PANEL_NORMAL, PANEL_CONFIRM_RESET };
+enum PanelView {
+  PANEL_NORMAL,
+  PANEL_CONFIRM_RESET,
+  PANEL_CONFIRM_SLEEP,
+  PANEL_CONFIRM_RESTART,
+  PANEL_CONFIRM_SHUTDOWN
+};
 
 static void addButton(cJSON *row, const char *label, const char *id, int style) {
   cJSON *b = cJSON_CreateObject();
@@ -323,12 +329,30 @@ static void buildComponents(cJSON *data, PanelView view) {
     addButton(r1, "Door 4", "door_4", 1);
 
     cJSON *r2 = addRow(comps);
-    addButton(r2, "Refresh", "refresh", 2);
-    addButton(r2, "PC reset", "reset", 4);
-    addButton(r2, "Close", "close", 2);
+    addButton(r2, "Wake PC", "wake", 3);
+    addButton(r2, "Sleep", "sleep", 2);
+    addButton(r2, "Restart", "restart", 4);
+    addButton(r2, "Shut down", "shutdown", 4);
+
+    cJSON *r3 = addRow(comps);
+    addButton(r3, "Refresh", "refresh", 2);
+    addButton(r3, "PC reset", "reset", 4);
+    addButton(r3, "Close", "close", 2);
   } else if (view == PANEL_CONFIRM_RESET) {
     cJSON *r1 = addRow(comps);
     addButton(r1, "Yes, reset", "reset_confirm", 4);
+    addButton(r1, "Cancel", "refresh", 2);
+  } else if (view == PANEL_CONFIRM_SLEEP) {
+    cJSON *r1 = addRow(comps);
+    addButton(r1, "Yes, sleep", "sleep_confirm", 2);
+    addButton(r1, "Cancel", "refresh", 2);
+  } else if (view == PANEL_CONFIRM_RESTART) {
+    cJSON *r1 = addRow(comps);
+    addButton(r1, "Yes, restart", "restart_confirm", 4);
+    addButton(r1, "Cancel", "refresh", 2);
+  } else if (view == PANEL_CONFIRM_SHUTDOWN) {
+    cJSON *r1 = addRow(comps);
+    addButton(r1, "Yes, shut down", "shutdown_confirm", 4);
     addButton(r1, "Cancel", "refresh", 2);
   }
 }
@@ -457,6 +481,24 @@ static void onInteraction(cJSON *d) {
       sendPanelResponse(id, token, 7, PANEL_CONFIRM_RESET, "Reset the PC?");
     } else if (!strcmp(cid, "reset_confirm")) {
       runAndGetFirstLine("reset", lastPanelResult, sizeof lastPanelResult);
+      sendPanelResponse(id, token, 7, PANEL_NORMAL, lastPanelResult);
+    } else if (!strcmp(cid, "wake")) {
+      runAndGetFirstLine("wake", lastPanelResult, sizeof lastPanelResult);
+      sendPanelResponse(id, token, 7, PANEL_NORMAL, lastPanelResult);
+    } else if (!strcmp(cid, "sleep")) {
+      sendPanelResponse(id, token, 7, PANEL_CONFIRM_SLEEP, "Put PC to sleep?");
+    } else if (!strcmp(cid, "sleep_confirm")) {
+      runAndGetFirstLine("power sleep", lastPanelResult, sizeof lastPanelResult);
+      sendPanelResponse(id, token, 7, PANEL_NORMAL, lastPanelResult);
+    } else if (!strcmp(cid, "restart")) {
+      sendPanelResponse(id, token, 7, PANEL_CONFIRM_RESTART, "Restart the PC?");
+    } else if (!strcmp(cid, "restart_confirm")) {
+      runAndGetFirstLine("power restart", lastPanelResult, sizeof lastPanelResult);
+      sendPanelResponse(id, token, 7, PANEL_NORMAL, lastPanelResult);
+    } else if (!strcmp(cid, "shutdown")) {
+      sendPanelResponse(id, token, 7, PANEL_CONFIRM_SHUTDOWN, "Shut down the PC?");
+    } else if (!strcmp(cid, "shutdown_confirm")) {
+      runAndGetFirstLine("power shutdown", lastPanelResult, sizeof lastPanelResult);
       sendPanelResponse(id, token, 7, PANEL_NORMAL, lastPanelResult);
     } else if (!strncmp(cid, "door_", 5)) {
       char cmd[32];

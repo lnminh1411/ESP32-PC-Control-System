@@ -45,6 +45,8 @@ static constexpr int PIN_DOOR[4] = {39, 40, 41, 42};   // keyfob B1-B4 (opto row
 
 // ---- PC power state ----
 #define USB_GUARD_MS 30000
+#define WOL_PORT 9
+#define POWER_ACK_TIMEOUT_MS 3000
 
 // ---- module's own WS2812 (not on the carrier; YD-style boards need the
 // "RGB" solder jumper bridged). Held off. ----

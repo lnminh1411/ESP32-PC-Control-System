@@ -12,6 +12,7 @@
 
 #include "class/hid/hid.h"
 #include "class/hid/hid_device.h"
+#include "device/usbd.h"
 #include "tinyusb.h"
 #include "tinyusb_cdc_acm.h"
 
@@ -38,7 +39,8 @@
     HID_FEATURE(HID_DATA | HID_VARIABLE | HID_ABSOLUTE), HID_COLLECTION_END
 
 static const uint8_t s_hid_report_descriptor[] = {
-  TUD_HID_REPORT_DESC_GENERIC_INOUT_FEATURE(63, HID_REPORT_ID(6))
+  TUD_HID_REPORT_DESC_GENERIC_INOUT_FEATURE(63, HID_REPORT_ID(6)),
+  TUD_HID_REPORT_DESC_SYSTEM_CONTROL(HID_REPORT_ID(1))
 };
 
 enum {
@@ -74,7 +76,7 @@ static const tusb_desc_device_t s_desc_device = {
 };
 
 static const uint8_t s_desc_cfg[] = {
-  TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, CONFIG_TOTAL_LEN, 0, 500),
+  TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, CONFIG_TOTAL_LEN, TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 500),
 
   // Interface 0: HID IN+OUT
   TUD_HID_INOUT_DESCRIPTOR(ITF_NUM_HID, 4, HID_ITF_PROTOCOL_NONE, sizeof(s_hid_report_descriptor),
@@ -106,6 +108,7 @@ static volatile bool s_dtr = false;
 static volatile bool s_rts = false;
 static volatile uint8_t s_lineState = 0;
 static SemaphoreHandle_t s_cdc_tx_lock;   // logMsg writes from several tasks
+static SemaphoreHandle_t s_hid_tx_lock;
 
 static void IRAM_ATTR busResetIsr(void *arg) {
   BaseType_t woken = pdFALSE;
@@ -296,6 +299,7 @@ void usbInit() {
   }
 
   s_cdc_tx_lock = xSemaphoreCreateMutex();
+  s_hid_tx_lock = xSemaphoreCreateMutex();
   s_hid_stream = xStreamBufferCreate(4096, 1);
   s_cdc_stream = xStreamBufferCreate(4096, 1);
 
@@ -346,6 +350,91 @@ int usbHidRead() {
   uint8_t b;
   size_t n = xStreamBufferReceive(s_hid_stream, &b, 1, 0);
   return (n == 1) ? (int)b : -1;
+}
+
+bool usbHidSendLine(const char *line) {
+  if (!line || !s_hid_tx_lock) return false;
+  if (!tud_mounted()) return false;
+  if (xSemaphoreTake(s_hid_tx_lock, pdMS_TO_TICKS(100)) != pdTRUE) return false;
+
+  size_t len = strlen(line);
+  if (len == 0) {
+    xSemaphoreGive(s_hid_tx_lock);
+    return true;
+  }
+
+  size_t offset = 0;
+  while (offset < len) {
+    uint8_t report[63];
+    memset(report, 0, sizeof(report));
+    size_t chunk = len - offset;
+    if (chunk > sizeof(report)) chunk = sizeof(report);
+    memcpy(report, line + offset, chunk);
+    offset += chunk;
+
+    TickType_t start = xTaskGetTickCount();
+    while (!tud_hid_ready()) {
+      if (!tud_mounted()) {
+        xSemaphoreGive(s_hid_tx_lock);
+        return false;
+      }
+      if ((xTaskGetTickCount() - start) > pdMS_TO_TICKS(50)) {
+        xSemaphoreGive(s_hid_tx_lock);
+        return false;
+      }
+      vTaskDelay(pdMS_TO_TICKS(2));
+    }
+
+    if (!tud_hid_report(6, report, sizeof(report))) {
+      xSemaphoreGive(s_hid_tx_lock);
+      return false;
+    }
+  }
+
+  xSemaphoreGive(s_hid_tx_lock);
+  return true;
+}
+
+bool usbSystemControl(uint8_t usage) {
+  if (!s_hid_tx_lock) return false;
+  if (!tud_mounted() || !tud_hid_ready()) return false;
+  if (xSemaphoreTake(s_hid_tx_lock, pdMS_TO_TICKS(100)) != pdTRUE) return false;
+
+  if (!tud_mounted() || !tud_hid_ready()) {
+    xSemaphoreGive(s_hid_tx_lock);
+    return false;
+  }
+
+  uint8_t val = usage;
+  if (!tud_hid_report(1, &val, 1)) {
+    xSemaphoreGive(s_hid_tx_lock);
+    return false;
+  }
+
+  vTaskDelay(pdMS_TO_TICKS(50));
+
+  TickType_t start = xTaskGetTickCount();
+  while (!tud_hid_ready()) {
+    if (!tud_mounted() || (xTaskGetTickCount() - start) > pdMS_TO_TICKS(50)) {
+      xSemaphoreGive(s_hid_tx_lock);
+      return false;
+    }
+    vTaskDelay(pdMS_TO_TICKS(2));
+  }
+
+  val = 0;
+  bool ok = tud_hid_report(1, &val, 1);
+  xSemaphoreGive(s_hid_tx_lock);
+  return ok;
+}
+
+bool usbSuspended() {
+  return tud_suspended();
+}
+
+bool usbRemoteWakeup() {
+  if (!tud_suspended()) return false;
+  return tud_remote_wakeup();
 }
 
 int usbCdcAvailable() {
