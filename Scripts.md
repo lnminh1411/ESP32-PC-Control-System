@@ -47,3 +47,6 @@ Builds and flashes `firmware/carrier_idf` over the native USB port hands-off: st
 
 ### ota_upload.py
 Uploads `firmware/carrier_idf/build/carrier.bin` to the board over Wi-Fi (HTTP POST /ota, password from secrets.h). Located at `scripts/ota_upload.py`.
+
+### make_vlw.py
+Converts a TTF/OTF font into an anti-aliased LovyanGFX VLW font as a C array (`font_*.cpp` in firmware/carrier_idf/main). Usage: `python scripts/make_vlw.py FONT.otf SIZE NAME OUT.cpp [--extra U+F2C9]`. Located at `scripts/make_vlw.py`.

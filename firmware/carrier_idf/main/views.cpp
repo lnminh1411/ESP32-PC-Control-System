@@ -8,6 +8,7 @@
 #include <LovyanGFX.hpp>
 
 #include "display_config.h"
+#include "fonts.h"
 #include "gif_store.h"
 #include "optos.h"
 #include "pc_state.h"
@@ -61,21 +62,18 @@ void viewsShowGifFrame(int idx) {
   }
 }
 
-static void field(LGFX_Sprite &c, int y, int size, uint16_t col, const char *fmt, ...) {
+enum FieldFont { F_SMALL, F_BODY, F_BIG, F_HEAD };
+
+static void field(LGFX_Sprite &c, int y, FieldFont ff, uint16_t col, const char *fmt, ...) {
   char buf[64];
   va_list a;
   va_start(a, fmt);
   vsnprintf(buf, sizeof buf, fmt, a);
   va_end(a);
 
-  c.fillRect(0, y, TFT_W, 8 * size, C_BG);       // clear the line, then draw it
-  if (y == 10 && size == 2) {
-    c.setFont(&fonts::Font2);
-    c.setTextSize(1);
-  } else {
-    c.setFont(&fonts::Font0);
-    c.setTextSize(size);
-  }
+  c.setFont(ff == F_SMALL ? fontSmall() : ff == F_BODY ? fontBody() : ff == F_BIG ? fontBig() : fontHead());
+  c.setTextSize(1);
+  c.fillRect(0, y, TFT_W, c.fontHeight(), C_BG);   // clear the line, then draw it
   c.setTextColor(col, C_BG);
   c.setTextDatum(lgfx::textdatum_t::top_left);
   c.drawString(buf, 8, y);
@@ -85,22 +83,22 @@ static void drawStatus(Panel &p) {
   LGFX_Sprite &c = *p.canvas;
   uint32_t up = nowMs() / 1000;
   PcState pc = pcState();
-  field(c, 10, 2, C_ACCENT, "PC STATUS");
-  c.drawFastHLine(8, 30, TFT_W - 16, C_DIM);
+  field(c, 6, F_HEAD, C_ACCENT, "PC STATUS");
+  c.drawFastHLine(8, 32, TFT_W - 16, C_DIM);
   uint16_t pcCol = pc == PC_ON ? C_GOOD : pc == PC_OFF ? C_WARN : C_DIM;
-  field(c, 44, 3, pcCol, "%s", pc == PC_ON ? "ON" : pc == PC_OFF ? "ASLEEP" : "NO HOST");
+  field(c, 38, F_BIG, pcCol, "%s", pc == PC_ON ? "ON" : pc == PC_OFF ? "ASLEEP" : "NO HOST");
   uint32_t guardLeft = bootGuardLeftMs();
-  field(c, 76, 1, C_DIM, guardLeft ? "boot guard: %lus left" : "", (unsigned long)(guardLeft / 1000));
-  field(c, 100, 1, C_DIM, "UPTIME");
-  field(c, 112, 3, C_TEXT, "%02lu:%02lu:%02lu", (unsigned long)(up / 3600), (unsigned long)(up / 60 % 60), (unsigned long)(up % 60));
-  field(c, 150, 1, C_DIM, "LAST ACTION");
-  field(c, 162, 2, C_TEXT, "%s", lastAction);
-  field(c, 182, 1, C_DIM, lastActionMs ? "%lus ago" : "", (unsigned long)((nowMs() - lastActionMs) / 1000));
-  field(c, 206, 1, C_DIM, "DOOR REMOTE");
+  field(c, 74, F_SMALL, C_DIM, guardLeft ? "boot guard: %lus left" : "", (unsigned long)(guardLeft / 1000));
+  field(c, 96, F_SMALL, C_DIM, "UPTIME");
+  field(c, 112, F_BIG, C_TEXT, "%02lu:%02lu:%02lu", (unsigned long)(up / 3600), (unsigned long)(up / 60 % 60), (unsigned long)(up % 60));
+  field(c, 152, F_SMALL, C_DIM, "LAST ACTION");
+  field(c, 168, F_BODY, C_TEXT, "%s", lastAction);
+  field(c, 190, F_SMALL, C_DIM, lastActionMs ? "%lus ago" : "", (unsigned long)((nowMs() - lastActionMs) / 1000));
+  field(c, 212, F_SMALL, C_DIM, "DOOR REMOTE");
   int door = doorPressed();
-  field(c, 218, 2, door ? C_WARN : C_GOOD, door ? "B%d PRESSED" : "idle", door);
-  field(c, 246, 1, C_DIM, "MOTHERBOARD RST");
-  field(c, 258, 2, moboResetActive() ? C_BAD : C_GOOD, moboResetActive() ? "PULSING" : "idle");
+  field(c, 228, F_BODY, door ? C_WARN : C_GOOD, door ? "B%d PRESSED" : "idle", door);
+  field(c, 256, F_SMALL, C_DIM, "MOTHERBOARD RST");
+  field(c, 272, F_BODY, moboResetActive() ? C_BAD : C_GOOD, moboResetActive() ? "PULSING" : "idle");
 }
 
 static void bar(LGFX_Sprite &c, int y, float frac, uint16_t col) {
@@ -114,22 +112,22 @@ static void bar(LGFX_Sprite &c, int y, float frac, uint16_t col) {
 
 static void drawStats(Panel &p) {
   LGFX_Sprite &c = *p.canvas;
-  field(c, 10, 2, C_ACCENT, "SYSTEM");
-  c.drawFastHLine(8, 30, TFT_W - 16, C_DIM);
+  field(c, 6, F_HEAD, C_ACCENT, "SYSTEM");
+  c.drawFastHLine(8, 32, TFT_W - 16, C_DIM);
   float busPct = busLoadPct();
-  field(c, 42, 1, C_DIM, "SPI BUS (%d MHz, RGB444)", SPI_HZ / 1000000);
-  field(c, 54, 2, busPct > 85 ? C_WARN : C_TEXT, "%.0f%% busy", busPct);
-  bar(c, 74, busPct / 100.0f, busPct > 85 ? C_WARN : C_GOOD);
-  int y = 94;
-  for (int i = 0; i < N_PANELS; i++, y += 34) {
-    field(c, y, 1, C_DIM, "PANEL %d  %s", i + 1, viewName(panels[i].view));
-    field(c, y + 12, 2, C_TEXT, "%4.1ffps %4.0fKB/s", panels[i].fps, panels[i].kbps);
+  field(c, 38, F_SMALL, C_DIM, "SPI BUS (%d MHz, RGB444)", SPI_HZ / 1000000);
+  field(c, 54, F_BODY, busPct > 85 ? C_WARN : C_TEXT, "%.0f%% busy", busPct);
+  bar(c, 78, busPct / 100.0f, busPct > 85 ? C_WARN : C_GOOD);
+  int y = 92;
+  for (int i = 0; i < N_PANELS; i++, y += 36) {
+    field(c, y, F_SMALL, C_DIM, "PANEL %d  %s", i + 1, viewName(panels[i].view));
+    field(c, y + 16, F_BODY, C_TEXT, "%4.1f fps %4.0f KB/s", panels[i].fps, panels[i].kbps);
   }
-  field(c, 200, 1, C_DIM, "MEMORY");
-  field(c, 212, 2, C_TEXT, "PSRAM %4uK", (unsigned)(freePsram() / 1024));
-  field(c, 232, 2, C_TEXT, "heap  %4uK", (unsigned)(freeHeap() / 1024));
-  field(c, 258, 1, C_DIM, "CHIP");
-  field(c, 270, 2, C_TEXT, "%.1f C", chipTempC());
+  field(c, 204, F_SMALL, C_DIM, "MEMORY");
+  field(c, 220, F_BODY, C_TEXT, "PSRAM %4u K", (unsigned)(freePsram() / 1024));
+  field(c, 240, F_BODY, C_TEXT, "heap  %4u K", (unsigned)(freeHeap() / 1024));
+  field(c, 264, F_SMALL, C_DIM, "CHIP");
+  field(c, 280, F_BODY, C_TEXT, "%.1f\xC2\xB0" "C", chipTempC());   // UTF-8 degree sign
 }
 
 static void drawMetrics(Panel &p, int panelIdx) {
@@ -157,28 +155,30 @@ static void drawMetrics(Panel &p, int panelIdx) {
   int count = base + (k < rem ? 1 : 0);
 
   // Clear header area
-  c.fillRect(0, 0, TFT_W, 20, C_BG);
+  c.fillRect(0, 0, TFT_W, 26, C_BG);
 
   // Header line: "PC METRICS k/n" plus "live" / "no data"
   char hdr[48];
   snprintf(hdr, sizeof(hdr), "PC METRICS %d/%d", k + 1, n);
 
-  c.setFont(&fonts::Font0);
+  c.setFont(fontBody());
   c.setTextSize(1);
   c.setTextColor(C_ACCENT, C_BG);
   c.setTextDatum(lgfx::textdatum_t::top_left);
-  c.drawString(hdr, 8, 8);
+  c.drawString(hdr, 8, 4);
 
   bool fresh = pcStatsFresh();
   c.setTextColor(fresh ? C_GOOD : C_WARN, C_BG);
   c.setTextDatum(lgfx::textdatum_t::top_right);
-  c.drawString(fresh ? "live" : "no data", TFT_W - 8, 8);
+  c.drawString(fresh ? "live" : "no data", TFT_W - 8, 4);
 
   // Divider line
-  c.drawFastHLine(8, 20, TFT_W - 16, C_DIM);
+  c.drawFastHLine(8, 26, TFT_W - 16, C_DIM);
 
-  // Rows and 5 s paging: 24 rows per page (12 px each, y = 24..311)
-  constexpr int ROWS_PER_PAGE = 24;
+  // Rows in the small font from y = 30, paging every 5 s when they overflow
+  c.setFont(fontSmall());
+  const int rowH = c.fontHeight();
+  const int ROWS_PER_PAGE = (TFT_H - 30) / rowH;
   int numPages = count > 0 ? ((count + ROWS_PER_PAGE - 1) / ROWS_PER_PAGE) : 1;
   uint32_t page = (nowMs() / 5000) % (uint32_t)numPages;
   int pageStart = (int)page * ROWS_PER_PAGE;
@@ -187,13 +187,13 @@ static void drawMetrics(Panel &p, int panelIdx) {
   if (pageItems < 0) pageItems = 0;
 
   for (int r = 0; r < ROWS_PER_PAGE; r++) {
-    int y = 24 + r * 12;
-    c.fillRect(0, y, TFT_W, 12, C_BG);
+    int y = 30 + r * rowH;
+    c.fillRect(0, y, TFT_W, rowH, C_BG);
 
     if (totalItems == 0 && r == 0) {
       c.setTextColor(C_DIM, C_BG);
       c.setTextDatum(lgfx::textdatum_t::top_left);
-      c.drawString("no metrics", 8, y + 2);
+      c.drawString("no metrics", 8, y);
       continue;
     }
 
@@ -219,12 +219,13 @@ static void drawMetrics(Panel &p, int panelIdx) {
       const char *rawVal = pcTextAt(textIdx);
       if (!rawVal) rawVal = "";
 
-      // Truncate text value to fit line without overlapping key
+      // Truncate text value to fit line without overlapping key (monospace font)
+      int charW = c.textWidth("M");
       int keyLen = rawKey ? (int)strlen(rawKey) : 0;
       if (keyLen > 20) keyLen = 20;
-      int keyPx = keyLen * 6;
-      int availValPx = (TFT_W - 16) - keyPx - 6;
-      int maxChars = availValPx > 0 ? (availValPx / 6) : 0;
+      int keyPx = keyLen * charW;
+      int availValPx = (TFT_W - 16) - keyPx - charW;
+      int maxChars = availValPx > 0 ? (availValPx / charW) : 0;
       if (maxChars > (int)sizeof(valBuf) - 1) maxChars = sizeof(valBuf) - 1;
       if (maxChars > 0) {
         strncpy(valBuf, rawVal, maxChars);
@@ -245,16 +246,17 @@ static void drawMetrics(Panel &p, int panelIdx) {
     // Key left (dim)
     c.setTextColor(C_DIM, C_BG);
     c.setTextDatum(lgfx::textdatum_t::top_left);
-    c.drawString(keyBuf, 8, y + 2);
+    c.drawString(keyBuf, 8, y);
 
     // Value right-aligned (white)
     c.setTextColor(C_TEXT, C_BG);
     c.setTextDatum(lgfx::textdatum_t::top_right);
-    c.drawString(valBuf, TFT_W - 8, y + 2);
+    c.drawString(valBuf, TFT_W - 8, y);
   }
 
   // Clear bottom margin
-  c.fillRect(0, 312, TFT_W, 8, C_BG);
+  int bottom = 30 + ROWS_PER_PAGE * rowH;
+  c.fillRect(0, bottom, TFT_W, TFT_H - bottom, C_BG);
 }
 
 void viewEnter(int i, View v) {
