@@ -3,8 +3,8 @@
 // Joins WIFI_SSID (secrets.h) in the background and keeps reconnecting; the
 // rest of the firmware runs whether or not the network is up. Once
 // connected: mDNS name NET_HOSTNAME.local and, when OTA_PASS is set, an
-// ArduinoOTA endpoint (upload with arduino-cli --port <ip> / the IDE's
-// network port). OTA matters here: once the board is in the case there is
+// HTTP server endpoint for OTA updates on port 80 (POST /ota with header
+// X-OTA-Pass). OTA matters here: once the board is in the case there is
 // no physical access to BOOT/RESET (docs/recovery-and-physical-access.md).
 #pragma once
 #include <stdint.h>

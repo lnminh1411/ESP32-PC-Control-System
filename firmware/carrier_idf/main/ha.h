@@ -4,7 +4,7 @@
 // device, "ESP32 PC Control", with:
 //   buttons  Door button 1-4, PC reset
 //   lights   Screen 1-3 backlight (on/off + brightness 0-100)
-//   selects  Screen 1-3 view (gif | status | stats), Status LED (auto | on | off)
+//   selects  Screen 1-3 view (gif | status | stats | metrics), Status LED (auto | on | off)
 //   sensors  PC state, last message; diagnostics: uptime, Wi-Fi signal, IP,
 //            chip temperature, SPI bus load, GIF fps, free PSRAM
 // Every control sends a plain text command to <base>/cmd (the same command
