@@ -9,7 +9,7 @@
 
 struct StatEntry {
   char key[24];
-  double val;   // double: integers stay exact to 12+ digits (uptime)
+  double val;   // double: whole numbers exact up to 2^53 (uptime, token counters)
 };
 
 struct TextEntry {

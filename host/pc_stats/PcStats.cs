@@ -1326,12 +1326,12 @@ class PcStats : ServiceBase {
     return p;
   }
 
-  // Whole numbers go out exact up to 12 digits (uptime, token counts); the
+  // Whole numbers go out exact up to 2^53 (uptime, token counters); the
   // rest with 7 significant digits.
   static string Fmt(double? v) {
     if (!v.HasValue || double.IsNaN(v.Value) || double.IsInfinity(v.Value)) return "";
     double d = v.Value;
-    if (d == Math.Floor(d) && Math.Abs(d) < 1e12) return d.ToString("0", CultureInfo.InvariantCulture);
+    if (d == Math.Floor(d) && Math.Abs(d) <= 9007199254740992.0) return d.ToString("0", CultureInfo.InvariantCulture);
     return d.ToString("G7", CultureInfo.InvariantCulture);
   }
 

@@ -208,7 +208,7 @@ static void drawMetrics(Panel &p, int panelIdx) {
       double val = pcStatAt(globalIdx);
       if (isnan(val)) {
         snprintf(valBuf, sizeof(valBuf), "--");
-      } else if (val == floor(val) && fabs(val) < 1e12) {
+      } else if (val == floor(val) && fabs(val) <= 9007199254740992.0) {
         snprintf(valBuf, sizeof(valBuf), "%.0f", val);   // whole numbers in full (uptime)
       } else {
         snprintf(valBuf, sizeof(valBuf), "%.6g", val);

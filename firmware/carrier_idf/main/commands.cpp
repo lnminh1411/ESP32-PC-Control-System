@@ -92,8 +92,8 @@ static void cmdPcStats(const char *a1, const char *) {
     const char *k = pcStatKey(i);
     if (!k || (a1 && !strcasestr(k, a1))) continue;
     double v = pcStatAt(i);
-    if (v == floor(v) && fabs(v) < 1e12) logMsg("  %-23s  %13.0f", k, v);
-    else logMsg("  %-23s  %13.3f", k, v);
+    if (v == floor(v) && fabs(v) <= 9007199254740992.0) logMsg("  %-23s  %16.0f", k, v);
+    else logMsg("  %-23s  %16.3f", k, v);
   }
   int tn = pcTextCount();
   for (int i = 0; i < tn; i++) {
