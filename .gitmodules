@@ -1,0 +1,3 @@
+[submodule "firmware/carrier_idf/components/lovyangfx/LovyanGFX"]
+	path = firmware/carrier_idf/components/lovyangfx/LovyanGFX
+	url = https://github.com/lovyan03/LovyanGFX.git
