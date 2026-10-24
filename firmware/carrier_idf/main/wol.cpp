@@ -117,7 +117,6 @@ const char *wolSend() {
   setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &opt, sizeof(opt));
 
   esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-  if (!netif) netif = esp_netif_next(nullptr);
   esp_netif_ip_info_t ip_info;
   uint32_t bcast_addr = 0;
   bool has_bcast = false;
