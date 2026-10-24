@@ -11,7 +11,8 @@ if not exist vendor\lhwm-wrapper.dll (
   if not exist vendor mkdir vendor
   echo Downloading lhwm-wrapper...
   curl -sSLf -o vendor\artifacts.zip "%URL%" || goto :fail
-  tar -xf vendor\artifacts.zip -C vendor x64/Release/lhwm-wrapper.dll || goto :fail
+  rem Windows tar (bsdtar) reads zip; a GNU tar earlier on PATH (Git Bash) cannot
+  "%SystemRoot%\System32\tar.exe" -xf vendor\artifacts.zip -C vendor x64/Release/lhwm-wrapper.dll || goto :fail
   move /y vendor\x64\Release\lhwm-wrapper.dll vendor\ >nul
   rmdir /s /q vendor\x64
   del vendor\artifacts.zip
