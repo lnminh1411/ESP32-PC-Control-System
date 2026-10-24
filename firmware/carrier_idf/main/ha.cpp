@@ -1,9 +1,12 @@
 #include "ha.h"
 
-#include <Arduino.h>
-#include <freertos/queue.h>
+#include <algorithm>
 #include <esp_mac.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
 #include <mqtt_client.h>
+#include <stdio.h>
+#include <string.h>
 
 #include "commands.h"
 #include "config.h"
@@ -12,6 +15,7 @@
 #include "net.h"
 #include "pc_state.h"
 #include "secrets_or_example.h"
+#include "sys.h"
 #include "views.h"
 
 #define DISC_PREFIX "homeassistant"
@@ -63,7 +67,7 @@ static void announceAll() {
     snprintf(name, sizeof name, "Screen %d view", i);
     snprintf(extra, sizeof extra,
              "\"cmd_t\":\"~/cmd\",\"cmd_tpl\":\"view %d {{ value }}\",\"stat_t\":\"~/state\","
-             "\"val_tpl\":\"{{ value_json.view%d }}\",\"ops\":[\"gif\",\"status\",\"stats\"],\"icon\":\"mdi:monitor-dashboard\"",
+             "\"val_tpl\":\"{{ value_json.view%d }}\",\"ops\":[\"gif\",\"status\",\"stats\",\"metrics\"],\"icon\":\"mdi:monitor-dashboard\"",
              i, i);
     announce("select", obj, name, extra);
   }
@@ -112,8 +116,8 @@ static void publishState(const char *fast) {
   for (const Panel &p : panels) if (p.view == VIEW_GIF && p.fps > gifFps) gifFps = p.fps;
   char json[400];
   snprintf(json, sizeof json, "{%s,\"up\":%lu,\"rssi\":%d,\"ip\":\"%s\",\"temp\":%.1f,\"bus\":%.0f,\"fps\":%.1f,\"psram\":%u}",
-           fast, (unsigned long)(millis() / 1000), netRssi(), netIp(), temperatureRead(), busLoadPct(), gifFps,
-           (unsigned)(ESP.getFreePsram() / 1024));
+           fast, (unsigned long)(nowMs() / 1000), netRssi(), netIp(), chipTempC(), busLoadPct(), gifFps,
+           (unsigned)(freePsram() / 1024));
   pub(t_state, json, true);
 }
 
@@ -134,7 +138,7 @@ static void onMqtt(void *, esp_event_base_t, int32_t id, void *data) {
       if (e->current_data_offset || e->data_len != e->total_data_len) break;   // ignore fragmented payloads
       if (e->topic_len == (int)strlen(t_cmd) && !strncmp(e->topic, t_cmd, e->topic_len)) {
         CmdLine c;
-        int n = min(e->data_len, (int)sizeof c.s - 1);
+        int n = std::min(e->data_len, (int)sizeof c.s - 1);
         memcpy(c.s, e->data, n);
         c.s[n] = 0;
         xQueueSend(cmdQueue, &c, 0);
@@ -204,9 +208,9 @@ void haPoll() {
     pub(t_avail, "online", true);
     lastFast[0] = 0;                      // and a full state right after
   }
-  if (strcmp(fast, lastFast) || millis() - lastFull > 10000) {
+  if (strcmp(fast, lastFast) || nowMs() - lastFull > 10000) {
     strcpy(lastFast, fast);
-    lastFull = millis();
+    lastFull = nowMs();
     publishState(fast);
   }
 }

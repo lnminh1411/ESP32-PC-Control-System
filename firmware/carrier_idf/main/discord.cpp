@@ -1,12 +1,17 @@
 #include "discord.h"
 
-#include <Arduino.h>
-#include <ArduinoJson.h>
-#include <HTTPClient.h>
-#include <NetworkClientSecure.h>
-#include <WebSocketsClient.h>
+#include <cJSON.h>
+#include <esp_crt_bundle.h>
+#include <esp_heap_caps.h>
+#include <esp_http_client.h>
+#include <esp_random.h>
+#include <esp_websocket_client.h>
+#include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
+#include <freertos/task.h>
+#include <stdio.h>
+#include <string.h>
 
 #include "commands.h"
 #include "config.h"
@@ -16,24 +21,28 @@
 #include "optos.h"
 #include "pc_state.h"
 #include "secrets_or_example.h"
-
-// The core's built-in Mozilla CA bundle (CONFIG_MBEDTLS_CERTIFICATE_BUNDLE).
-extern const uint8_t caBundleStart[] asm("_binary_x509_crt_bundle_start");
-extern const uint8_t caBundleEnd[] asm("_binary_x509_crt_bundle_end");
+#include "sys.h"
 
 #define API "https://discord.com/api/v10"
+#define WS_BUF_SIZE (64 * 1024)
 
-static WebSocketsClient ws;
+static esp_websocket_client_handle_t ws;
 static volatile bool ready;
+static volatile bool requestReconnect;
 static uint32_t heartbeatMs, lastBeat;
 static int32_t seq = -1;
 static bool gotAck = true;
+
+static char *wsBuf;
+static int wsBufLen;
+static bool wsMsgDropped;
 
 // ---- hand-over to the main loop: one command at a time ----
 static char reqLine[64];
 static char reqReply[1500];
 static volatile bool reqPending;
 static SemaphoreHandle_t reqDone;
+static SemaphoreHandle_t restMutex;
 
 static bool runOnMainLoop(const char *line, uint32_t timeoutMs = 2500) {
   snprintf(reqLine, sizeof reqLine, "%s", line);
@@ -88,32 +97,113 @@ void discordNotify(const char *what) {
 }
 
 // ---- REST ----
-static int rest(const char *method, const String &path, const String &body) {
-  static NetworkClientSecure tls;
-  static bool tlsInit;
-  if (!tlsInit) { tls.setCACertBundle(caBundleStart, caBundleEnd - caBundleStart); tlsInit = true; }
-  HTTPClient http;
-  http.setReuse(true);
-  if (!http.begin(tls, String(API) + path)) return -1;
-  http.addHeader("Authorization", "Bot " DISCORD_TOKEN);
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("User-Agent", "DiscordBot (https://github.com/lnminh1411/ESP32-PC-Control-System, 1.0)");
-  int code = http.sendRequest(method, body);
-  if (code < 200 || code >= 300) logMsg("discord: %s %s -> %d %s", method, path.c_str(), code, http.getString().substring(0, 120).c_str());
-  http.end();
+struct HttpRespBuf {
+  char text[128];
+  int len;
+};
+
+static esp_err_t httpEventHandler(esp_http_client_event_t *evt) {
+  if (evt->event_id == HTTP_EVENT_ON_DATA) {
+    HttpRespBuf *rb = (HttpRespBuf *)evt->user_data;
+    if (rb && rb->len < (int)sizeof(rb->text) - 1) {
+      int copyLen = evt->data_len;
+      if (rb->len + copyLen > (int)sizeof(rb->text) - 1) {
+        copyLen = (int)sizeof(rb->text) - 1 - rb->len;
+      }
+      memcpy(rb->text + rb->len, evt->data, copyLen);
+      rb->len += copyLen;
+      rb->text[rb->len] = '\0';
+    }
+  }
+  return ESP_OK;
+}
+
+static int rest(const char *method, const char *path, const char *body) {
+  if (restMutex) xSemaphoreTake(restMutex, portMAX_DELAY);
+  static esp_http_client_handle_t client;
+  static HttpRespBuf respBuf;
+  char url[256];
+  snprintf(url, sizeof url, "%s%s", API, path);
+
+  respBuf.len = 0;
+  respBuf.text[0] = 0;
+
+  if (!client) {
+    esp_http_client_config_t cfg = {};
+    cfg.url = url;
+    cfg.crt_bundle_attach = esp_crt_bundle_attach;
+    cfg.keep_alive_enable = true;
+    cfg.keep_alive_idle = 5;
+    cfg.keep_alive_interval = 5;
+    cfg.keep_alive_count = 3;
+    cfg.event_handler = httpEventHandler;
+    cfg.user_data = &respBuf;
+    cfg.timeout_ms = 10000;
+    client = esp_http_client_init(&cfg);
+    if (!client) {
+      if (restMutex) xSemaphoreGive(restMutex);
+      return -1;
+    }
+  } else {
+    esp_http_client_set_url(client, url);
+  }
+
+  esp_http_client_method_t m = HTTP_METHOD_GET;
+  if (!strcmp(method, "POST")) m = HTTP_METHOD_POST;
+  else if (!strcmp(method, "PUT")) m = HTTP_METHOD_PUT;
+  else if (!strcmp(method, "DELETE")) m = HTTP_METHOD_DELETE;
+  else if (!strcmp(method, "PATCH")) m = HTTP_METHOD_PATCH;
+  esp_http_client_set_method(client, m);
+
+  char auth[128];
+  snprintf(auth, sizeof auth, "Bot %s", DISCORD_TOKEN);
+  esp_http_client_set_header(client, "Authorization", auth);
+  esp_http_client_set_header(client, "Content-Type", "application/json");
+  esp_http_client_set_header(client, "User-Agent", "DiscordBot (https://github.com/lnminh1411/ESP32-PC-Control-System, 1.0)");
+
+  if (body && body[0]) {
+    esp_http_client_set_post_field(client, body, strlen(body));
+  } else {
+    esp_http_client_set_post_field(client, nullptr, 0);
+  }
+
+  esp_err_t err = esp_http_client_perform(client);
+  if (err != ESP_OK) {
+    esp_http_client_close(client);
+    respBuf.len = 0;
+    respBuf.text[0] = 0;
+    err = esp_http_client_perform(client);
+  }
+
+  int code = esp_http_client_get_status_code(client);
+  if (err != ESP_OK) {
+    logMsg("discord: %s %s -> err %s", method, path, esp_err_to_name(err));
+    if (restMutex) xSemaphoreGive(restMutex);
+    return -1;
+  }
+  if (code < 200 || code >= 300) {
+    logMsg("discord: %s %s -> %d %s", method, path, code, respBuf.text);
+  }
+  if (restMutex) xSemaphoreGive(restMutex);
   return code;
 }
 
 static void postChannelEmbed(const char *title, const char *desc, uint32_t color) {
   if (!DISCORD_CHANNEL_ID[0]) return;
-  JsonDocument d;
-  JsonObject embed = d["embeds"].to<JsonArray>().add<JsonObject>();
-  embed["title"] = title;
-  if (desc && desc[0]) embed["description"] = desc;
-  embed["color"] = color;
-  String body;
-  serializeJson(d, body);
-  rest("POST", String("/channels/") + DISCORD_CHANNEL_ID + "/messages", body);
+  cJSON *root = cJSON_CreateObject();
+  cJSON *embeds = cJSON_AddArrayToObject(root, "embeds");
+  cJSON *embed = cJSON_CreateObject();
+  cJSON_AddStringToObject(embed, "title", title);
+  if (desc && desc[0]) cJSON_AddStringToObject(embed, "description", desc);
+  cJSON_AddNumberToObject(embed, "color", color);
+  cJSON_AddItemToArray(embeds, embed);
+  char *body = cJSON_PrintUnformatted(root);
+  cJSON_Delete(root);
+
+  char path[128];
+  snprintf(path, sizeof path, "/channels/%s/messages", DISCORD_CHANNEL_ID);
+  rest("POST", path, body);
+  free(body);
 }
 
 // ---- actions panel tracking ----
@@ -125,180 +215,232 @@ static char lastPanelResult[128];
 
 static void deleteActivePanel() {
   if (!panelActive || !panelToken[0] || !DISCORD_APP_ID[0]) return;
-  rest("DELETE", String("/webhooks/") + DISCORD_APP_ID + "/" + panelToken + "/messages/@original", "");
+  char delPath[256];
+  snprintf(delPath, sizeof delPath, "/webhooks/%s/%s/messages/@original", DISCORD_APP_ID, panelToken);
+  rest("DELETE", delPath, "");
   panelActive = false;
   panelToken[0] = 0;
 }
 
 // ---- slash command registration ----
 static void registerCommands() {
-  JsonDocument d;
-  JsonArray cmds = d.to<JsonArray>();
-  JsonObject c = cmds.add<JsonObject>();
-  c["name"] = "actions";
-  c["description"] = "Open the ESP32 PC Control panel (only you see it)";
+  cJSON *root = cJSON_CreateArray();
+  cJSON *c = cJSON_CreateObject();
+  cJSON_AddStringToObject(c, "name", "actions");
+  cJSON_AddStringToObject(c, "description", "Open the ESP32 PC Control panel (only you see it)");
+  cJSON_AddItemToArray(root, c);
+  char *body = cJSON_PrintUnformatted(root);
+  cJSON_Delete(root);
 
-  String body;
-  serializeJson(d, body);
-  int code = rest("PUT", String("/applications/") + DISCORD_APP_ID + "/guilds/" + DISCORD_GUILD_ID + "/commands", body);
+  char path[128];
+  snprintf(path, sizeof path, "/applications/%s/guilds/%s/commands", DISCORD_APP_ID, DISCORD_GUILD_ID);
+  int code = rest("PUT", path, body);
+  free(body);
   if (code >= 200 && code < 300) logMsg("discord: slash commands registered");
 }
 
 // ---- UI builders ----
 enum PanelView { PANEL_NORMAL, PANEL_CONFIRM_RESET };
 
-static void addButton(JsonArray row, const char *label, const char *id, int style) {
-  JsonObject b = row.add<JsonObject>();
-  b["type"] = 2;
-  b["label"] = label;
-  b["custom_id"] = id;
-  b["style"] = style; // 1 blurple, 2 grey, 4 red
+static void addButton(cJSON *row, const char *label, const char *id, int style) {
+  cJSON *b = cJSON_CreateObject();
+  cJSON_AddNumberToObject(b, "type", 2);
+  cJSON_AddStringToObject(b, "label", label);
+  cJSON_AddStringToObject(b, "custom_id", id);
+  cJSON_AddNumberToObject(b, "style", style); // 1 blurple, 2 grey, 4 red
+  cJSON_AddItemToArray(row, b);
 }
 
-static JsonArray addRow(JsonObject data) {
-  JsonArray comps;
-  if (!data["components"].is<JsonArray>()) {
-    comps = data["components"].to<JsonArray>();
-  } else {
-    comps = data["components"].as<JsonArray>();
-  }
-  JsonObject r = comps.add<JsonObject>();
-  r["type"] = 1;
-  return r["components"].to<JsonArray>();
+static cJSON *addRow(cJSON *comps) {
+  cJSON *r = cJSON_CreateObject();
+  cJSON_AddNumberToObject(r, "type", 1);
+  cJSON *rowComps = cJSON_AddArrayToObject(r, "components");
+  cJSON_AddItemToArray(comps, r);
+  return rowComps;
 }
 
-static void buildEmbed(JsonObject embed, const char *footerText) {
-  embed["title"] = "ESP32 PC Control";
-  embed["color"] = 0x5865F2;
+static void buildEmbed(cJSON *embed, const char *footerText) {
+  cJSON_AddStringToObject(embed, "title", "ESP32 PC Control");
+  cJSON_AddNumberToObject(embed, "color", 0x5865F2);
 
-  JsonArray fields = embed["fields"].to<JsonArray>();
+  cJSON *fields = cJSON_AddArrayToObject(embed, "fields");
 
-  JsonObject fPc = fields.add<JsonObject>();
-  fPc["name"] = "PC";
-  fPc["value"] = (pcState() == PC_ON) ? "on" : (pcState() == PC_OFF) ? "asleep" : "no host";
-  fPc["inline"] = true;
+  cJSON *fPc = cJSON_CreateObject();
+  cJSON_AddStringToObject(fPc, "name", "PC");
+  cJSON_AddStringToObject(fPc, "value", (pcState() == PC_ON) ? "on" : (pcState() == PC_OFF) ? "asleep" : "no host");
+  cJSON_AddBoolToObject(fPc, "inline", true);
+  cJSON_AddItemToArray(fields, fPc);
 
   char blStr[32];
   snprintf(blStr, sizeof blStr, "%u / %u / %u %%", backlightPct(0), backlightPct(1), backlightPct(2));
-  JsonObject fBl = fields.add<JsonObject>();
-  fBl["name"] = "Backlights";
-  fBl["value"] = blStr;
-  fBl["inline"] = true;
+  cJSON *fBl = cJSON_CreateObject();
+  cJSON_AddStringToObject(fBl, "name", "Backlights");
+  cJSON_AddStringToObject(fBl, "value", blStr);
+  cJSON_AddBoolToObject(fBl, "inline", true);
+  cJSON_AddItemToArray(fields, fBl);
 
-  uint32_t s = millis() / 1000;
+  uint32_t s = nowMs() / 1000;
   char upStr[32];
   snprintf(upStr, sizeof upStr, "%lu:%02lu:%02lu", (unsigned long)(s / 3600), (unsigned long)((s / 60) % 60), (unsigned long)(s % 60));
-  JsonObject fUp = fields.add<JsonObject>();
-  fUp["name"] = "Uptime";
-  fUp["value"] = upStr;
-  fUp["inline"] = true;
+  cJSON *fUp = cJSON_CreateObject();
+  cJSON_AddStringToObject(fUp, "name", "Uptime");
+  cJSON_AddStringToObject(fUp, "value", upStr);
+  cJSON_AddBoolToObject(fUp, "inline", true);
+  cJSON_AddItemToArray(fields, fUp);
 
   char wifiStr[48];
   if (netUp() && netIp()[0]) snprintf(wifiStr, sizeof wifiStr, "%s (%d dBm)", netIp(), netRssi());
   else snprintf(wifiStr, sizeof wifiStr, "down");
-  JsonObject fWifi = fields.add<JsonObject>();
-  fWifi["name"] = "Wi-Fi";
-  fWifi["value"] = wifiStr;
-  fWifi["inline"] = true;
+  cJSON *fWifi = cJSON_CreateObject();
+  cJSON_AddStringToObject(fWifi, "name", "Wi-Fi");
+  cJSON_AddStringToObject(fWifi, "value", wifiStr);
+  cJSON_AddBoolToObject(fWifi, "inline", true);
+  cJSON_AddItemToArray(fields, fWifi);
 
   char doorStr[32];
   int dp = doorPressed();
   if (dp > 0) snprintf(doorStr, sizeof doorStr, "B%d pressed", dp);
   else snprintf(doorStr, sizeof doorStr, "idle");
-  JsonObject fDoor = fields.add<JsonObject>();
-  fDoor["name"] = "Door remote";
-  fDoor["value"] = doorStr;
-  fDoor["inline"] = true;
+  cJSON *fDoor = cJSON_CreateObject();
+  cJSON_AddStringToObject(fDoor, "name", "Door remote");
+  cJSON_AddStringToObject(fDoor, "value", doorStr);
+  cJSON_AddBoolToObject(fDoor, "inline", true);
+  cJSON_AddItemToArray(fields, fDoor);
 
   const char *ft = (footerText && footerText[0]) ? footerText :
                    (lastPanelResult[0] ? lastPanelResult : "Panel closes by itself after 2 minutes");
-  JsonObject footer = embed["footer"].to<JsonObject>();
-  footer["text"] = ft;
+  cJSON *footer = cJSON_AddObjectToObject(embed, "footer");
+  cJSON_AddStringToObject(footer, "text", ft);
 }
 
-static void buildComponents(JsonObject data, PanelView view) {
+static void buildComponents(cJSON *data, PanelView view) {
+  cJSON *comps = cJSON_AddArrayToObject(data, "components");
   if (view == PANEL_NORMAL) {
-    JsonArray r1 = addRow(data);
+    cJSON *r1 = addRow(comps);
     addButton(r1, "Door 1", "door_1", 1);
     addButton(r1, "Door 2", "door_2", 1);
     addButton(r1, "Door 3", "door_3", 1);
     addButton(r1, "Door 4", "door_4", 1);
 
-    JsonArray r2 = addRow(data);
+    cJSON *r2 = addRow(comps);
     addButton(r2, "Refresh", "refresh", 2);
     addButton(r2, "PC reset", "reset", 4);
     addButton(r2, "Close", "close", 2);
   } else if (view == PANEL_CONFIRM_RESET) {
-    JsonArray r1 = addRow(data);
+    cJSON *r1 = addRow(comps);
     addButton(r1, "Yes, reset", "reset_confirm", 4);
     addButton(r1, "Cancel", "refresh", 2);
   }
 }
 
 static void sendPanelResponse(const char *id, const char *token, int callbackType, PanelView view, const char *footerText) {
-  JsonDocument d;
-  d["type"] = callbackType; // 4 = reply, 7 = update
-  JsonObject data = d["data"].to<JsonObject>();
+  cJSON *root = cJSON_CreateObject();
+  cJSON_AddNumberToObject(root, "type", callbackType); // 4 = reply, 7 = update
+  cJSON *data = cJSON_AddObjectToObject(root, "data");
   if (callbackType == 4) {
-    data["flags"] = 64; // ephemeral
+    cJSON_AddNumberToObject(data, "flags", 64); // ephemeral
   }
-  JsonObject embed = data["embeds"].to<JsonArray>().add<JsonObject>();
+  cJSON *embeds = cJSON_AddArrayToObject(data, "embeds");
+  cJSON *embed = cJSON_CreateObject();
   buildEmbed(embed, footerText);
+  cJSON_AddItemToArray(embeds, embed);
   buildComponents(data, view);
 
-  String body;
-  serializeJson(d, body);
-  rest("POST", String("/interactions/") + id + "/" + token + "/callback", body);
+  char *body = cJSON_PrintUnformatted(root);
+  cJSON_Delete(root);
+
+  char path[256];
+  snprintf(path, sizeof path, "/interactions/%s/%s/callback", id, token);
+  rest("POST", path, body);
+  free(body);
 }
 
 static void replyEphemeralText(const char *id, const char *token, const char *text) {
-  JsonDocument d;
-  d["type"] = 4;
-  JsonObject data = d["data"].to<JsonObject>();
-  data["content"] = text;
-  data["flags"] = 64;
-  String body;
-  serializeJson(d, body);
-  rest("POST", String("/interactions/") + id + "/" + token + "/callback", body);
+  cJSON *root = cJSON_CreateObject();
+  cJSON_AddNumberToObject(root, "type", 4);
+  cJSON *data = cJSON_AddObjectToObject(root, "data");
+  cJSON_AddStringToObject(data, "content", text);
+  cJSON_AddNumberToObject(data, "flags", 64);
+  char *body = cJSON_PrintUnformatted(root);
+  cJSON_Delete(root);
+
+  char path[256];
+  snprintf(path, sizeof path, "/interactions/%s/%s/callback", id, token);
+  rest("POST", path, body);
+  free(body);
 }
 
-static void onInteraction(JsonObject d) {
-  const char *id = d["id"] | "", *token = d["token"] | "";
-  const char *user = d["member"]["user"]["id"] | (d["user"]["id"] | "");
-  if (strcmp(user, DISCORD_OWNER_ID)) {
+static void onInteraction(cJSON *d) {
+  cJSON *jId = cJSON_GetObjectItem(d, "id");
+  cJSON *jToken = cJSON_GetObjectItem(d, "token");
+  const char *id = (jId && jId->valuestring) ? jId->valuestring : "";
+  const char *token = (jToken && jToken->valuestring) ? jToken->valuestring : "";
+
+  const char *user = "";
+  cJSON *member = cJSON_GetObjectItem(d, "member");
+  if (member) {
+    cJSON *mUser = cJSON_GetObjectItem(member, "user");
+    if (mUser) {
+      cJSON *uId = cJSON_GetObjectItem(mUser, "id");
+      if (uId && uId->valuestring) user = uId->valuestring;
+    }
+  }
+  if (!user[0]) {
+    cJSON *u = cJSON_GetObjectItem(d, "user");
+    if (u) {
+      cJSON *uId = cJSON_GetObjectItem(u, "id");
+      if (uId && uId->valuestring) user = uId->valuestring;
+    }
+  }
+
+  if (strcmp(user, DISCORD_OWNER_ID) != 0) {
     replyEphemeralText(id, token, "Not allowed.");
     return;
   }
-  int type = d["type"] | 0;
+
+  cJSON *jType = cJSON_GetObjectItem(d, "type");
+  int type = jType ? jType->valueint : 0;
+  cJSON *data = cJSON_GetObjectItem(d, "data");
+
   if (type == 2) { // slash command
-    const char *name = d["data"]["name"] | "";
+    cJSON *jName = data ? cJSON_GetObjectItem(data, "name") : nullptr;
+    const char *name = (jName && jName->valuestring) ? jName->valuestring : "";
     if (!strcmp(name, "actions")) {
-      // answer first (3 s deadline), then remove the previous panel
       char oldToken[sizeof panelToken];
       bool hadOld = panelActive;
       snprintf(oldToken, sizeof oldToken, "%s", panelToken);
       snprintf(panelToken, sizeof panelToken, "%s", token);
-      panelTouchedMs = panelOpenedMs = millis();
+      panelTouchedMs = panelOpenedMs = nowMs();
       panelActive = true;
       lastPanelResult[0] = 0;
       sendPanelResponse(id, token, 4, PANEL_NORMAL, nullptr);
-      if (hadOld && oldToken[0] && DISCORD_APP_ID[0])
-        rest("DELETE", String("/webhooks/") + DISCORD_APP_ID + "/" + oldToken + "/messages/@original", "");
+      if (hadOld && oldToken[0] && DISCORD_APP_ID[0]) {
+        char delPath[256];
+        snprintf(delPath, sizeof delPath, "/webhooks/%s/%s/messages/@original", DISCORD_APP_ID, oldToken);
+        rest("DELETE", delPath, "");
+      }
     } else {
       replyEphemeralText(id, token, "Unknown command.");
     }
   } else if (type == 3) { // button
-    const char *cid = d["data"]["custom_id"] | "";
+    cJSON *jCid = data ? cJSON_GetObjectItem(data, "custom_id") : nullptr;
+    const char *cid = (jCid && jCid->valuestring) ? jCid->valuestring : "";
     if (!strcmp(cid, "close")) {
-      JsonDocument r;
-      r["type"] = 6; // DEFERRED_UPDATE_MESSAGE
-      String body;
-      serializeJson(r, body);
-      rest("POST", String("/interactions/") + id + "/" + token + "/callback", body);
+      cJSON *r = cJSON_CreateObject();
+      cJSON_AddNumberToObject(r, "type", 6); // DEFERRED_UPDATE_MESSAGE
+      char *body = cJSON_PrintUnformatted(r);
+      cJSON_Delete(r);
+
+      char path[256];
+      snprintf(path, sizeof path, "/interactions/%s/%s/callback", id, token);
+      rest("POST", path, body);
+      free(body);
 
       const char *delToken = token[0] ? token : panelToken;
       if (DISCORD_APP_ID[0] && delToken[0]) {
-        rest("DELETE", String("/webhooks/") + DISCORD_APP_ID + "/" + delToken + "/messages/@original", "");
+        char delPath[256];
+        snprintf(delPath, sizeof delPath, "/webhooks/%s/%s/messages/@original", DISCORD_APP_ID, delToken);
+        rest("DELETE", delPath, "");
       }
       panelActive = false;
       panelToken[0] = 0;
@@ -306,7 +448,7 @@ static void onInteraction(JsonObject d) {
       return;
     }
 
-    panelTouchedMs = millis();
+    panelTouchedMs = nowMs();
 
     if (!strcmp(cid, "refresh")) {
       snprintf(lastPanelResult, sizeof lastPanelResult, "Refreshed");
@@ -326,105 +468,194 @@ static void onInteraction(JsonObject d) {
 }
 
 // ---- gateway ----
-static void sendJson(JsonDocument &d) {
-  String s;
-  serializeJson(d, s);
-  ws.sendTXT(s);
+static void sendJson(cJSON *root) {
+  char *s = cJSON_PrintUnformatted(root);
+  if (s) {
+    if (ws && esp_websocket_client_is_connected(ws)) {
+      esp_websocket_client_send_text(ws, s, strlen(s), pdMS_TO_TICKS(2000));
+    }
+    free(s);
+  }
 }
 
 static void heartbeat() {
-  JsonDocument d;
-  d["op"] = 1;
-  if (seq >= 0) d["d"] = seq; else d["d"] = nullptr;
+  cJSON *d = cJSON_CreateObject();
+  cJSON_AddNumberToObject(d, "op", 1);
+  if (seq >= 0) {
+    cJSON_AddNumberToObject(d, "d", seq);
+  } else {
+    cJSON_AddNullToObject(d, "d");
+  }
   sendJson(d);
-  lastBeat = millis();
+  cJSON_Delete(d);
+  lastBeat = nowMs();
   gotAck = false;
 }
 
 static void identify() {
-  JsonDocument d;
-  d["op"] = 2;
-  JsonObject p = d["d"].to<JsonObject>();
-  p["token"] = DISCORD_TOKEN;
-  p["intents"] = 0; // interactions arrive without any intent
-  JsonObject props = p["properties"].to<JsonObject>();
-  props["os"] = "esp32";
-  props["browser"] = NET_HOSTNAME;
-  props["device"] = NET_HOSTNAME;
+  cJSON *d = cJSON_CreateObject();
+  cJSON_AddNumberToObject(d, "op", 2);
+  cJSON *p = cJSON_AddObjectToObject(d, "d");
+  cJSON_AddStringToObject(p, "token", DISCORD_TOKEN);
+  cJSON_AddNumberToObject(p, "intents", 0); // interactions arrive without any intent
+  cJSON *props = cJSON_AddObjectToObject(p, "properties");
+  cJSON_AddStringToObject(props, "os", "esp32");
+  cJSON_AddStringToObject(props, "browser", NET_HOSTNAME);
+  cJSON_AddStringToObject(props, "device", NET_HOSTNAME);
   sendJson(d);
+  cJSON_Delete(d);
 }
 
-static void onGateway(WStype_t type, uint8_t *payload, size_t len) {
-  if (type == WStype_DISCONNECTED) {
-    if (ready) logMsg("discord: gateway disconnected, reconnecting");
-    ready = false;
-    heartbeatMs = 0;
-    return;
+static void handleGatewayMessage(const char *jsonStr, size_t len) {
+  cJSON *d = cJSON_ParseWithLength(jsonStr, len);
+  if (!d) return;
+
+  cJSON *jOp = cJSON_GetObjectItem(d, "op");
+  int op = jOp ? jOp->valueint : -1;
+
+  cJSON *jS = cJSON_GetObjectItem(d, "s");
+  if (jS && !cJSON_IsNull(jS)) {
+    seq = jS->valueint;
   }
-  if (type != WStype_TEXT) return;
-  JsonDocument filter;
-  filter["op"] = true;
-  filter["t"] = true;
-  filter["s"] = true;
-  JsonObject fd = filter["d"].to<JsonObject>();
-  fd["heartbeat_interval"] = true;
-  fd["id"] = true;
-  fd["token"] = true;
-  fd["type"] = true;
-  fd["data"]["name"] = true;
-  fd["data"]["custom_id"] = true;
-  fd["member"]["user"]["id"] = true;
-  fd["user"]["id"] = true;
-  fd["user"]["username"] = true;
-  JsonDocument d;
-  if (deserializeJson(d, payload, len, DeserializationOption::Filter(filter))) return;
-  int op = d["op"] | -1;
-  if (!d["s"].isNull()) seq = d["s"];
+
+  cJSON *data = cJSON_GetObjectItem(d, "d");
+
   switch (op) {
-    case 10: // HELLO
-      heartbeatMs = d["d"]["heartbeat_interval"] | 41250;
-      lastBeat = millis() - random(heartbeatMs); // first beat after a jittered wait
+    case 10: { // HELLO
+      cJSON *jInterval = data ? cJSON_GetObjectItem(data, "heartbeat_interval") : nullptr;
+      heartbeatMs = (jInterval && jInterval->valueint > 0) ? (uint32_t)jInterval->valueint : 41250;
+      uint32_t jitter = heartbeatMs > 0 ? (esp_random() % heartbeatMs) : 0;
+      lastBeat = nowMs() - jitter; // first beat after a jittered wait
       gotAck = true;
       identify();
       break;
-    case 11: gotAck = true; break; // heartbeat ACK
-    case 1: heartbeat(); break;    // server asks for a beat now
-    case 7:                        // reconnect requested
-    case 9:                        // invalid session
-      ws.disconnect();
+    }
+    case 11: // heartbeat ACK
+      gotAck = true;
+      break;
+    case 1: // server asks for a beat now
+      heartbeat();
+      break;
+    case 7: // reconnect requested
+    case 9: // invalid session
+      requestReconnect = true;
       break;
     case 0: {
-      const char *t = d["t"] | "";
+      cJSON *jT = cJSON_GetObjectItem(d, "t");
+      const char *t = (jT && jT->valuestring) ? jT->valuestring : "";
       if (!strcmp(t, "READY")) {
         bool first = !ready;
         ready = true;
-        logMsg("discord: online as %s", d["d"]["user"]["username"] | "?");
+        const char *username = "?";
+        if (data) {
+          cJSON *user = cJSON_GetObjectItem(data, "user");
+          if (user) {
+            cJSON *uName = cJSON_GetObjectItem(user, "username");
+            if (uName && uName->valuestring) username = uName->valuestring;
+          }
+        }
+        logMsg("discord: online as %s", username);
         static bool announced;
         if (first && !announced) {
           announced = true;
-          postChannelEmbed("ESP32 PC Control is online", netIp()[0] ? netIp() : "Wi-Fi down", 0x57F287);
+          postChannelEmbed("ESP32 PC Control is online", (netUp() && netIp()[0]) ? netIp() : "Wi-Fi down", 0x57F287);
         }
       } else if (!strcmp(t, "INTERACTION_CREATE")) {
-        onInteraction(d["d"]);
+        if (data) onInteraction(data);
       }
       break;
     }
+    default:
+      break;
+  }
+
+  cJSON_Delete(d);
+}
+
+static void onGatewayEvent(void *, esp_event_base_t, int32_t event_id, void *event_data) {
+  esp_websocket_event_data_t *data = (esp_websocket_event_data_t *)event_data;
+  switch (event_id) {
+    case WEBSOCKET_EVENT_CONNECTED:
+      break;
+    case WEBSOCKET_EVENT_DISCONNECTED:
+    case WEBSOCKET_EVENT_CLOSED:
+      if (ready) logMsg("discord: gateway disconnected, reconnecting");
+      ready = false;
+      heartbeatMs = 0;
+      wsBufLen = 0;
+      wsMsgDropped = false;
+      break;
+    case WEBSOCKET_EVENT_DATA: {
+      if (!wsBuf) break;
+      if (data->payload_offset == 0) {
+        wsBufLen = 0;
+        wsMsgDropped = false;
+        if (data->op_code != 1) return; // Only handle complete text frames (op_code 1)
+        if (data->payload_len >= WS_BUF_SIZE) {
+          wsMsgDropped = true;
+          static bool loggedDrop;
+          if (!loggedDrop) {
+            loggedDrop = true;
+            logMsg("discord: gateway message exceeds buffer (%d B), dropped", data->payload_len);
+          }
+          return;
+        }
+      }
+      if (wsMsgDropped) return;
+      if (data->payload_offset + data->data_len >= WS_BUF_SIZE) {
+        wsMsgDropped = true;
+        return;
+      }
+      if (data->data_len > 0) {
+        memcpy(wsBuf + data->payload_offset, data->data_ptr, data->data_len);
+      }
+      wsBufLen = data->payload_offset + data->data_len;
+      if (wsBufLen >= data->payload_len && data->payload_len > 0) {
+        wsBuf[wsBufLen] = '\0';
+        handleGatewayMessage(wsBuf, wsBufLen);
+        wsBufLen = 0;
+      }
+      break;
+    }
+    default:
+      break;
   }
 }
 
 static void botTask(void *) {
-  while (!netUp()) vTaskDelay(pdMS_TO_TICKS(500));
+  while (!netUp()) sleepMs(500);
   registerCommands();
-  ws.beginSslWithBundle("gateway.discord.gg", 443, "/?v=10&encoding=json", caBundleStart,
-                        caBundleEnd - caBundleStart, "");
-  ws.onEvent(onGateway);
-  ws.setReconnectInterval(5000);
+
+  esp_websocket_client_config_t ws_cfg = {};
+  ws_cfg.uri = "wss://gateway.discord.gg/?v=10&encoding=json";
+  ws_cfg.crt_bundle_attach = esp_crt_bundle_attach;
+  ws_cfg.reconnect_timeout_ms = 5000;
+  ws_cfg.network_timeout_ms = 10000;
+  ws_cfg.buffer_size = 4096;
+  ws_cfg.enable_close_reconnect = true;
+  ws_cfg.task_core_id_set = true;
+  ws_cfg.task_core_id = 0;
+  ws_cfg.task_stack = 12288;   // gateway handlers run here and make TLS REST calls
+
+  ws = esp_websocket_client_init(&ws_cfg);
+  if (ws) {
+    esp_websocket_register_events(ws, WEBSOCKET_EVENT_ANY, onGatewayEvent, nullptr);
+    esp_websocket_client_start(ws);
+  }
+
   PcState lastPc = pcState();
   for (;;) {
-    ws.loop();
-    if (heartbeatMs && millis() - lastBeat >= heartbeatMs) {
-      if (!gotAck) { logMsg("discord: no heartbeat ACK, reconnecting"); ws.disconnect(); }
-      else heartbeat();
+    if (requestReconnect) {
+      requestReconnect = false;
+      if (ws) esp_websocket_client_close(ws, pdMS_TO_TICKS(1000));
+    }
+    if (heartbeatMs && nowMs() - lastBeat >= heartbeatMs) {
+      if (!gotAck) {
+        logMsg("discord: no heartbeat ACK, reconnecting");
+        if (ws) esp_websocket_client_close(ws, pdMS_TO_TICKS(1000));
+      } else {
+        heartbeat();
+      }
     }
     PcState pc = pcState();
     if (pc != lastPc && ready) {
@@ -438,7 +669,7 @@ static void botTask(void *) {
       if (!ready || !DISCORD_CHANNEL_ID[0]) continue;
       if (!strcmp(nmsg.text, "PC reset")) {
         postChannelEmbed("PC reset", nullptr, 0xED4245);
-      } else if (!strncmp(nmsg.text, "door B", 6)) {   // from cmdDoor: "door Bn"
+      } else if (!strncmp(nmsg.text, "door B", 6)) { // from cmdDoor: "door Bn"
         char title[32];
         snprintf(title, sizeof title, "Door button %s pressed", nmsg.text + 6);
         postChannelEmbed(title, nullptr, 0x5865F2);
@@ -447,17 +678,20 @@ static void botTask(void *) {
       }
     }
     if (panelActive && panelToken[0] &&
-        (millis() - panelTouchedMs >= ACTIONS_PANEL_TTL_MS || millis() - panelOpenedMs >= PANEL_TOKEN_LIFE_MS)) {
+        (nowMs() - panelTouchedMs >= ACTIONS_PANEL_TTL_MS || nowMs() - panelOpenedMs >= PANEL_TOKEN_LIFE_MS)) {
       deleteActivePanel();
     }
-    vTaskDelay(pdMS_TO_TICKS(5));
+    sleepMs(20);
   }
 }
 
 void discordInit() {
   if (!DISCORD_TOKEN[0]) { logMsg("discord: off (no DISCORD_TOKEN in secrets.h)"); return; }
   reqDone = xSemaphoreCreateBinary();
+  restMutex = xSemaphoreCreateMutex();
   notifyQueue = xQueueCreate(NOTIFY_QUEUE_DEPTH, sizeof(NotifyMsg));
+  wsBuf = (char *)heap_caps_malloc(WS_BUF_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (!wsBuf) wsBuf = (char *)malloc(WS_BUF_SIZE);
   xTaskCreatePinnedToCore(botTask, "discord", 12288, nullptr, 1, nullptr, 0);
   logMsg("discord: bot starting");
 }
