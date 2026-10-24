@@ -30,6 +30,7 @@ using System.IO;
 using System.IO.Ports;
 using System.Management;
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
 using System.ServiceProcess;
 using System.Text;
@@ -149,20 +150,105 @@ class PcStats : ServiceBase {
   [DllImport("kernel32.dll", SetLastError = true)]
   static extern bool CloseHandle(IntPtr hObject);
 
+  [DllImport("kernel32.dll", SetLastError = true)]
+  static extern bool ReadFile(SafeFileHandle hFile, IntPtr lpBuffer, uint nNumberOfBytesToRead, IntPtr lpNumberOfBytesRead, IntPtr lpOverlapped);
+
+  [DllImport("kernel32.dll", SetLastError = true)]
+  static extern bool CancelIoEx(SafeFileHandle hFile, IntPtr lpOverlapped);
+
+  [DllImport("powrprof.dll", SetLastError = true)]
+  static extern bool SetSuspendState(bool hibernate, bool forceCritical, bool disableWakeEvent);
+
+  [DllImport("powrprof.dll", SetLastError = true)]
+  static extern bool GetPwrCapabilities(IntPtr lpSystemPowerCapabilities);
+
+  [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+  static extern uint InitiateShutdown(string lpMachineName, string lpMessage, uint dwGracePeriod, uint dwShutdownFlags, uint dwReason);
+
+  [DllImport("kernel32.dll")]
+  static extern IntPtr GetCurrentProcess();
+
+  [DllImport("advapi32.dll", SetLastError = true)]
+  static extern bool OpenProcessToken(IntPtr ProcessHandle, uint DesiredAccess, out IntPtr TokenHandle);
+
+  [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+  static extern bool LookupPrivilegeValue(string lpSystemName, string lpName, out LUID lpLuid);
+
+  [DllImport("advapi32.dll", SetLastError = true)]
+  static extern bool AdjustTokenPrivileges(IntPtr TokenHandle, bool DisableAllPrivileges, ref TOKEN_PRIVILEGES NewState, uint BufferLength, IntPtr PreviousState, IntPtr ReturnLength);
+
+  [StructLayout(LayoutKind.Sequential)]
+  struct LUID {
+    public uint LowPart;
+    public int HighPart;
+  }
+
+  [StructLayout(LayoutKind.Sequential, Pack = 1)]
+  struct TOKEN_PRIVILEGES {
+    public uint PrivilegeCount;
+    public LUID Luid;
+    public uint Attributes;
+  }
+
   interface ILink : IDisposable {
     void Write(string text);
+    void Poll();
     void Close();
+    bool IsFaulted { get; }
   }
 
   class SerialLink : ILink {
     SerialPort port;
+    StringBuilder serialBuf = new StringBuilder();
+    bool serialDropping;
+
+    public bool IsFaulted {
+      get { return port == null || !port.IsOpen; }
+    }
 
     public SerialLink(string name) {
       port = OpenPort(name);
     }
 
+    public void Poll() {
+      if (port != null && port.IsOpen) {
+        try {
+          if (port.BytesToRead > 0) {
+            string text = port.ReadExisting();
+            FeedSerial(text);
+          }
+        } catch (Exception) { }
+      }
+    }
+
+    void FeedSerial(string s) {
+      if (s == null) return;
+      for (int i = 0; i < s.Length; i++) {
+        char c = s[i];
+        if (c == 0) continue;
+        if (c == '\n') {
+          if (!serialDropping) {
+            string line = serialBuf.ToString().TrimEnd('\r');
+            if (line.Length > 0 && line.StartsWith("!")) {
+              HandlePowerLine(line);
+            }
+          }
+          serialDropping = false;
+          serialBuf.Length = 0;
+        } else {
+          if (!serialDropping) {
+            serialBuf.Append(c);
+            if (serialBuf.Length > 256) {
+              serialDropping = true;
+              serialBuf.Length = 0;
+            }
+          }
+        }
+      }
+    }
+
     public void Write(string text) {
-      if (port.BytesToRead > 0) port.ReadExisting();
+      Poll();
       port.Write(text);
     }
 
@@ -181,18 +267,106 @@ class PcStats : ServiceBase {
   class HidLink : ILink {
     SafeFileHandle handle;
     IntPtr hEvent;
+    IntPtr hReadEvent;
+    Thread readerThread;
+    volatile bool readerStop;
+    volatile bool isFaulted;
+
     // The kernel uses the report buffer and the OVERLAPPED after WriteFile
     // returns (I/O pending): both live in unmanaged memory so the GC can
     // never move them mid-write.
     IntPtr report = Marshal.AllocHGlobal(64);
     IntPtr ov = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(OVERLAPPED)));
 
+    IntPtr readReport = Marshal.AllocHGlobal(64);
+    IntPtr readOv = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(OVERLAPPED)));
+
+    public bool IsFaulted {
+      get { return isFaulted; }
+    }
+
     public HidLink(SafeFileHandle h) {
       handle = h;
       hEvent = CreateEvent(IntPtr.Zero, true, false, null);
+      hReadEvent = CreateEvent(IntPtr.Zero, true, false, null);
+      readerThread = new Thread(ReadLoop) { IsBackground = true, Name = "hid_reader" };
+      readerThread.Start();
     }
 
+    void ReadLoop() {
+      var lineBuf = new StringBuilder();
+      bool dropping = false;
+      byte[] rawReport = new byte[64];
+
+      while (!readerStop) {
+        ResetEvent(hReadEvent);
+        OVERLAPPED o = new OVERLAPPED();
+        o.hEvent = hReadEvent;
+        Marshal.StructureToPtr(o, readOv, false);
+
+        bool ok = ReadFile(handle, readReport, 64, IntPtr.Zero, readOv);
+        if (!ok) {
+          int err = Marshal.GetLastWin32Error();
+          if (err == ERROR_IO_PENDING) {
+            while (!readerStop) {
+              uint waitRes = WaitForSingleObject(hReadEvent, 500);
+              if (waitRes == WAIT_OBJECT_0) break;
+            }
+            if (readerStop) {
+              try { CancelIo(handle); } catch (Exception) { }
+              uint dummy;
+              try { GetOverlappedResult(handle, readOv, out dummy, true); } catch (Exception) { }
+              break;
+            }
+            uint transferred;
+            if (!GetOverlappedResult(handle, readOv, out transferred, false)) {
+              int getErr = Marshal.GetLastWin32Error();
+              if (readerStop || getErr == 995 /* ERROR_OPERATION_ABORTED */) break;
+              Log("HID ReadFile GetOverlappedResult failed: " + getErr);
+              isFaulted = true;
+              break;
+            }
+          } else {
+            if (readerStop || err == 995 /* ERROR_OPERATION_ABORTED */) break;
+            Log("HID ReadFile failed: " + err);
+            isFaulted = true;
+            break;
+          }
+        }
+
+        Marshal.Copy(readReport, rawReport, 0, 64);
+        if (rawReport[0] == 0x06) {
+          for (int i = 1; i < 64; i++) {
+            byte b = rawReport[i];
+            if (b == 0) continue;
+            char c = (char)b;
+            if (c == '\n') {
+              if (!dropping) {
+                string line = lineBuf.ToString().TrimEnd('\r');
+                if (line.Length > 0) {
+                  HandlePowerLine(line);
+                }
+              }
+              dropping = false;
+              lineBuf.Length = 0;
+            } else {
+              if (!dropping) {
+                lineBuf.Append(c);
+                if (lineBuf.Length > 256) {
+                  dropping = true;
+                  lineBuf.Length = 0;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    public void Poll() { }
+
     public void Write(string text) {
+      if (isFaulted) throw new IOException("HID link is faulted");
       byte[] bytes = Encoding.ASCII.GetBytes(text);
       int offset = 0;
       while (offset < bytes.Length) {
@@ -233,6 +407,14 @@ class PcStats : ServiceBase {
     }
 
     public void Close() {
+      readerStop = true;
+      if (handle != null && !handle.IsClosed && !handle.IsInvalid) {
+        try { CancelIoEx(handle, readOv); } catch (Exception) { }
+      }
+      if (readerThread != null) {
+        try { readerThread.Join(1000); } catch (Exception) { }
+        readerThread = null;
+      }
       if (handle != null && !handle.IsClosed) {
         try { CancelIo(handle); } catch (Exception) { }
         try { handle.Close(); } catch (Exception) { }
@@ -241,12 +423,274 @@ class PcStats : ServiceBase {
         try { CloseHandle(hEvent); } catch (Exception) { }
         hEvent = IntPtr.Zero;
       }
+      if (hReadEvent != IntPtr.Zero) {
+        try { CloseHandle(hReadEvent); } catch (Exception) { }
+        hReadEvent = IntPtr.Zero;
+      }
       if (report != IntPtr.Zero) { Marshal.FreeHGlobal(report); report = IntPtr.Zero; }
       if (ov != IntPtr.Zero) { Marshal.FreeHGlobal(ov); ov = IntPtr.Zero; }
+      if (readReport != IntPtr.Zero) { Marshal.FreeHGlobal(readReport); readReport = IntPtr.Zero; }
+      if (readOv != IntPtr.Zero) { Marshal.FreeHGlobal(readOv); readOv = IntPtr.Zero; }
     }
 
     public void Dispose() {
       Close();
+    }
+  }
+
+  // Power requests and Wake-on-LAN target
+  static readonly object powerLock = new object();
+  static readonly Regex PowerCmdRegex = new Regex(@"^!power\s+([a-zA-Z]+)\s+([0-9a-fA-F]{1,8})$");
+  static readonly Dictionary<string, DateTime> recentNonces = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+  static string currentAckValue;
+  static DateTime ackExpiresUtc = DateTime.MinValue;
+  static string scheduledAction;
+  static DateTime scheduledActionTimeUtc = DateTime.MinValue;
+
+  static string currentMac = "";
+  static string currentMacIf = "";
+  static DateTime nextMacRefreshUtc = DateTime.MinValue;
+
+  static void HandlePowerLine(string line) {
+    if (line == null) return;
+    line = line.Trim();
+    Match m = PowerCmdRegex.Match(line);
+    if (!m.Success) {
+      Log("power: unrecognized command '" + line + "'");
+      return;
+    }
+    string action = m.Groups[1].Value.ToLowerInvariant();
+    string nonce = m.Groups[2].Value.ToLowerInvariant();
+
+    if (action != "sleep" && action != "hibernate" && action != "restart" && action != "shutdown") {
+      Log("power: unrecognized action '" + action + "' in command '" + line + "'");
+      return;
+    }
+
+    lock (powerLock) {
+      DateTime now = DateTime.UtcNow;
+
+      var oldNonces = new List<string>();
+      foreach (KeyValuePair<string, DateTime> kv in recentNonces) {
+        if ((now - kv.Value).TotalSeconds >= 60.0) {
+          oldNonces.Add(kv.Key);
+        }
+      }
+      for (int i = 0; i < oldNonces.Count; i++) {
+        recentNonces.Remove(oldNonces[i]);
+      }
+
+      if (recentNonces.ContainsKey(nonce)) {
+        // Duplicate nonce within 60 s: ignore
+        return;
+      }
+      recentNonces[nonce] = now;
+
+      if (action == "hibernate") {
+        if (!IsHibernateSupported()) {
+          currentAckValue = "error " + nonce + " hibernate disabled";
+          ackExpiresUtc = now.AddSeconds(10);
+          scheduledAction = null;
+          scheduledActionTimeUtc = DateTime.MinValue;
+          Log("power: hibernate requested but hibernation is disabled");
+          return;
+        }
+      }
+
+      currentAckValue = action + " " + nonce;
+      ackExpiresUtc = now.AddSeconds(10);
+      scheduledAction = action;
+      scheduledActionTimeUtc = DateTime.MinValue; // will be scheduled ~1.5s after first sent
+      Log("power: " + action + " requested by the board");
+    }
+  }
+
+  static bool IsHibernateSupported() {
+    IntPtr buf = Marshal.AllocHGlobal(128);
+    try {
+      for (int i = 0; i < 128; i++) Marshal.WriteByte(buf, i, 0);
+      if (!GetPwrCapabilities(buf)) {
+        Log("GetPwrCapabilities failed: " + Marshal.GetLastWin32Error());
+        return false;
+      }
+      // HiberFilePresent is at offset 8 (preceded by 8 1-byte BOOLEAN flags)
+      return Marshal.ReadByte(buf, 8) != 0;
+    } finally {
+      Marshal.FreeHGlobal(buf);
+    }
+  }
+
+  static void EnableShutdownPrivilege() {
+    IntPtr hToken;
+    if (!OpenProcessToken(GetCurrentProcess(), 0x0020 | 0x0008, out hToken)) {
+      Log("OpenProcessToken failed: " + Marshal.GetLastWin32Error());
+      return;
+    }
+    try {
+      LUID luid;
+      if (!LookupPrivilegeValue(null, "SeShutdownPrivilege", out luid)) {
+        Log("LookupPrivilegeValue failed: " + Marshal.GetLastWin32Error());
+        return;
+      }
+      TOKEN_PRIVILEGES tp = new TOKEN_PRIVILEGES();
+      tp.PrivilegeCount = 1;
+      tp.Luid = luid;
+      tp.Attributes = 0x00000002; // SE_PRIVILEGE_ENABLED
+      if (!AdjustTokenPrivileges(hToken, false, ref tp, 0, IntPtr.Zero, IntPtr.Zero)) {
+        Log("AdjustTokenPrivileges failed: " + Marshal.GetLastWin32Error());
+      }
+    } finally {
+      CloseHandle(hToken);
+    }
+  }
+
+  static void ExecutePowerAction(string action) {
+    try {
+      if (action == "sleep") {
+        if (!SetSuspendState(false, false, false)) {
+          Log("power: SetSuspendState(sleep) failed: " + Marshal.GetLastWin32Error());
+        }
+      } else if (action == "hibernate") {
+        if (!SetSuspendState(true, false, false)) {
+          Log("power: SetSuspendState(hibernate) failed: " + Marshal.GetLastWin32Error());
+        }
+      } else if (action == "restart") {
+        EnableShutdownPrivilege();
+        uint flags = 0x00000004 | 0x00000001; // SHUTDOWN_RESTART | SHUTDOWN_FORCE_OTHERS
+        uint reason = 0x80000000;              // SHTDN_REASON_MAJOR_OTHER | SHTDN_REASON_FLAG_PLANNED
+        uint res = InitiateShutdown(null, null, 0, flags, reason);
+        if (res != 0) {
+          Log("power: InitiateShutdown(restart) failed: " + res);
+        }
+      } else if (action == "shutdown") {
+        EnableShutdownPrivilege();
+        uint flags = 0x00000008 | 0x00000001; // SHUTDOWN_POWEROFF | SHUTDOWN_FORCE_OTHERS
+        uint reason = 0x80000000;              // SHTDN_REASON_MAJOR_OTHER | SHTDN_REASON_FLAG_PLANNED
+        uint res = InitiateShutdown(null, null, 0, flags, reason);
+        if (res != 0) {
+          Log("power: InitiateShutdown(shutdown) failed: " + res);
+        }
+      }
+    } catch (Exception ex) {
+      Log("power: execution exception (" + action + "): " + ex.Message);
+    }
+  }
+
+  static bool IsVirtualAdapter(string desc) {
+    if (string.IsNullOrEmpty(desc)) return false;
+    string d = desc.ToLowerInvariant();
+    if (d.IndexOf("hyper-v", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+    if (d.IndexOf("virtualbox", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+    if (d.IndexOf("vmware", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+    if (d.IndexOf("tap-", StringComparison.OrdinalIgnoreCase) >= 0) return true;   // TAP-Windows (VPN)
+    if (d.IndexOf("loopback", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+    if (d.IndexOf("bluetooth", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+    if (d.IndexOf("wan miniport", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+    return false;
+  }
+
+  static bool IsEthernetType(NetworkInterfaceType type) {
+    return type == NetworkInterfaceType.Ethernet ||
+           (int)type == 117 || // GigabitEthernet
+           (int)type == 62 ||  // FastEthernetT
+           (int)type == 69;   // FastEthernetFx
+  }
+
+  static bool HasIpv4Gateway(NetworkInterface nic) {
+    try {
+      IPInterfaceProperties ip = nic.GetIPProperties();
+      if (ip == null || ip.GatewayAddresses == null) return false;
+      foreach (GatewayIPAddressInformation gw in ip.GatewayAddresses) {
+        if (gw.Address != null && gw.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork) {
+          if (!gw.Address.Equals(IPAddress.Any) && !gw.Address.Equals(IPAddress.None)) {
+            return true;
+          }
+        }
+      }
+    } catch (Exception) { }
+    return false;
+  }
+
+  static string FormatMac(byte[] bytes) {
+    if (bytes == null || bytes.Length != 6) return null;
+    bool allZero = true;
+    for (int i = 0; i < bytes.Length; i++) {
+      if (bytes[i] != 0) { allZero = false; break; }
+    }
+    if (allZero) return null;
+    return string.Format("{0:X2}:{1:X2}:{2:X2}:{3:X2}:{4:X2}:{5:X2}",
+                         bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5]);
+  }
+
+  static void RefreshWolTarget() {
+    try {
+      NetworkInterface[] nics = NetworkInterface.GetAllNetworkInterfaces();
+      var candidates = new List<NetworkInterface>();
+
+      for (int i = 0; i < nics.Length; i++) {
+        NetworkInterface nic = nics[i];
+        if (IsVirtualAdapter(nic.Description)) continue;
+        byte[] macBytes = nic.GetPhysicalAddress().GetAddressBytes();
+        if (macBytes == null || macBytes.Length != 6) continue;
+        candidates.Add(nic);
+      }
+
+      NetworkInterface chosen = null;
+
+      // 1. Operational Ethernet adapter with an IPv4 gateway
+      for (int i = 0; i < candidates.Count; i++) {
+        NetworkInterface nic = candidates[i];
+        if (nic.OperationalStatus == OperationalStatus.Up &&
+            IsEthernetType(nic.NetworkInterfaceType) &&
+            HasIpv4Gateway(nic)) {
+          chosen = nic;
+          break;
+        }
+      }
+
+      // 2. Else any Ethernet (prefer Up)
+      if (chosen == null) {
+        for (int i = 0; i < candidates.Count; i++) {
+          NetworkInterface nic = candidates[i];
+          if (nic.OperationalStatus == OperationalStatus.Up && IsEthernetType(nic.NetworkInterfaceType)) {
+            chosen = nic;
+            break;
+          }
+        }
+      }
+      if (chosen == null) {
+        for (int i = 0; i < candidates.Count; i++) {
+          NetworkInterface nic = candidates[i];
+          if (IsEthernetType(nic.NetworkInterfaceType)) {
+            chosen = nic;
+            break;
+          }
+        }
+      }
+
+      // 3. Else any up adapter with a gateway
+      if (chosen == null) {
+        for (int i = 0; i < candidates.Count; i++) {
+          NetworkInterface nic = candidates[i];
+          if (nic.OperationalStatus == OperationalStatus.Up && HasIpv4Gateway(nic)) {
+            chosen = nic;
+            break;
+          }
+        }
+      }
+
+      if (chosen != null) {
+        string mac = FormatMac(chosen.GetPhysicalAddress().GetAddressBytes());
+        if (mac != null) {
+          currentMac = mac;
+          string ifName = Clean(chosen.Name);
+          if (ifName.Length > 80) ifName = ifName.Substring(0, 80);
+          currentMacIf = ifName;
+          return;
+        }
+      }
+    } catch (Exception e) {
+      Log("RefreshWolTarget error: " + e.Message);
     }
   }
 
@@ -1656,8 +2100,25 @@ class PcStats : ServiceBase {
       computer.HardwareRemoved += delegate(IHardware h) { hardwareChanged = true; };
       var visitor = new UpdateVisitor();
 
+      RefreshWolTarget();
+      nextMacRefreshUtc = DateTime.UtcNow.AddSeconds(30);
+
       while (!stop) {
         DateTime t0 = DateTime.UtcNow;
+
+        if (DateTime.UtcNow >= nextMacRefreshUtc) {
+          RefreshWolTarget();
+          nextMacRefreshUtc = DateTime.UtcNow.AddSeconds(30);
+        }
+
+        if (link != null) {
+          link.Poll();
+          if (link.IsFaulted) {
+            Log("port faulted");
+            try { link.Close(); } catch (Exception) { }
+            link = null;
+          }
+        }
 
         // Check stats.ini changes
         if (!File.Exists(iniPath)) {
@@ -1819,12 +2280,36 @@ class PcStats : ServiceBase {
           claudeSource.GetSnapshot(tokens, texts);
         }
 
+        // WoL target (pc.mac and pc.mac_if)
+        if (!string.IsNullOrEmpty(currentMac)) {
+          texts.Add(new KeyValuePair<string, string>("pc.mac", currentMac));
+          texts.Add(new KeyValuePair<string, string>("pc.mac_if", currentMacIf));
+        }
+
+        // Power ack
+        lock (powerLock) {
+          if (currentAckValue != null) {
+            if (DateTime.UtcNow < ackExpiresUtc) {
+              texts.Add(new KeyValuePair<string, string>("power.ack", currentAckValue));
+            } else {
+              currentAckValue = null;
+            }
+          }
+        }
+
         // Console mode: print full @s line and @t lines each tick
         if (consoleMode) {
           string fullLine = "@s" + (tokens.Count > 0 ? " " + string.Join(" ", tokens.ToArray()) : "");
           Console.WriteLine("[" + updateMs + " ms] " + fullLine);
           for (int i = 0; i < texts.Count; i++) {
             Console.WriteLine("  @t " + texts[i].Key + " " + texts[i].Value);
+          }
+          if (link == null) {
+            lock (powerLock) {
+              if (scheduledAction != null && scheduledActionTimeUtc == DateTime.MinValue && currentAckValue != null) {
+                scheduledActionTimeUtc = DateTime.UtcNow.AddMilliseconds(1500);
+              }
+            }
           }
         }
 
@@ -1851,11 +2336,29 @@ class PcStats : ServiceBase {
             }
             sb.Append("@e ").Append(seq++).Append('\n');
             link.Write(sb.ToString());
+            lock (powerLock) {
+              if (scheduledAction != null && scheduledActionTimeUtc == DateTime.MinValue && currentAckValue != null) {
+                scheduledActionTimeUtc = DateTime.UtcNow.AddMilliseconds(1500);
+              }
+            }
           } catch (Exception e) {
             Log("port lost: " + e.Message);
             try { link.Close(); } catch (Exception) { }
             link = null;
           }
+        }
+
+        // Execute scheduled power action ~1.5s after ack was first sent
+        string actionToExecute = null;
+        lock (powerLock) {
+          if (scheduledAction != null && scheduledActionTimeUtc != DateTime.MinValue && DateTime.UtcNow >= scheduledActionTimeUtc) {
+            actionToExecute = scheduledAction;
+            scheduledAction = null;
+            scheduledActionTimeUtc = DateTime.MinValue;
+          }
+        }
+        if (actionToExecute != null) {
+          ExecutePowerAction(actionToExecute);
         }
 
         int wait = intervalMs - (int)(DateTime.UtcNow - t0).TotalMilliseconds;
