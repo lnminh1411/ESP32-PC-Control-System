@@ -24,6 +24,12 @@ if not exist build mkdir build
   PcStats.cs || goto :fail
 copy /y vendor\lhwm-wrapper.dll build\ >nul
 echo OK: build\esp32-pcstats.exe
+
+"%CSC%" /nologo /optimize+ /platform:x64 /target:winexe /out:build\esp32-agyquota.exe ^
+  /r:System.Management.dll /r:System.Web.Extensions.dll ^
+  AgyQuota.cs || goto :fail
+echo OK: build\esp32-agyquota.exe
+
 exit /b 0
 
 :fail

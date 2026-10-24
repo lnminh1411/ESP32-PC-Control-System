@@ -287,7 +287,7 @@ class PcStats : ServiceBase {
     public Dictionary<string, float> Numbers = new Dictionary<string, float>();
     public Dictionary<string, string> Texts = new Dictionary<string, string>();
     public DateTime LastSuccessUtc = DateTime.MinValue;
-    HttpWebRequest currentRequest;
+    WebRequest currentRequest;
 
     public void Start() {
       Worker = new Thread(Run) { IsBackground = true, Name = "source_" + Name };
@@ -308,13 +308,16 @@ class PcStats : ServiceBase {
       while (!Stop) {
         DateTime t0 = DateTime.UtcNow;
         try {
-          HttpWebRequest req = (HttpWebRequest)WebRequest.Create(Url);
-          req.Timeout = 5000;
-          req.ReadWriteTimeout = 5000;
-          req.Proxy = null;
+          WebRequest req = WebRequest.Create(Url);
+          HttpWebRequest httpReq = req as HttpWebRequest;
+          if (httpReq != null) {
+            httpReq.Timeout = 5000;
+            httpReq.ReadWriteTimeout = 5000;
+            httpReq.Proxy = null;
+          }
           lock (Lock) { currentRequest = req; }
 
-          using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse())
+          using (WebResponse resp = req.GetResponse())
           using (Stream stream = resp.GetResponseStream())
           using (StreamReader reader = new StreamReader(stream, Encoding.UTF8)) {
             var newNumbers = new Dictionary<string, float>();

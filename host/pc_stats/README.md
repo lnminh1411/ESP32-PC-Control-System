@@ -99,6 +99,37 @@ The service can stream Claude Code live utilization and local spend totals to th
 
 Usage logic ported from aiusage (MIT, Ahsan Habib Akik).
 
+## Antigravity Quota
+
+The companion helper `esp32-agyquota.exe` runs in the user's interactive session and queries the local language server exposed by running Antigravity clients (the IDE, or an `agy` CLI session for another account) over Connect-JSON API on `127.0.0.1`. It writes quota metrics to `C:\ProgramData\ESP32PcStats\agy_quota.txt`, which `esp32-pcstats.exe` polls and forwards via directive:
+```ini
+@source agy file:///C:/ProgramData/ESP32PcStats/agy_quota.txt 5000
+```
+
+### How It Works
+- **Running Client Required:** The helper cannot retrieve credentials directly from LocalSystem service context; it discovers running `language_server.exe` (IDE) and `agy.exe` (CLI) processes via WMI, finds their listening localhost TCP ports via `GetExtendedTcpTable`, and queries `GetUserStatus` with the CSRF token extracted from the process command line (tokens are never logged or written). A running Antigravity client logged into an account is required to refresh that account's quota. When a client closes, its last-known quota values are preserved while `age_s` increments.
+- **Accounts & Slots:** Mapped in `agy_quota.ini` (`accounts = ...`) to slots `agy1`, `agy2`, etc. Defaults to accounts in `%USERPROFILE%\.gemini\antigravity-cli\accounts\`.
+- **Model Families & Regexes:** Models are classified by label (case-insensitive) using regexes configured in `agy_quota.ini`:
+  - `exclude = claude|gpt|oss`
+  - `flash = flash`
+  - `pro = \bpro\b|argon|ultra`
+  For each family, the lowest remaining quota fraction and earliest reset time among active models are tracked. A family without quota models omits numeric keys and sends only its display name (e.g. disabled Argon).
+- **Scheduled Task:** `install.ps1` registers a scheduled task `ESP32 AGY Quota` that runs `esp32-agyquota.exe` at logon of the installing user with Limited privileges, no execution time limit, and automatic restart on failure.
+
+### Keys Streamed
+- **Global:**
+  - `agy.live`: Count of active language server clients answering the poll
+  - `agy.updated`: Unix timestamp (seconds) of the poll
+- **Per-Slot (`agy1`, `agy2`, ...):**
+  - `agyN.email`: Account email address (`@t`)
+  - `agyN.plan`: Plan name (e.g. `Pro`) (`@t`)
+  - `agyN.age_s`: Elapsed seconds since account data was fetched
+  - `agyN.flash_pct`: Remaining Flash quota percentage (`0.0` - `100.0`, 1 decimal)
+  - `agyN.flash_reset_s`: Seconds until Flash quota reset (`>= 0`)
+  - `agyN.flash_reset_at`: Local time of Flash reset (`ddd HH:mm`, InvariantCulture) (`@t`)
+  - `agyN.flash_name`: Flash family display name (`@t`)
+  - `agyN.pro_pct`, `agyN.pro_reset_s`, `agyN.pro_reset_at`, `agyN.pro_name`: Same metrics for Pro family
+
 ## Wire Protocol
 
 ASCII lines streamed every `@interval` ms (default 500):
