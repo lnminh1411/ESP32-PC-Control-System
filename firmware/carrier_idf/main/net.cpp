@@ -1,6 +1,7 @@
 #include "net.h"
 
 #include <esp_event.h>
+#include <esp_heap_caps.h>
 #include <esp_http_server.h>
 #include <esp_netif.h>
 #include <esp_ota_ops.h>
@@ -12,6 +13,7 @@
 #include <string.h>
 
 #include "config.h"
+#include "layout.h"
 #include "log.h"
 #include "secrets_or_example.h"
 #include "sys.h"
@@ -137,6 +139,58 @@ static esp_err_t otaPostHandler(httpd_req_t *req) {
   return ESP_OK;
 }
 
+static esp_err_t layoutPutHandler(httpd_req_t *req) {
+  char passHdr[64] = {0};
+  if (httpd_req_get_hdr_value_str(req, "X-OTA-Pass", passHdr, sizeof passHdr) != ESP_OK ||
+      !constantTimeEq(passHdr, OTA_PASS)) {
+    httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Forbidden");
+    return ESP_OK;
+  }
+
+  if (req->content_len <= 0) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Content-Length required");
+    return ESP_OK;
+  }
+
+  if (req->content_len > 16384) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Payload too large (>16KB)");
+    return ESP_OK;
+  }
+
+  char *buf = (char *)heap_caps_malloc(req->content_len + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (!buf) buf = (char *)malloc(req->content_len + 1);
+  if (!buf) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
+    return ESP_OK;
+  }
+
+  int remaining = req->content_len;
+  int receivedTotal = 0;
+  while (remaining > 0) {
+    int received = httpd_req_recv(req, buf + receivedTotal, remaining);
+    if (received <= 0) {
+      if (received == HTTPD_SOCK_ERR_TIMEOUT) continue;
+      free(buf);
+      httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Receive failed");
+      return ESP_FAIL;
+    }
+    receivedTotal += received;
+    remaining -= received;
+  }
+  buf[receivedTotal] = '\0';
+
+  const char *err = layoutApply(buf, (size_t)receivedTotal);
+  free(buf);
+
+  if (err) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, err);
+    return ESP_OK;
+  }
+
+  httpd_resp_send(req, "OK", HTTPD_RESP_USE_STRLEN);
+  return ESP_OK;
+}
+
 static void wifiEventHandler(void *, esp_event_base_t event_base, int32_t event_id, void *event_data) {
   if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
     wifi_event_sta_disconnected_t *disconn = (wifi_event_sta_disconnected_t *)event_data;
@@ -215,6 +269,14 @@ void netPoll() {
         .user_ctx = nullptr
       };
       httpd_register_uri_handler(otaServer, &post_ota);
+
+      httpd_uri_t put_layout = {
+        .uri = "/layout",
+        .method = HTTP_PUT,
+        .handler = layoutPutHandler,
+        .user_ctx = nullptr
+      };
+      httpd_register_uri_handler(otaServer, &put_layout);
 
       logMsg("ota: ready at %s.local / %s", NET_HOSTNAME, ip);
     }
