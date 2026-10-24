@@ -10,7 +10,7 @@ pcb/build/
 # Python
 __pycache__/
 
-# Firmware credentials (copy secrets.example.h -> secrets.h)
+# Firmware credentials (copy secrets_example.h -> secrets.h)
 firmware/**/secrets.h
 
 host/pc_stats/vendor/

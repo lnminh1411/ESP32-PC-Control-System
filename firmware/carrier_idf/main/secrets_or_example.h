@@ -3,5 +3,5 @@
 #if __has_include("secrets.h")
 #include "secrets.h"
 #else
-#include "secrets.example.h"
+#include "secrets_example.h"
 #endif
