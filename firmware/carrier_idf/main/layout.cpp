@@ -675,7 +675,7 @@ static void drawValue(LGFX_Sprite &c, const Page &page, Widget &w, bool full) {
     c.drawString(valBuf, w.x, w.y);
   }
 
-  strncpy(w.last_text, valBuf, sizeof(w.last_text) - 1);
+  memcpy(w.last_text, valBuf, sizeof(w.last_text));   // same 64-byte size, NUL-terminated
   w.last_text[sizeof(w.last_text) - 1] = '\0';
   w.last_color = col;
 }
@@ -704,7 +704,7 @@ static void drawText(LGFX_Sprite &c, const Page &page, Widget &w, bool full) {
   c.setTextDatum(lgfx::textdatum_t::top_left);
   c.drawString(textBuf, w.x, w.y);
 
-  strncpy(w.last_text, textBuf, sizeof(w.last_text) - 1);
+  memcpy(w.last_text, textBuf, sizeof(w.last_text));   // same 64-byte size, NUL-terminated
   w.last_text[sizeof(w.last_text) - 1] = '\0';
 }
 
