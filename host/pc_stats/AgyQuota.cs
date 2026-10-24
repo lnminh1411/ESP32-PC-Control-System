@@ -2,9 +2,15 @@
 // and writing model quota statistics to C:\ProgramData\ESP32PcStats\agy_quota.txt
 // for consumption by esp32-pcstats.exe via @source.
 //
+// Also keeps the Claude Code OAuth token fresh: shortly before it expires it
+// runs `claude auth status`, which makes the CLI refresh (and rotate) its own
+// token. This helper only reads expiry times; it never reads, logs or writes
+// the tokens themselves.
+//
 // Target: .NET Framework 4 (C# 5 syntax only).
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Management;
@@ -87,6 +93,79 @@ static class AgyQuota {
     public string Email;
     public string PlanName;
     public Dictionary<string, FamilyState> Families = new Dictionary<string, FamilyState>(StringComparer.OrdinalIgnoreCase);
+  }
+
+  // ---- Claude Code token keep-alive ----
+  const double ClaudeRefreshLeadMin = 10;      // the CLI only refreshes a token close to expiry
+  const double ClaudeRetryMin = 5;             // between attempts while it keeps failing
+  static DateTime lastClaudeAttemptUtc = DateTime.MinValue;
+  static DateTime lastRefreshWarnUtc = DateTime.MinValue;
+
+  // expiresAt / refreshTokenExpiresAt (UTC) from .credentials.json; false if unreadable
+  static bool ReadClaudeExpiry(out DateTime accessUtc, out DateTime refreshUtc) {
+    accessUtc = refreshUtc = DateTime.MinValue;
+    string path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), @".claude\.credentials.json");
+    if (!File.Exists(path)) return false;
+    try {
+      Dictionary<string, object> root = new JavaScriptSerializer().DeserializeObject(File.ReadAllText(path)) as Dictionary<string, object>;
+      object o;
+      if (root == null || !root.TryGetValue("claudeAiOauth", out o)) return false;
+      Dictionary<string, object> oauth = o as Dictionary<string, object>;
+      if (oauth == null || !oauth.TryGetValue("expiresAt", out o)) return false;
+      accessUtc = UnixEpoch.AddMilliseconds(Convert.ToDouble(o, CultureInfo.InvariantCulture));
+      if (oauth.TryGetValue("refreshTokenExpiresAt", out o) && o != null)
+        refreshUtc = UnixEpoch.AddMilliseconds(Convert.ToDouble(o, CultureInfo.InvariantCulture));
+      return true;
+    } catch (Exception ex) {
+      Log("claude: cannot read token expiry: " + ex.GetType().Name);   // never the content
+      return false;
+    }
+  }
+
+  static string ClaudeCli() {
+    string local = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), @".local\bin\claude.exe");
+    return File.Exists(local) ? local : "claude";   // else rely on PATH
+  }
+
+  static void ClaudeKeepAlive() {
+    DateTime accessUtc, refreshUtc;
+    if (!ReadClaudeExpiry(out accessUtc, out refreshUtc)) return;
+    DateTime now = DateTime.UtcNow;
+
+    if (refreshUtc != DateTime.MinValue && refreshUtc - now < TimeSpan.FromDays(2) && now - lastRefreshWarnUtc > TimeSpan.FromHours(12)) {
+      lastRefreshWarnUtc = now;
+      Log("claude: refresh token expires " + refreshUtc.ToLocalTime().ToString("ddd HH:mm", CultureInfo.InvariantCulture) +
+          " -- run `claude auth login` before then");
+    }
+    if (accessUtc - now > TimeSpan.FromMinutes(ClaudeRefreshLeadMin)) return;
+    if (now - lastClaudeAttemptUtc < TimeSpan.FromMinutes(ClaudeRetryMin)) return;
+    lastClaudeAttemptUtc = now;
+
+    try {
+      ProcessStartInfo psi = new ProcessStartInfo(ClaudeCli(), "auth status");
+      psi.UseShellExecute = false;
+      psi.CreateNoWindow = true;
+      psi.RedirectStandardOutput = true;   // discarded: it carries the account email
+      psi.RedirectStandardError = true;
+      using (Process p = Process.Start(psi)) {
+        p.StandardOutput.ReadToEndAsync();
+        p.StandardError.ReadToEndAsync();
+        if (!p.WaitForExit(60000)) {
+          try { p.Kill(); } catch { }
+          Log("claude: `claude auth status` timed out");
+          return;
+        }
+      }
+    } catch (Exception ex) {
+      Log("claude: cannot run the CLI: " + ex.Message);
+      return;
+    }
+
+    DateTime after, unused;
+    if (ReadClaudeExpiry(out after, out unused) && after > accessUtc)
+      Log("claude: token refreshed, valid until " + after.ToLocalTime().ToString("ddd HH:mm", CultureInfo.InvariantCulture));
+    else if (accessUtc <= now)
+      Log("claude: token still expired after `claude auth status` (signed out? run `claude auth login`)");
   }
 
   static void Log(string message) {
@@ -764,6 +843,7 @@ static class AgyQuota {
     } catch (Exception ex) {
       Log("Poll error: " + ex.Message);
     }
+    try { ClaudeKeepAlive(); } catch (Exception ex) { Log("claude: keep-alive error: " + ex.Message); }
 
     List<string> lines = GenerateOutputLines(liveClients, cfg.Families, cfg.Accounts, accountsData);
     try {
@@ -806,6 +886,7 @@ static class AgyQuota {
       } catch (Exception ex) {
         Log("Poll error: " + ex.Message);
       }
+      try { ClaudeKeepAlive(); } catch (Exception ex) { Log("claude: keep-alive error: " + ex.Message); }
 
       try {
         List<string> lines = GenerateOutputLines(liveClients, cfg.Families, cfg.Accounts, accountsData);

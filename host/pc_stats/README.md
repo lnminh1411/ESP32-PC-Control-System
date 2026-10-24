@@ -68,7 +68,7 @@ The service can stream Claude Code live utilization and local spend totals to th
 ```
 
 ### What It Reads
-- **Live Usage**: Reads the OAuth access token from `<claude_dir>\.credentials.json` (`claudeAiOauth.accessToken`) and polls Anthropic's OAuth usage API (`https://api.anthropic.com/api/oauth/usage`). It only uses the access token that Claude Code itself keeps fresh (never refreshes it, never uses the refresh token, and never writes to the credentials file). If the token is expired (`claudeAiOauth.expiresAt`), polling pauses with error `token_expired`.
+- **Live Usage**: Reads the OAuth access token from `<claude_dir>\.credentials.json` (`claudeAiOauth.accessToken`) and polls Anthropic's OAuth usage API (`https://api.anthropic.com/api/oauth/usage`). It only uses the access token that Claude Code itself keeps fresh (never refreshes it, never uses the refresh token, and never writes to the credentials file). If the token is expired (`claudeAiOauth.expiresAt`), polling pauses with error `token_expired`. The per-user helper `esp32-agyquota.exe` prevents that: when less than 10 minutes are left it runs `claude auth status`, which makes the Claude Code CLI refresh its own token (no model call, no usage). It reads only the expiry times, and logs to `agy_quota.log` when the refresh token itself nears expiry (then run `claude auth login`).
 - **Local Spend & Token Totals**: Incrementally scans session transcripts in `<claude_dir>\projects\**\*.jsonl` modified in the last 31 days using an in-memory per-file byte cache. Tokens are calculated as `input_tokens + output_tokens + cache_creation_input_tokens + cache_read_input_tokens`, de-duplicated by `message.id`. Cost is estimated at standard list rates (Opus, Sonnet, Haiku).
 
 ### Keys Streamed
