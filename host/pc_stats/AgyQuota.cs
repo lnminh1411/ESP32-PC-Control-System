@@ -5,8 +5,9 @@
 // Also keeps the Claude Code OAuth token fresh: shortly before it expires it
 // does the same refresh Claude Code does and writes the new token back to
 // ~/.claude/.credentials.json (only the token fields). And it reads the
-// Antigravity Flash quota (5-hour / weekly) from Google with agy's stored
-// login (read-only; an expired access token is renewed in memory only).
+// Antigravity Flash quota from Google with agy's stored login (read-only; an
+// expired access token is renewed in memory only), plus the weekly Gemini
+// window from agy's own /usage panel (AgyUsage.cs).
 // Tokens are never logged.
 //
 // Target: .NET Framework 4 (C# 5 syntax only).
@@ -261,6 +262,8 @@ static class AgyQuota {
   static DateTime memTokenUntil;
   static string[] agyClient;               // {id, secret} read from agy.exe, kept out of the repo
   static bool cloudErrLogged;
+  static AgyUsage.Window usageWeek, usageFive;   // from agy's /usage panel
+  static DateTime lastUsageUtc = DateTime.MinValue;
 
   // agy's login blob: {"token":{access_token, refresh_token, expiry, ...}, "id_token" or "id_token_email"}
   static Dictionary<string, object> ReadAgyLogin() {
@@ -424,6 +427,19 @@ static class AgyQuota {
           }
         }
       }
+      // the weekly Gemini window only shows in agy's /usage panel
+      if (DateTime.UtcNow - lastUsageUtc >= TimeSpan.FromMinutes(10)) {
+        lastUsageUtc = DateTime.UtcNow;
+        AgyUsage.Window w, f;
+        try {
+          if (AgyUsage.Read(out w, out f)) { usageWeek = w; usageFive = f; }
+          else Log("agy usage: /usage panel not read");
+        } catch (Exception ex) {
+          Log("agy usage: " + ex.GetType().Name + ": " + ex.Message);
+        }
+      }
+      if (usageWeek != null && !double.IsNaN(usageWeek.Pct)) { q.WeekPct = usageWeek.Pct; q.WeekReset = usageWeek.ResetUtc; }
+      if (double.IsNaN(q.FivePct) && usageFive != null) { q.FivePct = usageFive.Pct; q.FiveReset = usageFive.ResetUtc; }
       lock (cloudQuota) cloudQuota[email] = q;
       cloudErrLogged = false;
     } catch (WebException ex) {

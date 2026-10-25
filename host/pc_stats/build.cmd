@@ -49,7 +49,7 @@ if not defined WINMD (
   /r:"%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\System.Runtime.WindowsRuntime.dll" ^
   /r:"%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\System.Runtime.dll" ^
   %WINMD% ^
-  AgyQuota.cs || goto :fail
+  AgyQuota.cs AgyUsage.cs || goto :fail
 echo OK: build\esp32-agyquota.exe
 
 exit /b 0
