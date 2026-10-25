@@ -18,6 +18,7 @@
 #include "pc_state.h"
 #include "pcstats.h"
 #include "sys.h"
+#include "textimg.h"
 #include "weather.h"
 
 // 16-bit RGB565 palette matching the mockup (survives 4 bits per channel wire format).
@@ -106,7 +107,25 @@ static void formatRate(double b, char *buf, size_t len) {
   }
 }
 
-// Format uptime seconds into "1d 00:32" or "00:32".
+// GPU load averaged over ~2 s: at idle clocks the cards report bursty
+// utilization (a wallpaper frame keeps a 210 MHz core busy), so the raw
+// value swings 0-50% between samples.
+static double smoothedStat(int slot, const char *key) {
+  static double val[2];
+  static uint32_t lastMs[2];
+  double v = pcStat(key);
+  if (isnan(v)) return v;
+  uint32_t now = nowMs();
+  if (isnan(val[slot]) || !lastMs[slot] || now - lastMs[slot] > 10000) {
+    val[slot] = v;
+  } else {
+    val[slot] += (v - val[slot]) * (1.0 - exp(-(double)(now - lastMs[slot]) / 2000.0));
+  }
+  lastMs[slot] = now;
+  return val[slot];
+}
+
+// Format uptime seconds into "1d 20:44:16" or "20:44:16".
 static void formatUptime(double uptimeSec, char *buf, size_t len) {
   if (isnan(uptimeSec) || uptimeSec < 0.0) {
     snprintf(buf, len, "--");
@@ -116,10 +135,12 @@ static void formatUptime(double uptimeSec, char *buf, size_t len) {
   uint32_t d = s / 86400;
   uint32_t h = (s / 3600) % 24;
   uint32_t m = (s / 60) % 60;
+  uint32_t sec = s % 60;
   if (d > 0) {
-    snprintf(buf, len, "%lud %02lu:%02lu", (unsigned long)d, (unsigned long)h, (unsigned long)m);
+    snprintf(buf, len, "%lud %02lu:%02lu:%02lu", (unsigned long)d, (unsigned long)h, (unsigned long)m,
+             (unsigned long)sec);
   } else {
-    snprintf(buf, len, "%02lu:%02lu", (unsigned long)h, (unsigned long)m);
+    snprintf(buf, len, "%02lu:%02lu:%02lu", (unsigned long)h, (unsigned long)m, (unsigned long)sec);
   }
 }
 
@@ -177,14 +198,14 @@ static void drawSparkline(LGFX_Sprite &c) {
 static char lastTitle[128] = "";
 static uint32_t marqueeStartMs = 0;
 
-static void drawMarquee(LGFX_Sprite &c, const char *s, int y, const lgfx::IFont *f, uint16_t hex) {
+static void drawMarquee(LGFX_Sprite &c, const char *key, const char *s, int y, const lgfx::IFont *f, uint16_t hex) {
   c.setFont(f);
-  int w = c.textWidth(s);
+  int w = textImgWidth(c, key, s);
   const int room = 224;
   if (w <= room) {
     c.setTextColor(hex);
     c.setTextDatum(lgfx::textdatum_t::top_center);
-    c.drawString(s, 120, y);
+    textImgDraw(c, key, s, 120, y);
     return;
   }
 
@@ -220,16 +241,16 @@ static void drawMarquee(LGFX_Sprite &c, const char *s, int y, const lgfx::IFont 
   c.setClipRect(8, y, room, c.fontHeight());
   c.setTextColor(hex);
   c.setTextDatum(lgfx::textdatum_t::top_left);
-  c.drawString(s, 8 - (int)roundf(off), y);
+  textImgDraw(c, key, s, 8 - (int)roundf(off), y);
   c.clearClipRect();
 }
 
-static int measureTextWidth(const char *s, const lgfx::IFont *f) {
+static int measureTextWidth(const char *key, const char *s, const lgfx::IFont *f) {
   if (!s || !s[0]) return 0;
   for (int i = 0; i < N_PANELS; i++) {
     if (panels[i].canvas) {
       panels[i].canvas->setFont(f);
-      return panels[i].canvas->textWidth(s);
+      return textImgWidth(*panels[i].canvas, key, s);
     }
   }
   return (int)strlen(s) * 12;
@@ -239,12 +260,15 @@ static bool mediaMarqueeMoving() {
   if (pcStat("media.ok") != 1.0) return false;
   const char *title = pcText("media.title");
   if (!title || !title[0]) return false;
-  // the scheduler asks on every pass: measure once per title
-  static char measured[96];
-  static bool wide;
-  if (strncmp(title, measured, sizeof measured - 1)) {
+  // the scheduler asks on every pass: measure once per title, except while
+  // a non-ASCII title's rendered width may still change (its image arrives)
+  static char measured[128];
+  static bool wide, final;
+  if (!final || strcmp(title, measured)) {
     snprintf(measured, sizeof measured, "%s", title);
-    wide = measureTextWidth(title, fontHead()) > 224;
+    wide = measureTextWidth("media.title", title, fontHead()) > 224;
+    final = true;
+    for (const char *p = title; *p; p++) if ((uint8_t)*p >= 0x80) final = false;
   }
   return wide;
 }
@@ -486,13 +510,13 @@ static void drawPcStats(LGFX_Sprite &c) {
   double rxVram = pcStat("gpu1_vram");
   double rxVramT = pcStat("gpu1_vramt");
   drawGpuCard(c, 4, 134, "RX 6600", C_AMD,
-              pcStat("gpu1_temp"), pcStat("gpu1_load"), pcStat("gpu1_clock"),
+              pcStat("gpu1_temp"), smoothedStat(0, "gpu1_load"), pcStat("gpu1_clock"),
               isnan(rxVram) ? NAN : rxVram / 1024.0, isnan(rxVramT) ? NAN : rxVramT / 1024.0);
 
   double rtxVram = pcStat("gpu2_vram");
   double rtxVramT = pcStat("gpu2_vramt");
   drawGpuCard(c, 122, 134, "RTX 3050", C_NV,
-              pcStat("gpu2_temp"), pcStat("gpu2_load"), pcStat("gpu2_clock"),
+              pcStat("gpu2_temp"), smoothedStat(1, "gpu2_load"), pcStat("gpu2_clock"),
               isnan(rtxVram) ? NAN : rtxVram / 1024.0, isnan(rtxVramT) ? NAN : rtxVramT / 1024.0);
 
   // Fans card
@@ -597,27 +621,30 @@ static void drawMedia(LGFX_Sprite &c) {
 
     int ty = 8 + top + s + 8;
     const char *title = pcText("media.title");
-    drawMarquee(c, title[0] ? title : "--", ty, fontHead(), C_TEXT);
+    drawMarquee(c, "media.title", title[0] ? title : "--", ty, fontHead(), C_TEXT);
 
     const char *artist = pcText("media.artist");
     c.setFont(fontBody());
     c.setTextColor(C_DIM);
     c.setTextDatum(lgfx::textdatum_t::top_center);
-    c.drawString(artist[0] ? artist : "--", 120, ty + 26);
+    textImgDraw(c, "media.artist", artist[0] ? artist : "--", 120, ty + 26);
 
     // Source icon & name
     const char *src = pcText("media.source");
     uint16_t iconCol = C_DIM;
     const char *srcIcon = getMediaSourceIcon(src[0] ? src : "", iconCol);
+    // one baseline for icons and text: the icon font's ascent is taller, so
+    // top datums put the icons ~4 px low
+    int rowBase = ty + 48 + 11;
     c.setFont(fontIconsSm());
     c.setTextColor(iconCol);
-    c.setTextDatum(lgfx::textdatum_t::top_left);
-    c.drawString(srcIcon, 8, ty + 48);
+    c.setTextDatum(lgfx::textdatum_t::baseline_left);
+    c.drawString(srcIcon, 8, rowBase);
 
     c.setFont(fontSmall());
     c.setTextColor(iconCol);
-    c.setTextDatum(lgfx::textdatum_t::top_left);
-    c.drawString(src[0] ? src : "--", 28, ty + 48);
+    c.setTextDatum(lgfx::textdatum_t::baseline_left);
+    textImgDraw(c, "media.source", src[0] ? src : "--", 28, rowBase);
 
     // Local position advancing while playing
     static uint32_t lastSampleSeq = 0;
@@ -646,14 +673,14 @@ static void drawMedia(LGFX_Sprite &c) {
     snprintf(timeBuf, sizeof(timeBuf), "%d:%02d / %d:%02d", pos / 60, pos % 60, len / 60, len % 60);
     c.setFont(fontSmall());
     c.setTextColor(C_DIM);
-    c.setTextDatum(lgfx::textdatum_t::top_right);
-    c.drawString(timeBuf, 232, ty + 48);
+    c.setTextDatum(lgfx::textdatum_t::baseline_right);
+    c.drawString(timeBuf, 232, rowBase);
 
     int tw = c.textWidth(timeBuf);
     c.setFont(fontIconsSm());
     c.setTextColor(C_DIM);
-    c.setTextDatum(lgfx::textdatum_t::top_right);
-    c.drawString(playing ? "\uF04B" : "\uF04C", 232 - tw - 4, ty + 48);
+    c.setTextDatum(lgfx::textdatum_t::baseline_right);
+    c.drawString(playing ? "\uF04B" : "\uF04C", 232 - tw - 4, rowBase);
 
     float pFrac = len > 0 ? ((float)pos / (float)len) : 0.0f;
     drawBar(c, 8, ty + 66, 224, 4, pFrac, C_TEXT);
@@ -826,22 +853,23 @@ static void drawWeather(LGFX_Sprite &c) {
   // 3-day forecast rows
   for (int i = 0; i < 3; i++) {
     int y = 256 + i * 21;
+    int base = y + 11;   // shared baseline, as in the media row
     c.setFont(fontSmall());
     c.setTextColor(C_TEXT);
-    c.setTextDatum(lgfx::textdatum_t::top_left);
-    c.drawString(w.days[i].name, 16, y);
+    c.setTextDatum(lgfx::textdatum_t::baseline_left);
+    c.drawString(w.days[i].name, 16, base);
 
     c.setFont(fontIconsSm());
     c.setTextColor(C_WX_CLOUD);
-    c.setTextDatum(lgfx::textdatum_t::top_left);
-    c.drawString(getWxIconUtf8(w.days[i].icon, true), 96, y);
+    c.setTextDatum(lgfx::textdatum_t::baseline_left);
+    c.drawString(getWxIconUtf8(w.days[i].icon, true), 96, base);
 
     char dTemp[32];
     snprintf(dTemp, sizeof(dTemp), "%d\u00B0/%d\u00B0", w.days[i].tmax, w.days[i].tmin);
     c.setFont(fontSmall());
     c.setTextColor(C_TEXT);
-    c.setTextDatum(lgfx::textdatum_t::top_right);
-    c.drawString(dTemp, 224, y);
+    c.setTextDatum(lgfx::textdatum_t::baseline_right);
+    c.drawString(dTemp, 224, base);
 
     if (i < 2) c.fillRect(16, y + 19, 208, 1, C_WX_DIV);
   }
@@ -859,6 +887,7 @@ static void drawAiUsage(LGFX_Sprite &c) {
   c.drawString("CLAUDE", 12, 10);
 
   const char *cPlan = pcText("claude.plan");
+  if (!strncmp(cPlan, "Claude ", 7)) cPlan += 7;   // the card already says CLAUDE
   drawChip(c, 228, 8, cPlan[0] ? cPlan : "Pro", C_CLAUDE, 0x0000, true);
 
   c.setFont(fontSmall());
@@ -961,27 +990,39 @@ static void drawAiUsage(LGFX_Sprite &c) {
   c.setTextDatum(lgfx::textdatum_t::top_left);
   c.drawString(emBuf, 12, 168);
 
-  c.setTextColor(C_DIM);
-  c.setTextDatum(lgfx::textdatum_t::top_left);
-  c.drawString("Flash left", 12, 190);
+  // Flash quota: 5-hour and weekly windows (agy /usage); flash_pct is the
+  // older single value, shown as the 5h row until the split arrives
+  struct QuotaRow { const char *label, *pctKey, *resetKey; int y; };
+  char k5[24], k5r[28], kw[24], kwr[28];
+  snprintf(k5, sizeof(k5), "agy%d.flash_5h_pct", agyN);
+  snprintf(k5r, sizeof(k5r), "agy%d.flash_5h_reset_at", agyN);
+  snprintf(kw, sizeof(kw), "agy%d.flash_wk_pct", agyN);
+  snprintf(kwr, sizeof(kwr), "agy%d.flash_wk_reset_at", agyN);
+  bool split = !isnan(pcStat(k5));
+  const QuotaRow rows[2] = {{"5h", split ? k5 : kFlash, split ? k5r : kReset, 188},
+                            {"Week", kw, kwr, 218}};
+  for (const QuotaRow &r : rows) {
+    double pct = pcStat(r.pctKey);
+    uint16_t col = isnan(pct) ? C_DIM : (pct < 10.0 ? C_BAD : (pct < 25.0 ? C_WARN : C_GOOD));
+    c.setFont(fontSmall());
+    c.setTextColor(C_DIM);
+    c.setTextDatum(lgfx::textdatum_t::baseline_left);
+    c.drawString(r.label, 12, r.y + 11);
 
-  double flashPct = pcStat(kFlash);
-  if (isnan(flashPct)) snprintf(buf, sizeof(buf), "--");
-  else snprintf(buf, sizeof(buf), "%.0f%%", flashPct);
-  uint16_t flashCol = isnan(flashPct) ? C_DIM : (flashPct < 10.0 ? C_BAD : (flashPct < 25.0 ? C_WARN : C_GOOD));
-  c.setFont(fontBody());
-  c.setTextColor(flashCol);
-  c.setTextDatum(lgfx::textdatum_t::top_right);
-  c.drawString(buf, 228, 188);
+    drawBar(c, 50, r.y + 5, 130, 6, isnan(pct) ? 0.0f : (float)(pct / 100.0), C_AGY);
 
-  drawBar(c, 12, 210, 216, 6, isnan(flashPct) ? 0.0f : (float)(flashPct / 100.0), C_AGY);
+    if (isnan(pct)) snprintf(buf, sizeof(buf), "--");
+    else snprintf(buf, sizeof(buf), "%.0f%%", pct);
+    c.setTextColor(col);
+    c.setTextDatum(lgfx::textdatum_t::baseline_right);
+    c.drawString(buf, 228, r.y + 11);
 
-  const char *aReset = pcText(kReset);
-  snprintf(buf, sizeof(buf), "resets %s", aReset[0] ? aReset : "--");
-  c.setFont(fontSmall());
-  c.setTextColor(C_FAINT);
-  c.setTextDatum(lgfx::textdatum_t::top_left);
-  c.drawString(buf, 12, 222);
+    const char *rs = pcText(r.resetKey);
+    snprintf(buf, sizeof(buf), "resets %s", rs[0] ? rs : "--");
+    c.setTextColor(C_FAINT);
+    c.setTextDatum(lgfx::textdatum_t::top_left);
+    c.drawString(buf, 50, r.y + 14);
+  }
 
   // Local AI summary card
   drawCard(c, 4, 256, 232, 60);
@@ -991,15 +1032,16 @@ static void drawAiUsage(LGFX_Sprite &c) {
   c.drawString("LOCAL AI", 12, 262);
 
   const char *phaseName = pcText("ai.phase_name");
-  drawChip(c, 228, 260, phaseName[0] ? phaseName : "asleep", C_TRACK, C_DIM, true);
+  if (!phaseName[0] || !strcmp(phaseName, "asleep")) phaseName = "Not Active";
+  drawChip(c, 228, 260, phaseName, C_TRACK, C_DIM, true);
 
   const char *mName = pcText("ai.model_name");
   char mBuf[64];
-  snprintf(mBuf, sizeof(mBuf), "%s, unloads when idle", mName[0] ? mName : "Occamy-1.0");
+  snprintf(mBuf, sizeof(mBuf), "%s", mName[0] ? mName : "Occamy-1.0");
   c.setFont(fontSmall());
   c.setTextColor(C_FAINT);
   c.setTextDatum(lgfx::textdatum_t::top_left);
-  c.drawString(mBuf, 12, 284);
+  textImgDraw(c, "ai.model_name", mBuf, 12, 284);
 
   double reqs = pcStat("ai.requests");
   double errs = pcStat("ai.errors");

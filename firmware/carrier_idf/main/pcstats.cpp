@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "art.h"
+#include "textimg.h"
 #include "board_time.h"
 #include "pc_going.h"
 #include "sys.h"
@@ -17,7 +18,7 @@ struct StatEntry {
 
 struct TextEntry {
   char key[24];
-  char val[81];
+  char val[121];   // UTF-8, the PC cuts values at 120 bytes
 };
 
 static StatEntry table[PCSTATS_MAX];
@@ -32,6 +33,7 @@ static uint32_t sampleSeq;
 void pcStatsLine(const char *line) {
   if (!line || line[0] != '@') return;
   if (line[1] == 'a' && line[2] == ' ') { artLine(line); return; }
+  if (line[1] == 'x' && line[2] == ' ') { textImgLine(line); return; }
   if (line[1] == 's' && (line[2] == ' ' || line[2] == '\0')) {
     const char *p = line + 2;
     while (*p) {
