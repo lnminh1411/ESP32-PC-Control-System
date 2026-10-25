@@ -1,5 +1,12 @@
 # ESP32 PC Control System
 
+### Why would I put myself through the suffering
+
+I needed my PC online at all time, because sometime at school or work I need to remote
+control the PC back at home. And as I measured, the idle time alone costs me ~40KWh (~7usd) per month.
+So, I built this for 30usd instead of buying a boring and expensive IP KVM, while adding a tons more
+features to fit my over-engineering stuffs hobby.
+
 <table><tr><td width="190" valign="top">
 <img src="docs/images/pcb_silkscreen_top.png" alt="Carrier PCB, rev 3.1: top silkscreen over F.Cu" width="180">
 </td><td valign="top">
@@ -8,13 +15,6 @@ An ESP32-S3 carrier board that lives inside a PC case. It drives three 2.4"
 displays, presses the motherboard's hardware-reset line, and works a 4-button
 door remote, all from one ESP32-S3-N16R8 module plugged into a custom 2-layer
 PCB.
-
-### Why would I put myself through the suffering
-
-I needed my PC online at all time, because sometime at school or work I need to remote
-control the PC back at home. And as I measured, the idle time alone costs me ~40KWh (~7usd) per month.
-So, I built this for 30usd instead of buying a boring and expensive IP KVM, while adding a tons more
-features to fit my over-engineering stuffs hobby.
 
 ### The board
 
