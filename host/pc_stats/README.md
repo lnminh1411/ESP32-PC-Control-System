@@ -46,6 +46,8 @@ key = <hardware> | <sensor type> | <sensor name> [| first|avg|sum|max|min]
 key = @uptime                                (PC uptime in seconds via GetTickCount64)
 key = @drive <letter>: used|free|total|load  (GB, load = used %, via DriveInfo)
 key = @cpu_mhz                               (Task Manager's CPU speed, free)
+key = @ecore_load                            (average % Processor Utility on E-cores)
+key = @proc_mb <name>                        (summed WorkingSet64 in MB, 0 if none)
 key = @counter <category> | <counter> | <instance> [| scale]   (Windows perf counter)
 @interval <ms>                               (sample interval, 200-10000, default 500)
 @every <hardware> <ms>                       (update slow hardware at most every ms)
@@ -56,7 +58,9 @@ key = @counter <category> | <counter> | <instance> [| scale]   (Windows perf cou
 - `<sensor type>`: `SensorType` enum name (`Temperature`, `Load`, `Clock`, `Fan`, `Data`, `SmallData`, `Throughput`, ...).
 - `<sensor name>`: Sensor name from LibreHardwareMonitor. Supports `*` wildcards.
 - Reduction (`first|avg|sum|max|min`): Defaults to `first`. Empty/null sensor readings are skipped.
-- `@source <name> <url> <ms>`: Spawns a background thread to poll an HTTP endpoint returning `key=value` lines (e.g. `@source ai http://127.0.0.1:8080/_gate/ai/flat 1000`). Numeric values join the `@s` stream; text values stream as `@t` lines. Generates `<name>.ok` (1 if updated within 3 x interval, 0 on timeout/error, dropping other source keys when down).
+- `@ecore_load`: Average "% Processor Utility" across E-core logical processors identified via `GetSystemCpuSetInformation` (lowest `EfficiencyClass` on hybrid CPUs; falls back to overall CPU load on non-hybrid CPUs). Counters created once at startup.
+- `@proc_mb <name>`: Summed working set (`WorkingSet64`) in MB across all running processes matching `<name>` (e.g. `@proc_mb llama-server`), or `0` if none are running.
+- `@source <name> <url> <ms>`: Spawns a background thread to poll an HTTP or `file:///` endpoint returning `key=value` lines (e.g. `@source media file:///C:/ProgramData/ESP32PcStats/media.txt 1000`). Numeric values join the `@s` stream; text values stream as `@t` lines. Generates `<name>.ok` (1 if updated within 3 x interval, 0 on timeout/error, dropping other source keys when down).
 - Run `esp32-pcstats.exe --list` to inspect the exact hardware type/name and sensor names available on your system.
 
 ## Claude Usage
@@ -130,6 +134,41 @@ The companion helper `esp32-agyquota.exe` runs in the user's interactive session
   - `agyN.flash_reset_at`: Local time of Flash reset (`ddd HH:mm`, InvariantCulture) (`@t`)
   - `agyN.flash_name`: Flash family display name (`@t`)
   - `agyN.pro_pct`, `agyN.pro_reset_s`, `agyN.pro_reset_at`, `agyN.pro_name`: Same metrics for Pro family
+
+## Media Playback & Cover Art
+
+The companion helper `esp32-agyquota.exe` runs in the user's interactive session (session 1+) and polls `GlobalSystemMediaTransportControlsSessionManager` every 1 second to read active media sessions (Spotify, browsers, media players). It writes `C:\ProgramData\ESP32PcStats\media.txt` and cover art `C:\ProgramData\ESP32PcStats\media_art.bin` atomically.
+
+The service polls `media.txt` via:
+```ini
+@source media file:///C:/ProgramData/ESP32PcStats/media.txt 1000
+```
+
+### Keys Streamed
+- **Numeric stats (`@s`)**:
+  - `media.ok`: `1` if an active media session exists, else `0` (other media keys omitted when `0`)
+  - `media.playing`: `1` if playback is active, `0` if paused or stopped
+  - `media.pos_s`: Playback position in seconds (extrapolated from `TimelineProperties.LastUpdatedTime` while playing)
+  - `media.len_s`: Track duration in seconds
+  - `media.art_id`: CRC32 of the 144x144 RGB565 cover art as an unsigned decimal (`0` = no art)
+- **Text stats (`@t`)**:
+  - `media.title`: Track title (one line, <= 80 chars)
+  - `media.artist`: Artist name (one line, <= 80 chars)
+  - `media.album`: Album name (one line, <= 80 chars)
+  - `media.source`: Friendly app name (`Spotify`, `Chrome`, `Edge`, `Firefox`, `Brave`, `Opera`, `Vivaldi`, `VLC`, `foobar2000`, or executable / AUMID tail)
+
+### Cover Art Push Protocol (`@a`)
+When `media.art_id` transitions to a non-zero value and `media_art.bin` is 41,472 bytes with matching CRC32:
+1. Cover art is center-cropped to a square, bicubic-scaled to 144x144, converted to RGB565 big-endian (2 bytes/pixel = 41,472 bytes), and Base64-encoded (55,296 characters).
+2. The service streams art across sample ticks:
+   - Header: `@a begin <id> 144 144`
+   - Data lines: `@a d <base64>` in lines of at most 160 base64 chars
+   - Terminator: `@a end <id> <crc32 as 8 hex digits>`
+3. Pushes at most 4,000 base64 chars per tick appended after the `@e` line so regular sensor streaming never stalls.
+4. If the ESP32 carrier board requests art retransmission via `!art <id>` (received over HID input report or serial), the service immediately restarts streaming that art from the beginning.
+
+### Console Testing
+Run `esp32-agyquota.exe --media` to sample media sessions for 5 seconds, print the keys to the console, and save the current cover art decoded back from the RGB565 buffer to `K:\scratch\media_art.png`.
 
 ## Wire Protocol
 

@@ -21,6 +21,11 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Web.Script.Serialization;
 using Microsoft.Win32.SafeHandles;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
+using Windows.Media.Control;
+using Windows.Storage.Streams;
 
 static class AgyQuota {
   [DllImport("kernel32.dll", SetLastError = true)]
@@ -822,6 +827,385 @@ static class AgyQuota {
     }
   }
 
+  const string MediaOutputPath = @"C:\ProgramData\ESP32PcStats\media.txt";
+  const string MediaArtPath = @"C:\ProgramData\ESP32PcStats\media_art.bin";
+
+  static uint lastArtId = 0;
+  static string lastTrackKey = null;
+  static byte[] currentArtBytes = null;
+  static uint[] crcTable;
+
+  static uint ComputeCrc32(byte[] data) {
+    if (data == null || data.Length == 0) return 0;
+    if (crcTable == null) {
+      crcTable = new uint[256];
+      for (uint i = 0; i < 256; i++) {
+        uint c = i;
+        for (int j = 0; j < 8; j++) {
+          c = (c & 1) != 0 ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
+        }
+        crcTable[i] = c;
+      }
+    }
+    uint crc = 0xFFFFFFFFu;
+    for (int i = 0; i < data.Length; i++) {
+      crc = crcTable[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
+    }
+    return crc ^ 0xFFFFFFFFu;
+  }
+
+  static T AwaitWinRt<T>(Windows.Foundation.IAsyncOperation<T> op) {
+    return System.WindowsRuntimeSystemExtensions.AsTask(op).Result;
+  }
+
+  static string CleanText(string s) {
+    if (s == null) return "";
+    return s.Replace('\r', ' ').Replace('\n', ' ').Replace('\t', ' ').Trim();
+  }
+
+  static string GetFriendlySource(string aumid) {
+    if (string.IsNullOrEmpty(aumid)) return "";
+    string lower = aumid.ToLowerInvariant();
+    if (lower.Contains("spotify")) return "Spotify";
+    if (lower.Contains("chrome")) return "Chrome";
+    if (lower.Contains("edge")) return "Edge";
+    if (lower.Contains("firefox")) return "Firefox";
+    if (lower.Contains("brave")) return "Brave";
+    if (lower.Contains("opera")) return "Opera";
+    if (lower.Contains("vivaldi")) return "Vivaldi";
+    if (lower.Contains("vlc")) return "VLC";
+    if (lower.Contains("foobar2000")) return "foobar2000";
+
+    string tail = aumid;
+    int slash = tail.LastIndexOfAny(new char[] { '\\', '/' });
+    if (slash >= 0) tail = tail.Substring(slash + 1);
+    int bang = tail.LastIndexOf('!');
+    if (bang >= 0) tail = tail.Substring(bang + 1);
+    if (tail.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+      tail = tail.Substring(0, tail.Length - 4);
+    return CleanText(tail);
+  }
+
+  static GlobalSystemMediaTransportControlsSession PickSession(GlobalSystemMediaTransportControlsSessionManager mgr) {
+    if (mgr == null) return null;
+    GlobalSystemMediaTransportControlsSession current = null;
+    try {
+      current = mgr.GetCurrentSession();
+    } catch { }
+
+    if (current != null) {
+      try {
+        var info = current.GetPlaybackInfo();
+        if (info != null && info.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing) {
+          return current;
+        }
+      } catch { }
+    }
+
+    try {
+      var sessions = mgr.GetSessions();
+      if (sessions != null) {
+        for (int i = 0; i < sessions.Count; i++) {
+          var s = sessions[i];
+          if (s == null) continue;
+          try {
+            var info = s.GetPlaybackInfo();
+            if (info != null && info.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing) {
+              return s;
+            }
+          } catch { }
+        }
+      }
+    } catch { }
+
+    return current;
+  }
+
+  static byte[] ProcessThumbnail(IRandomAccessStreamReference thumbRef) {
+    if (thumbRef == null) return null;
+    var stream = AwaitWinRt(thumbRef.OpenReadAsync());
+    if (stream == null) return null;
+    using (stream)
+    using (var netStream = System.IO.WindowsRuntimeStreamExtensions.AsStreamForRead(stream))
+    using (var img = Image.FromStream(netStream)) {
+      int crop = Math.Min(img.Width, img.Height);
+      int x = (img.Width - crop) / 2;
+      int y = (img.Height - crop) / 2;
+      using (var bmp = new Bitmap(144, 144, PixelFormat.Format24bppRgb)) {
+        using (var g = Graphics.FromImage(bmp)) {
+          g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+          g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+          g.SmoothingMode = SmoothingMode.HighQuality;
+          g.DrawImage(img, new Rectangle(0, 0, 144, 144), new Rectangle(x, y, crop, crop), GraphicsUnit.Pixel);
+        }
+        var bd = bmp.LockBits(new Rectangle(0, 0, 144, 144), ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
+        byte[] raw = new byte[bd.Stride * 144];
+        Marshal.Copy(bd.Scan0, raw, 0, raw.Length);
+        bmp.UnlockBits(bd);
+
+        byte[] rgb565 = new byte[144 * 144 * 2];
+        int dest = 0;
+        for (int row = 0; row < 144; row++) {
+          int offset = row * bd.Stride;
+          for (int col = 0; col < 144; col++) {
+            byte b = raw[offset + col * 3];
+            byte g_val = raw[offset + col * 3 + 1];
+            byte r = raw[offset + col * 3 + 2];
+            ushort val = (ushort)(((r >> 3) << 11) | ((g_val >> 2) << 5) | (b >> 3));
+            rgb565[dest++] = (byte)(val >> 8);
+            rgb565[dest++] = (byte)(val & 0xFF);
+          }
+        }
+        return rgb565;
+      }
+    }
+  }
+
+  static void WriteOutputFileBytes(string outputPath, byte[] data) {
+    string dir = Path.GetDirectoryName(outputPath);
+    if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir)) {
+      try { Directory.CreateDirectory(dir); } catch { }
+    }
+    string tempPath = outputPath + ".tmp." + Guid.NewGuid().ToString("N");
+    try {
+      File.WriteAllBytes(tempPath, data);
+      for (int i = 0; i < 5; i++) {
+        try {
+          if (File.Exists(outputPath)) {
+            try {
+              File.Replace(tempPath, outputPath, null);
+              return;
+            } catch {
+              File.Delete(outputPath);
+              File.Move(tempPath, outputPath);
+              return;
+            }
+          } else {
+            File.Move(tempPath, outputPath);
+            return;
+          }
+        } catch (Exception ex) {
+          if (i == 4) {
+            Log("WriteOutputFileBytes failed: " + ex.Message);
+          } else {
+            Thread.Sleep(50);
+          }
+        }
+      }
+    } finally {
+      if (File.Exists(tempPath)) {
+        try { File.Delete(tempPath); } catch { }
+      }
+    }
+  }
+
+  static List<string> PollMedia(GlobalSystemMediaTransportControlsSessionManager mgr) {
+    var lines = new List<string>();
+    GlobalSystemMediaTransportControlsSession session = PickSession(mgr);
+    if (session == null) {
+      lastArtId = 0;
+      lastTrackKey = null;
+      currentArtBytes = null;
+      lines.Add("media.ok=0");
+      WriteOutputFile(MediaOutputPath, lines);
+      return lines;
+    }
+
+    string source = GetFriendlySource(session.SourceAppUserModelId);
+    bool playing = false;
+    try {
+      var info = session.GetPlaybackInfo();
+      playing = info != null && info.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
+    } catch { }
+
+    string title = "";
+    string artist = "";
+    string album = "";
+    IRandomAccessStreamReference thumbRef = null;
+
+    try {
+      var mediaProps = AwaitWinRt(session.TryGetMediaPropertiesAsync());
+      if (mediaProps != null) {
+        title = CleanText(mediaProps.Title);
+        artist = CleanText(mediaProps.Artist);
+        album = CleanText(mediaProps.AlbumTitle);
+        thumbRef = mediaProps.Thumbnail;
+      }
+    } catch (Exception ex) {
+      Log("media properties error: " + ex.Message);
+    }
+
+    if (title.Length > 80) title = title.Substring(0, 80);
+    if (artist.Length > 80) artist = artist.Substring(0, 80);
+    if (album.Length > 80) album = album.Substring(0, 80);
+
+    int pos_s = 0;
+    int len_s = 0;
+    try {
+      var timeline = session.GetTimelineProperties();
+      if (timeline != null) {
+        TimeSpan pos = timeline.Position;
+        if (playing && timeline.LastUpdatedTime != DateTimeOffset.MinValue) {
+          TimeSpan elapsed = DateTimeOffset.UtcNow - timeline.LastUpdatedTime;
+          if (elapsed > TimeSpan.Zero) {
+            pos = pos + elapsed;
+          }
+        }
+        if (pos < TimeSpan.Zero) pos = TimeSpan.Zero;
+        if (timeline.EndTime > TimeSpan.Zero && pos > timeline.EndTime) pos = timeline.EndTime;
+
+        pos_s = (int)pos.TotalSeconds;
+        len_s = (int)timeline.EndTime.TotalSeconds;
+        if (pos_s < 0) pos_s = 0;
+        if (len_s < 0) len_s = 0;
+      }
+    } catch (Exception ex) {
+      Log("media timeline error: " + ex.Message);
+    }
+
+    string trackKey = source + "|" + title + "|" + artist + "|" + album;
+    bool trackChanged = (trackKey != lastTrackKey);
+
+    if (thumbRef == null) {
+      lastArtId = 0;
+      currentArtBytes = null;
+      lastTrackKey = trackKey;
+    } else if (trackChanged || lastArtId == 0) {
+      lastTrackKey = trackKey;
+      try {
+        byte[] rgb565 = ProcessThumbnail(thumbRef);
+        if (rgb565 != null && rgb565.Length == 41472) {
+          uint crc = ComputeCrc32(rgb565);
+          if (crc != 0) {
+            if (crc != lastArtId || !File.Exists(MediaArtPath)) {
+              WriteOutputFileBytes(MediaArtPath, rgb565);
+            }
+            lastArtId = crc;
+            currentArtBytes = rgb565;
+          }
+        }
+      } catch (Exception ex) {
+        Log("media thumbnail process error: " + ex.Message);
+      }
+    }
+
+    lines.Add("media.ok=1");
+    lines.Add("media.playing=" + (playing ? "1" : "0"));
+    lines.Add("media.title=" + title);
+    lines.Add("media.artist=" + artist);
+    lines.Add("media.album=" + album);
+    lines.Add("media.source=" + source);
+    lines.Add("media.pos_s=" + pos_s);
+    lines.Add("media.len_s=" + len_s);
+    lines.Add("media.art_id=" + lastArtId.ToString(CultureInfo.InvariantCulture));
+
+    WriteOutputFile(MediaOutputPath, lines);
+    return lines;
+  }
+
+  static void SaveCurrentArtToPng(string pngPath) {
+    byte[] rgb565 = currentArtBytes;
+    if (rgb565 == null || rgb565.Length != 41472) {
+      if (File.Exists(MediaArtPath)) {
+        try {
+          byte[] disk = File.ReadAllBytes(MediaArtPath);
+          if (disk.Length == 41472) rgb565 = disk;
+        } catch { }
+      }
+    }
+    if (rgb565 == null || rgb565.Length != 41472) {
+      rgb565 = new byte[41472];
+    }
+
+    try {
+      string dir = Path.GetDirectoryName(pngPath);
+      if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir)) {
+        try { Directory.CreateDirectory(dir); } catch { }
+      }
+      using (var bmp = new Bitmap(144, 144, PixelFormat.Format24bppRgb)) {
+        var bd = bmp.LockBits(new Rectangle(0, 0, 144, 144), ImageLockMode.WriteOnly, PixelFormat.Format24bppRgb);
+        byte[] raw = new byte[bd.Stride * 144];
+        int src = 0;
+        for (int row = 0; row < 144; row++) {
+          int offset = row * bd.Stride;
+          for (int col = 0; col < 144; col++) {
+            ushort val = (ushort)((rgb565[src] << 8) | rgb565[src + 1]);
+            src += 2;
+            int r5 = (val >> 11) & 0x1F;
+            int g6 = (val >> 5) & 0x3F;
+            int b5 = val & 0x1F;
+            raw[offset + col * 3] = (byte)((b5 * 527 + 23) >> 6);
+            raw[offset + col * 3 + 1] = (byte)((g6 * 259 + 33) >> 6);
+            raw[offset + col * 3 + 2] = (byte)((r5 * 527 + 23) >> 6);
+          }
+        }
+        Marshal.Copy(raw, 0, bd.Scan0, raw.Length);
+        bmp.UnlockBits(bd);
+        bmp.Save(pngPath, ImageFormat.Png);
+      }
+    } catch (Exception ex) {
+      Log("SaveCurrentArtToPng error: " + ex.Message);
+    }
+  }
+
+  static void RunMediaTest() {
+    AttachConsole(ATTACH_PARENT_PROCESS);
+    IntPtr stdHandle = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (stdHandle != IntPtr.Zero && stdHandle.ToInt64() != -1) {
+      SafeFileHandle safeHandle = new SafeFileHandle(stdHandle, false);
+      FileStream fs = new FileStream(safeHandle, FileAccess.Write);
+      StreamWriter writer = new StreamWriter(fs, Console.OutputEncoding);
+      writer.AutoFlush = true;
+      Console.SetOut(writer);
+    }
+
+    GlobalSystemMediaTransportControlsSessionManager mgr = null;
+    try {
+      mgr = AwaitWinRt(GlobalSystemMediaTransportControlsSessionManager.RequestAsync());
+    } catch (Exception ex) {
+      Log("RunMediaTest RequestAsync error: " + ex.Message);
+    }
+
+    for (int step = 0; step < 5; step++) {
+      DateTime t0 = DateTime.UtcNow;
+      if (mgr == null) {
+        try {
+          mgr = AwaitWinRt(GlobalSystemMediaTransportControlsSessionManager.RequestAsync());
+        } catch { }
+      }
+      List<string> lines = PollMedia(mgr);
+      for (int i = 0; i < lines.Count; i++) {
+        Console.WriteLine(lines[i]);
+      }
+      SaveCurrentArtToPng(@"K:\scratch\media_art.png");
+      if (step < 4) {
+        int elapsed = (int)(DateTime.UtcNow - t0).TotalMilliseconds;
+        int wait = 1000 - elapsed;
+        if (wait > 0) Thread.Sleep(wait);
+      }
+    }
+  }
+
+  static void MediaLoop() {
+    GlobalSystemMediaTransportControlsSessionManager mgr = null;
+    while (true) {
+      DateTime t0 = DateTime.UtcNow;
+      try {
+        if (mgr == null) {
+          mgr = AwaitWinRt(GlobalSystemMediaTransportControlsSessionManager.RequestAsync());
+        }
+        PollMedia(mgr);
+      } catch (Exception ex) {
+        Log("media error: " + ex.Message);
+        mgr = null;
+      }
+      int elapsed = (int)(DateTime.UtcNow - t0).TotalMilliseconds;
+      int wait = 1000 - elapsed;
+      if (wait < 100) wait = 100;
+      Thread.Sleep(wait);
+    }
+  }
+
   static void RunOnce(string configPath) {
     AttachConsole(ATTACH_PARENT_PROCESS);
     IntPtr stdHandle = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -836,6 +1220,9 @@ static class AgyQuota {
     ConfigData cfg = LoadConfig(configPath);
     Dictionary<string, AccountState> accountsData = new Dictionary<string, AccountState>(StringComparer.OrdinalIgnoreCase);
     ReloadPreviousFile(cfg.OutputPath, cfg.Accounts, accountsData);
+
+    Thread mediaThread = new Thread(MediaLoop) { IsBackground = true, Name = "esp32_media" };
+    mediaThread.Start();
 
     int liveClients = 0;
     try {
@@ -911,11 +1298,21 @@ static class AgyQuota {
   [STAThread]
   static void Main(string[] args) {
     bool once = false;
+    bool media = false;
     for (int i = 0; i < args.Length; i++) {
       if (string.Equals(args[i], "--once", StringComparison.OrdinalIgnoreCase)) {
         once = true;
         break;
       }
+      if (string.Equals(args[i], "--media", StringComparison.OrdinalIgnoreCase)) {
+        media = true;
+        break;
+      }
+    }
+
+    if (media) {
+      RunMediaTest();
+      return;
     }
 
     string exeDir = AppDomain.CurrentDomain.BaseDirectory;

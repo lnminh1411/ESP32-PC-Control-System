@@ -232,7 +232,7 @@ class PcStats : ServiceBase {
           if (!serialDropping) {
             string line = serialBuf.ToString().TrimEnd('\r');
             if (line.Length > 0 && line.StartsWith("!")) {
-              HandlePowerLine(line);
+              HandleBoardLine(line);
             }
           }
           serialDropping = false;
@@ -346,7 +346,7 @@ class PcStats : ServiceBase {
               if (!dropping) {
                 string line = lineBuf.ToString().TrimEnd('\r');
                 if (line.Length > 0) {
-                  HandlePowerLine(line);
+                  HandleBoardLine(line);
                 }
               }
               dropping = false;
@@ -452,6 +452,29 @@ class PcStats : ServiceBase {
   static string currentMac = "";
   static string currentMacIf = "";
   static DateTime nextMacRefreshUtc = DateTime.MinValue;
+
+  static void HandleBoardLine(string line) {
+    if (string.IsNullOrEmpty(line)) return;
+    line = line.Trim();
+    if (line.StartsWith("!art", StringComparison.OrdinalIgnoreCase)) {
+      HandleArtLine(line);
+    } else if (line.StartsWith("!power", StringComparison.OrdinalIgnoreCase)) {
+      HandlePowerLine(line);
+    } else {
+      Log("board: unrecognized line '" + line + "'");
+    }
+  }
+
+  static void HandleArtLine(string line) {
+    Match m = Regex.Match(line, @"^!art\s+([0-9a-zA-Z]+)$");
+    if (!m.Success) {
+      Log("art: unrecognized command '" + line + "'");
+      return;
+    }
+    string id = m.Groups[1].Value;
+    Log("art: resend requested for id " + id);
+    TriggerArtResend(id);
+  }
 
   static void HandlePowerLine(string line) {
     if (line == null) return;
@@ -940,7 +963,7 @@ class PcStats : ServiceBase {
   Thread worker;
   volatile bool stop;
 
-  enum StatKind { Sensor, Uptime, Drive, Counter, CpuMhz }
+  enum StatKind { Sensor, Uptime, Drive, Counter, CpuMhz, EcoreLoad, ProcMb }
 
   class StatRule {
     public string Key;
@@ -957,6 +980,10 @@ class PcStats : ServiceBase {
     // Windows performance counter rule (@counter, @cpu_mhz)
     public System.Diagnostics.PerformanceCounter Counter;
     public float Scale = 1;
+    // E-core load rule (@ecore_load)
+    public List<System.Diagnostics.PerformanceCounter> EcoreCounters;
+    // Process working set rule (@proc_mb)
+    public string ProcessName;
   }
 
   class HttpSource {
@@ -966,7 +993,7 @@ class PcStats : ServiceBase {
     public Thread Worker;
     public volatile bool Stop;
     public readonly object Lock = new object();
-    public Dictionary<string, float> Numbers = new Dictionary<string, float>();
+    public Dictionary<string, double> Numbers = new Dictionary<string, double>();
     public Dictionary<string, string> Texts = new Dictionary<string, string>();
     public DateTime LastSuccessUtc = DateTime.MinValue;
     WebRequest currentRequest;
@@ -1002,7 +1029,7 @@ class PcStats : ServiceBase {
           using (WebResponse resp = req.GetResponse())
           using (Stream stream = resp.GetResponseStream())
           using (StreamReader reader = new StreamReader(stream, Encoding.UTF8)) {
-            var newNumbers = new Dictionary<string, float>();
+            var newNumbers = new Dictionary<string, double>();
             var newTexts = new Dictionary<string, string>();
             string line;
             while ((line = reader.ReadLine()) != null) {
@@ -1017,8 +1044,8 @@ class PcStats : ServiceBase {
               if (k.Length == 0 || k.Length > 23 || !Regex.IsMatch(k, @"^[a-z0-9_.]+$", RegexOptions.IgnoreCase))
                 continue;
 
-              float num;
-              if (float.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out num) && !float.IsNaN(num) && !float.IsInfinity(num)) {
+              double num;
+              if (double.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out num) && !double.IsNaN(num) && !double.IsInfinity(num)) {
                 newNumbers[k] = num;
               } else {
                 string text = CleanText(v);
@@ -2073,6 +2100,191 @@ class PcStats : ServiceBase {
     return Regex.IsMatch(input, regexPattern, RegexOptions.IgnoreCase);
   }
 
+  // Cover art transfer
+  class ArtTransfer {
+    public string Id;
+    public string CrcHex;
+    public string Base64;
+    public int CharsSent;
+    public bool SentBegin;
+    public bool Done;
+  }
+
+  static readonly object artLock = new object();
+  static ArtTransfer activeArtTransfer = null;
+  static string lastReceivedArtId = null;
+  static string requestedResendArtId = null;
+  static uint[] crcTable;
+
+  static uint ComputeCrc32(byte[] data) {
+    if (data == null || data.Length == 0) return 0;
+    if (crcTable == null) {
+      crcTable = new uint[256];
+      for (uint i = 0; i < 256; i++) {
+        uint c = i;
+        for (int j = 0; j < 8; j++) {
+          c = (c & 1) != 0 ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
+        }
+        crcTable[i] = c;
+      }
+    }
+    uint crc = 0xFFFFFFFFu;
+    for (int i = 0; i < data.Length; i++) {
+      crc = crcTable[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
+    }
+    return crc ^ 0xFFFFFFFFu;
+  }
+
+  static void TriggerArtResend(string id) {
+    lock (artLock) {
+      requestedResendArtId = id;
+    }
+  }
+
+  static void CheckArtUpdate(string currentArtId) {
+    lock (artLock) {
+      bool trigger = false;
+      string targetId = null;
+
+      if (!string.IsNullOrEmpty(requestedResendArtId)) {
+        trigger = true;
+        targetId = requestedResendArtId;
+        requestedResendArtId = null;
+      } else if (!string.IsNullOrEmpty(currentArtId) && currentArtId != "0" && currentArtId != lastReceivedArtId) {
+        trigger = true;
+        targetId = currentArtId;
+      }
+
+      if (!string.IsNullOrEmpty(currentArtId)) {
+        lastReceivedArtId = currentArtId;
+      }
+
+      if (trigger && !string.IsNullOrEmpty(targetId) && targetId != "0") {
+        string artPath = @"C:\ProgramData\ESP32PcStats\media_art.bin";
+        if (File.Exists(artPath)) {
+          try {
+            FileInfo fi = new FileInfo(artPath);
+            if (fi.Length == 41472) {
+              byte[] bytes = File.ReadAllBytes(artPath);
+              if (bytes.Length == 41472) {
+                uint crc = ComputeCrc32(bytes);
+                string crcDec = crc.ToString(CultureInfo.InvariantCulture);
+                if (crcDec == targetId || crc.ToString("x8").Equals(targetId, StringComparison.OrdinalIgnoreCase)) {
+                  activeArtTransfer = new ArtTransfer {
+                    Id = targetId,
+                    CrcHex = crc.ToString("x8"),
+                    Base64 = Convert.ToBase64String(bytes),
+                    CharsSent = 0,
+                    SentBegin = false,
+                    Done = false
+                  };
+                }
+              }
+            }
+          } catch (Exception ex) {
+            Log("art read error: " + ex.Message);
+          }
+        }
+      }
+    }
+  }
+
+  static void AppendArtChunk(StringBuilder sb) {
+    lock (artLock) {
+      if (activeArtTransfer == null || activeArtTransfer.Done) return;
+
+      if (!activeArtTransfer.SentBegin) {
+        sb.Append("@a begin ").Append(activeArtTransfer.Id).Append(" 144 144\n");
+        activeArtTransfer.SentBegin = true;
+      }
+
+      int charsThisTick = 0;
+      while (activeArtTransfer.CharsSent < activeArtTransfer.Base64.Length && charsThisTick < 4000) {
+        int take = Math.Min(160, Math.Min(activeArtTransfer.Base64.Length - activeArtTransfer.CharsSent, 4000 - charsThisTick));
+        string chunk = activeArtTransfer.Base64.Substring(activeArtTransfer.CharsSent, take);
+        sb.Append("@a d ").Append(chunk).Append('\n');
+        activeArtTransfer.CharsSent += take;
+        charsThisTick += take;
+      }
+
+      if (activeArtTransfer.CharsSent >= activeArtTransfer.Base64.Length) {
+        sb.Append("@a end ").Append(activeArtTransfer.Id).Append(' ').Append(activeArtTransfer.CrcHex).Append('\n');
+        activeArtTransfer.Done = true;
+      }
+    }
+  }
+
+  [DllImport("kernel32.dll", SetLastError = true)]
+  static extern bool GetSystemCpuSetInformation(
+      IntPtr Information,
+      uint BufferLength,
+      out uint ReturnedLength,
+      IntPtr Process,
+      uint Flags);
+
+  struct CpuSetEntry {
+    public ushort Group;
+    public byte LogicalIndex;
+    public byte EfficiencyClass;
+  }
+
+  static List<System.Diagnostics.PerformanceCounter> InitEcoreCounters() {
+    var list = new List<System.Diagnostics.PerformanceCounter>();
+    var entries = new List<CpuSetEntry>();
+    try {
+      uint len = 0;
+      GetSystemCpuSetInformation(IntPtr.Zero, 0, out len, IntPtr.Zero, 0);
+      if (len > 0) {
+        IntPtr buf = Marshal.AllocHGlobal((int)len);
+        try {
+          if (GetSystemCpuSetInformation(buf, len, out len, IntPtr.Zero, 0)) {
+            int offset = 0;
+            while (offset < len) {
+              uint size = (uint)Marshal.ReadInt32(buf, offset);
+              int type = Marshal.ReadInt32(buf, offset + 4);
+              if (type == 0) { // CpuSetInformation
+                ushort grp = (ushort)Marshal.ReadInt16(buf, offset + 12);
+                byte logicalIdx = Marshal.ReadByte(buf, offset + 14);
+                byte effClass = Marshal.ReadByte(buf, offset + 18);
+                entries.Add(new CpuSetEntry { Group = grp, LogicalIndex = logicalIdx, EfficiencyClass = effClass });
+              }
+              if (size == 0) break;
+              offset += (int)size;
+            }
+          }
+        } finally {
+          Marshal.FreeHGlobal(buf);
+        }
+      }
+    } catch (Exception ex) {
+      Log("GetSystemCpuSetInformation error: " + ex.Message);
+    }
+
+    byte minEff = 255;
+    byte maxEff = 0;
+    for (int i = 0; i < entries.Count; i++) {
+      if (entries[i].EfficiencyClass < minEff) minEff = entries[i].EfficiencyClass;
+      if (entries[i].EfficiencyClass > maxEff) maxEff = entries[i].EfficiencyClass;
+    }
+
+    if (entries.Count > 0 && minEff < maxEff) {
+      for (int i = 0; i < entries.Count; i++) {
+        if (entries[i].EfficiencyClass == minEff) {
+          string inst = entries[i].Group + "," + entries[i].LogicalIndex;
+          var c = OpenCounter("Processor Information", "% Processor Utility", inst);
+          if (c != null) list.Add(c);
+        }
+      }
+    }
+
+    if (list.Count == 0) {
+      var c = OpenCounter("Processor Information", "% Processor Utility", "_Total");
+      if (c != null) list.Add(c);
+    }
+
+    return list;
+  }
+
   static List<StatRule> LoadRules(string path, List<HttpSource> sources, ref ClaudeSource claudeSource) {
     var list = new List<StatRule>();
     everyRules.Clear();
@@ -2152,6 +2364,22 @@ class PcStats : ServiceBase {
         var r = new StatRule();
         r.Key = key;
         r.Kind = StatKind.Uptime;
+        list.Add(r);
+      } else if (string.Equals(valPart, "@ecore_load", StringComparison.OrdinalIgnoreCase)) {
+        var r = new StatRule();
+        r.Key = key;
+        r.Kind = StatKind.EcoreLoad;
+        r.EcoreCounters = InitEcoreCounters();
+        list.Add(r);
+      } else if (valPart.StartsWith("@proc_mb", StringComparison.OrdinalIgnoreCase)) {
+        string procName = valPart.Substring(8).Trim();
+        if (procName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) {
+          procName = procName.Substring(0, procName.Length - 4);
+        }
+        var r = new StatRule();
+        r.Key = key;
+        r.Kind = StatKind.ProcMb;
+        r.ProcessName = procName;
         list.Add(r);
       } else if (string.Equals(valPart, "@cpu_mhz", StringComparison.OrdinalIgnoreCase)) {
         // Task Manager's "Speed": base clock x % Processor Performance. Free,
@@ -2310,6 +2538,35 @@ class PcStats : ServiceBase {
   static double? EvalStat(StatRule r) {
     if (r.Kind == StatKind.Uptime) {
       return (double)(GetTickCount64() / 1000);   // whole seconds
+    }
+    if (r.Kind == StatKind.EcoreLoad) {
+      if (r.EcoreCounters == null || r.EcoreCounters.Count == 0) return null;
+      double sum = 0;
+      int count = 0;
+      for (int i = 0; i < r.EcoreCounters.Count; i++) {
+        try {
+          sum += r.EcoreCounters[i].NextValue();
+          count++;
+        } catch { }
+      }
+      return count > 0 ? (double?)(sum / count) : null;
+    }
+    if (r.Kind == StatKind.ProcMb) {
+      if (string.IsNullOrEmpty(r.ProcessName)) return 0.0;
+      try {
+        System.Diagnostics.Process[] procs = System.Diagnostics.Process.GetProcessesByName(r.ProcessName);
+        long totalBytes = 0;
+        for (int j = 0; j < procs.Length; j++) {
+          using (System.Diagnostics.Process p = procs[j]) {
+            try {
+              totalBytes += p.WorkingSet64;
+            } catch { }
+          }
+        }
+        return (double)(totalBytes / (1024.0 * 1024.0));
+      } catch {
+        return 0.0;
+      }
     }
     if (r.Kind == StatKind.Counter || r.Kind == StatKind.CpuMhz) {
       if (r.Counter == null) return null;
@@ -2561,33 +2818,48 @@ class PcStats : ServiceBase {
 
         // Evaluate sources
         var texts = new List<KeyValuePair<string, string>>();
+        string currentArtId = null;
         if (sources != null) {
           for (int i = 0; i < sources.Count; i++) {
             HttpSource src = sources[i];
             bool ok = false;
-            Dictionary<string, float> numCopy = null;
+            Dictionary<string, double> numCopy = null;
             Dictionary<string, string> textCopy = null;
 
             lock (src.Lock) {
               if (src.LastSuccessUtc != DateTime.MinValue &&
                   (DateTime.UtcNow - src.LastSuccessUtc).TotalMilliseconds <= (3 * src.IntervalMs)) {
                 ok = true;
-                numCopy = new Dictionary<string, float>(src.Numbers);
+                numCopy = new Dictionary<string, double>(src.Numbers);
                 textCopy = new Dictionary<string, string>(src.Texts);
               }
             }
 
             tokens.Add(src.Name + ".ok=" + (ok ? "1" : "0"));
             if (ok) {
-              foreach (KeyValuePair<string, float> kv in numCopy) {
+              foreach (KeyValuePair<string, double> kv in numCopy) {
+                if (string.Equals(kv.Key, src.Name + ".ok", StringComparison.OrdinalIgnoreCase)) continue;
                 tokens.Add(kv.Key + "=" + Fmt(kv.Value));
               }
               foreach (KeyValuePair<string, string> kv in textCopy) {
                 texts.Add(kv);
               }
+              if (src.Name == "media") {
+                double aidNum;
+                if (numCopy.TryGetValue("media.art_id", out aidNum)) {
+                  currentArtId = Fmt(aidNum);
+                } else {
+                  string aidStr;
+                  if (textCopy.TryGetValue("media.art_id", out aidStr)) {
+                    currentArtId = aidStr;
+                  }
+                }
+              }
             }
           }
         }
+
+        CheckArtUpdate(currentArtId);
 
         // Evaluate Claude source
         if (claudeSource != null) {
@@ -2623,6 +2895,9 @@ class PcStats : ServiceBase {
 
         tokens.Add("pc.going_id=" + curGoingId);
         tokens.Add("pc.update_pending=" + (updatePending ? "1" : "0"));
+        // wall clock for the board (it keeps counting while the PC is off)
+        tokens.Add("pc.epoch=" + ((long)(DateTime.UtcNow - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalSeconds).ToString(CultureInfo.InvariantCulture));
+        tokens.Add("pc.tz_min=" + ((int)TimeZoneInfo.Local.GetUtcOffset(DateTime.Now).TotalMinutes).ToString(CultureInfo.InvariantCulture));
 
         texts.Add(new KeyValuePair<string, string>("pc.going", curGoingKind));
         texts.Add(new KeyValuePair<string, string>("pc.going_by", curGoingBy));
@@ -2668,6 +2943,7 @@ class PcStats : ServiceBase {
               sb.Append("@t ").Append(texts[i].Key).Append(' ').Append(texts[i].Value).Append('\n');
             }
             sb.Append("@e ").Append(seq++).Append('\n');
+            AppendArtChunk(sb);
             link.Write(sb.ToString());
             lock (powerLock) {
               if (scheduledAction != null && scheduledActionTimeUtc == DateTime.MinValue && currentAckValue != null) {

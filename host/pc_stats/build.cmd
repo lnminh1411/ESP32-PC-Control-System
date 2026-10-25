@@ -26,8 +26,29 @@ if not exist build mkdir build
 copy /y vendor\lhwm-wrapper.dll build\ >nul
 echo OK: build\esp32-pcstats.exe
 
+set "WINMD="
+set "KITS=%ProgramFiles(x86)%\Windows Kits\10\UnionMetadata"
+if not exist "%KITS%" goto :fallback_winmd
+pushd "%KITS%"
+for /f "delims=" %%d in ('dir /b /ad /o-n 10.* 2^>nul') do (
+  if not defined WINMD (
+    if exist "%%d\Windows.winmd" (
+      set WINMD="/r:%%~fd\Windows.winmd"
+    )
+  )
+)
+popd
+
+:fallback_winmd
+if not defined WINMD (
+  set WINMD="/r:%WINDIR%\System32\WinMetadata\Windows.Media.winmd" "/r:%WINDIR%\System32\WinMetadata\Windows.Foundation.winmd" "/r:%WINDIR%\System32\WinMetadata\Windows.Storage.winmd"
+)
+
 "%CSC%" /nologo /optimize+ /platform:x64 /target:winexe /out:build\esp32-agyquota.exe ^
-  /r:System.Management.dll /r:System.Web.Extensions.dll ^
+  /r:System.Management.dll /r:System.Web.Extensions.dll /r:System.Drawing.dll ^
+  /r:"%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\System.Runtime.WindowsRuntime.dll" ^
+  /r:"%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\System.Runtime.dll" ^
+  %WINMD% ^
   AgyQuota.cs || goto :fail
 echo OK: build\esp32-agyquota.exe
 
