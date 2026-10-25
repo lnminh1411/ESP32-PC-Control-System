@@ -234,7 +234,17 @@ void netInit() {
   logMsg("wifi: joining %s", WIFI_SSID);
 }
 
+static volatile int rssiCached;
+
 void netPoll() {
+  // RSSI read here, on the main loop, every 5 s: asking the Wi-Fi driver from
+  // other tasks (the Discord panel) collides with it ("failed to get wifi thread sem")
+  static uint32_t lastRssiMs;
+  if (netUp() && nowMs() - lastRssiMs >= 5000) {
+    lastRssiMs = nowMs();
+    wifi_ap_record_t ap;
+    if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) rssiCached = ap.rssi;
+  }
   if (nowMs() >= 120000) {
     markAppValidOnce();
   }
@@ -253,6 +263,7 @@ void netPoll() {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.stack_size = 8192;
     config.lru_purge_enable = true;
+    config.max_open_sockets = 3;   // OTA and layout uploads, one at a time: leave sockets for TLS clients
     if (httpd_start(&otaServer, &config) == ESP_OK) {
       httpd_uri_t get_root = {
         .uri = "/",
@@ -287,10 +298,5 @@ bool netUp() { return ip[0] != 0; }
 const char *netIp() { return ip; }
 
 int netRssi() {
-  if (!netUp()) return 0;
-  wifi_ap_record_t ap;
-  if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
-    return ap.rssi;
-  }
-  return 0;
+  return netUp() ? rssiCached : 0;
 }

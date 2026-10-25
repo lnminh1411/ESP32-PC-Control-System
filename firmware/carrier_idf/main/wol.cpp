@@ -6,10 +6,12 @@
 #include <lwip/sockets.h>
 #include <nvs.h>
 #include <nvs_flash.h>
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "config.h"
+#include "secrets_or_example.h"
 #include "log.h"
 #include "net.h"
 #include "pcstats.h"
@@ -47,6 +49,13 @@ static void saveMacToNvs(const uint8_t mac[6]) {
 }
 
 void wolInit() {
+  if (WOL_MAC[0] && parseMac(WOL_MAC, s_mac)) {   // from secrets.h; a MAC learned from the PC replaces it
+    s_macValid = true;
+    snprintf(s_macStr, sizeof(s_macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
+             s_mac[0], s_mac[1], s_mac[2], s_mac[3], s_mac[4], s_mac[5]);
+  } else if (WOL_MAC[0]) {
+    logMsg("wol: WOL_MAC in secrets.h is not AA:BB:CC:DD:EE:FF; ignored");
+  }
   nvs_handle_t h;
   if (nvs_open("wol", NVS_READONLY, &h) == ESP_OK) {
     size_t len = 6;
@@ -111,7 +120,11 @@ const char *wolSend() {
   }
 
   int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
-  if (sock < 0) return "socket failed";
+  if (sock < 0) {
+    static char err[40];
+    snprintf(err, sizeof err, "socket failed (errno %d)", errno);
+    return err;
+  }
 
   int opt = 1;
   setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &opt, sizeof(opt));
@@ -143,6 +156,12 @@ const char *wolSend() {
       sendto(sock, packet, sizeof(packet), 0, (struct sockaddr *)&dest, sizeof(dest));
 
       dest.sin_port = htons(7);
+      sendto(sock, packet, sizeof(packet), 0, (struct sockaddr *)&dest, sizeof(dest));
+    }
+
+    // 3. WOL_TARGET from secrets.h (a router that forwards it, or another subnet)
+    if (WOL_TARGET[0] && inet_aton(WOL_TARGET, &dest.sin_addr)) {
+      dest.sin_port = htons(WOL_PORT);
       sendto(sock, packet, sizeof(packet), 0, (struct sockaddr *)&dest, sizeof(dest));
     }
   }

@@ -34,6 +34,13 @@
 #define PUSHOVER_TOKEN  ""
 #define PUSHOVER_USER   ""
 
+// Wake-on-LAN. The PC stats service reports the PC's MAC by itself; WOL_MAC
+// is used until it has (fresh board, or the PC was never on with the service).
+// WOL_TARGET: extra address to send the magic packet to, e.g. a router that
+// forwards it ("192.168.1.255" or a public IP); empty = local broadcasts only.
+#define WOL_MAC         ""   // "AA:BB:CC:DD:EE:FF"
+#define WOL_TARGET      ""
+
 // Weather home location, "lat,lon" or "lat,lon,name" (e.g. "21.0285,105.8542,Home").
 // Applied at every boot; empty = use the one set with `weather home <lat>,<lon> [name]`.
 #define WEATHER_HOME    ""

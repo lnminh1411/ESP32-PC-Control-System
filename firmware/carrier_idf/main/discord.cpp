@@ -210,6 +210,8 @@ static int rest(const char *method, const char *path, const char *body, char *ou
     cfg.event_handler = httpEventHandler;
     cfg.user_data = &respBuf;
     cfg.timeout_ms = 10000;
+    cfg.buffer_size = 2048;      // Discord's response headers
+    cfg.buffer_size_tx = 1536;   // request line with an interaction token, plus headers
     client = esp_http_client_init(&cfg);
     if (!client) {
       if (mtx) xSemaphoreGive(mtx);

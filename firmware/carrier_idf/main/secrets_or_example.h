@@ -37,6 +37,12 @@
 #ifndef PUSHOVER_USER
 #define PUSHOVER_USER ""
 #endif
+#ifndef WOL_MAC
+#define WOL_MAC ""
+#endif
+#ifndef WOL_TARGET
+#define WOL_TARGET ""
+#endif
 #ifndef WEATHER_HOME
 #define WEATHER_HOME ""
 #endif
