@@ -415,7 +415,7 @@ static const Command COMMANDS[] = {
   {"pcsim",   "<on|off|auto>  (test: pretend the PC is on/off)", cmdPcSim},
   {"perf",    "",                                             cmdPerf},
   {"socks",   "",                                             cmdSocks},
-  {"bench",   "[all|cpu|mem|flash|spi|usb <KB>]",             benchCommand},
+  {"bench",   "[all|usage|cpu|mem|flash|spi|usb <KB>]",             benchCommand},
   {"pcstats", "[text]",                                       cmdPcStats},
   {"fps",     "[budget <20-95> | cap <1|2|3> <1-60|off>]",   cmdFps},
   {"layout",  "<show|reload|default|begin|data <b64>|end>",  cmdLayout},

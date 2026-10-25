@@ -2,16 +2,42 @@
 
 Carrier board (ESP32-S3 rev 0.2, 240 MHz, 16 MB flash, 8 MB octal PSRAM at
 80 MHz), firmware as of 2026-10-25, PC on, Wi-Fi at -27 dBm.
-Run it again with the console command `bench all` (`bench usb <KB>` for USB),
+Run it again with the console command `bench all` (`bench usage` for memory use only,
+`bench usb <KB>` for USB),
 and time Wi-Fi from the PC with
 `curl -o NUL -w "%{speed_download}\n" http://<board-ip>/bench?kb=4096`.
+
+## Usage
+
+From `bench usage` (part of `bench all`), board up ~1 min, PC on:
+
+| Memory | Used | Notes |
+|---|---|---|
+| SRAM (512 KB) | 491 KB (96%) | 183 KB static (code in IRAM, data/bss, ROM, cache); heap 328 KB with 307 KB in use, 21 KB free, largest block 10 KB; lowest free ever: under 1 KB |
+| PSRAM (8 MB) | 5152 KB (63%) | lowest free ever 2993 KB, largest free block 3008 KB |
+| Flash (16 MB) | fully partitioned | app slots 2 x 3 MB (OTA), FAT 9.8 MB, NVS 20 KB, core dump 64 KB |
+| App image | 1520 KB of 3072 KB (49%) | code 980 KB, data 459 KB |
+| FAT /ffat | 4508 KB of 9996 KB (45%) | gif.bin 4501 KB, layout.json, saved text images |
+| NVS | 195 of 630 entries | 8 namespaces |
+
+Task stacks, least ever free (bytes): main 12880, websocket 7548, weather 7440,
+httpd 6944, discord 6552, esp_timer 3084, flush 2828, wifi 2564, mdns 2296,
+TinyUSB 2124, tiT 1360, Tmr Svc 1336, led 1200, sys_evt 792, IDLE 688-696,
+ipc 500-508.
+
+Internal RAM is the tight one: its free space has dropped below 1 KB at some
+point since boot (TLS handshakes for Discord, weather and the Wi-Fi login at
+once). Allocations that must be internal fail at that moment; PSRAM has
+3 MB to spare.
+
+## Speed
 
 | Area | Test | Result |
 |---|---|---|
 | CPU | 32-bit integer multiply-add | 79 M/s (3 cycles each) |
 | CPU | float multiply-add (FPU) | 79 MFLOPS |
 | CPU | double multiply-add (software) | 3 MFLOPS |
-| SRAM | copy / write / read | 239 / 238 / 119 MB/s |
+| SRAM | copy / write / read | 239-377 / 238-738 / 119 MB/s (varies run to run with alignment) |
 | SRAM | random read | 13 ns |
 | PSRAM | copy / write / read (1 MB buffers) | 22 / 35 / 53 MB/s |
 | PSRAM | random read (1 MB span) | 504 ns |

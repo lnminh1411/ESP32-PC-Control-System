@@ -1,10 +1,15 @@
-// bench: board benchmarks, from the console (`bench [cpu|mem|flash|spi|usb <KB>|all]`)
+// bench: board benchmarks and usage, from the console
+// (`bench [all|usage|cpu|mem|flash|spi|usb <KB>]`)
 // and over Wi-Fi (GET /bench?kb=N streams N KB for the PC to time).
 // Each test runs a bounded time and yields between tests, so the watchdog
 // stays quiet; the panels freeze for the few seconds `bench all` takes.
 #include "bench.h"
 
 #include <esp_chip_info.h>
+#include <esp_image_format.h>
+#include <esp_ota_ops.h>
+#include <esp_vfs_fat.h>
+#include <nvs.h>
 #include <esp_flash.h>
 #include <esp_heap_caps.h>
 #include <esp_partition.h>
@@ -40,6 +45,82 @@ static void benchInfo() {
          (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
          (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
          (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+}
+
+static void kbLine(const char *what, size_t used, size_t total, const char *extra) {
+  logMsg("usage %-14s %7u KB used of %7u KB (%2.0f%%)%s", what, (unsigned)(used / 1024), (unsigned)(total / 1024),
+         total ? 100.0 * used / total : 0.0, extra);
+}
+
+// What is in use: RAM heaps, flash partitions, FAT, NVS, task stacks
+static void benchUsage() {
+  char extra[96];
+  // Internal SRAM: 512 KB on the S3; what the heap doesn't own is code
+  // (IRAM), static data/bss, ROM reservations and the cache
+  size_t iTotal = heap_caps_get_total_size(MALLOC_CAP_INTERNAL);
+  size_t iFree = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+  snprintf(extra, sizeof extra, " | heap %u KB, lowest free ever %u KB, largest block %u KB", (unsigned)(iTotal / 1024),
+           (unsigned)(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL) / 1024),
+           (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024));
+  kbLine("SRAM", 512 * 1024 - iFree, 512 * 1024, extra);
+  logMsg("usage   SRAM static (code, data, ROM, cache) %u KB, heap in use %u KB",
+         (unsigned)((512 * 1024 - iTotal) / 1024), (unsigned)((iTotal - iFree) / 1024));
+
+  size_t pTotal = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+  size_t pFree = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+  snprintf(extra, sizeof extra, " | lowest free ever %u KB, largest block %u KB",
+           (unsigned)(heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM) / 1024),
+           (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) / 1024));
+  kbLine("PSRAM", pTotal - pFree, pTotal, extra);
+
+  uint32_t flashSize = 0;
+  esp_flash_get_size(nullptr, &flashSize);
+  size_t parts = 0;
+  esp_partition_iterator_t it = esp_partition_find(ESP_PARTITION_TYPE_ANY, ESP_PARTITION_SUBTYPE_ANY, nullptr);
+  for (; it; it = esp_partition_next(it)) parts += esp_partition_get(it)->size;
+  esp_partition_iterator_release(it);
+  snprintf(extra, sizeof extra, " | partitioned (bootloader + table below 0x10000 not counted)");
+  kbLine("flash", parts, flashSize, extra);
+
+  const esp_partition_t *run = esp_ota_get_running_partition();
+  if (run) {
+    esp_partition_pos_t pos = {run->address, run->size};
+    esp_image_metadata_t meta = {};
+    if (esp_image_verify(ESP_IMAGE_VERIFY_SILENT, &pos, &meta) == ESP_OK) {
+      snprintf(extra, sizeof extra, " | running from %s (OTA slot, the other is the same size)", run->label);
+      kbLine("app image", meta.image_len, run->size, extra);
+    }
+  }
+
+  uint64_t fTotal = 0, fFree = 0;
+  if (esp_vfs_fat_info("/ffat", &fTotal, &fFree) == ESP_OK) {
+    FILE *f = fopen(GIF_FILE, "rb");
+    long gifLen = 0;
+    if (f) { fseek(f, 0, SEEK_END); gifLen = ftell(f); fclose(f); }
+    snprintf(extra, sizeof extra, " | gif.bin %ld KB", gifLen / 1024);
+    kbLine("FAT /ffat", (size_t)(fTotal - fFree), (size_t)fTotal, extra);
+  }
+
+  nvs_stats_t ns;
+  if (nvs_get_stats(nullptr, &ns) == ESP_OK)
+    logMsg("usage NVS            %u of %u entries used (%u namespaces)", (unsigned)ns.used_entries,
+           (unsigned)ns.total_entries, (unsigned)ns.namespace_count);
+
+  // task stacks: high-water mark = the least stack ever left free
+  TaskStatus_t st[32];
+  UBaseType_t n = uxTaskGetSystemState(st, 32, nullptr);
+  char line[200];
+  int len = snprintf(line, sizeof line, "usage stacks (least free, bytes):");
+  for (UBaseType_t i = 0; i < n; i++) {
+    int add = snprintf(line + len, sizeof line - len, " %s %u", st[i].pcTaskName, (unsigned)st[i].usStackHighWaterMark);
+    if (len + add >= (int)sizeof line - 1) {
+      logMsg("%s", line);
+      len = snprintf(line, sizeof line, "usage stacks:");
+      add = snprintf(line + len, sizeof line - len, " %s %u", st[i].pcTaskName, (unsigned)st[i].usStackHighWaterMark);
+    }
+    len += add;
+  }
+  logMsg("%s", line);
 }
 
 static void benchCpu() {
@@ -231,6 +312,7 @@ static void benchUsb(uint32_t kb) {
 void benchCommand(const char *a1, const char *a2) {
   bool all = !a1 || !strcmp(a1, "all");
   benchInfo();
+  if (all || !strcmp(a1, "usage")) benchUsage();
   if (all || !strcmp(a1, "cpu")) benchCpu();
   if (all || !strcmp(a1, "mem")) benchMem();
   if (all || !strcmp(a1, "flash")) benchFlash();
