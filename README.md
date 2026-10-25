@@ -39,7 +39,7 @@ Each panel shows a set of faces and picks one from the PC's state:
 
 | Panel | PC on | PC off / asleep | Restarting / updating |
 |---|---|---|---|
-| 1 | PC stats: CPU, RAM, both GPUs, fans, C: | GIF | GIF with a "PC is Restarting" / "PC is Updating" box |
+| 1 | PC stats: CPU, RAM, both GPUs, fans, C: | GIF, scaled to fill the screen height | GIF with a "PC is Restarting" / "PC is Updating" box on top |
 | 2 | Media: cover art, title, artist, player, progress; uptime and network | Weather: now, AQI, 2-hour rain nowcast, 3-day forecast | Weather |
 | 3 | AI usage: Claude and Antigravity quota left, local AI; full-screen local AI face while the model is working | Clock | Clock with the restart/update state |
 
@@ -213,9 +213,15 @@ Other behaviour:
   against the brief USB dropout at power-on. The backlights are meant to
   turn off when the PC sleeps or shuts down (not yet tested on
   `carrier_idf`).
-- **Status LED** (GPIO2, PWM): solid = PC on, slow blink = asleep/off,
-  short blip every 2 s = no USB host yet. `led <0-100>` is perceptual
-  brightness, capped at 35% duty.
+- **Status LED** (GPIO2, PWM). `led <0-100>` is perceptual brightness,
+  capped at 35% duty.
+
+  | LED | Means |
+  |---|---|
+  | Quick pulses, 100 ms | Loading: the board is booting, or the PC is on but its stats have not arrived yet |
+  | Solid | Board and PC online |
+  | Quick pulses, 200 ms | PC restarting or updating |
+  | Slow breathing (3 s fade in and out) | PC asleep or off |
 
 ### Commands
 
@@ -227,6 +233,7 @@ One per line on the USB CDC console or the CH343 UART:
 | `view <1\|2\|3> <pc\|media\|ai\|gif\|dash\|status\|stats\|metrics>` | What a panel shows (saved) |
 | `face <1\|2\|3> <auto\|pc\|gif\|restart\|update\|media\|weather\|ai\|localai\|clock>` | Force one face, for testing and screenshots (not saved) |
 | `shot <1\|2\|3>` | Screenshot of a panel, streamed as base64 on the CDC port |
+| `pcsim <on\|off\|auto>` | Pretend the PC is on or off (LED, faces, backlights), for testing |
 | `door <1-4> [ms]`, `reset` | Press a door button; pulse the motherboard reset |
 | `wake [force \| mac <AA:BB:..>]`, `power <sleep\|hibernate\|restart\|shutdown>` | Wake-on-LAN; power commands over USB |
 | `going <restart\|shutdown\|update_restart\|update_shutdown\|sleep\|clear>` | Tell the board what the PC is about to do |
