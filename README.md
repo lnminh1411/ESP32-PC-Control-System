@@ -272,7 +272,16 @@ the USB 5 V rail down while the PC powers on from shutdown: the board browns
 out and restarts (`boot: last reset: brownout` in the log). With it on, a wake
 turns the backlights off for 500 ms while the WoL / USB wake goes out. Seen on
 the author's board, both with Wake PC and with the PC's own power button;
-waking from sleep is not affected.
+waking from sleep is not affected. Treated as fixed here: two of two
+shutdown-then-wake tests passed with it on.
+
+It does not cover a power-on from the PC's own power button, which never goes
+through the board. The real fix is a supply that the PC's power-on cannot pull
+down. The ESP32 board's second USB port is not that supply: its 5 V in and out
+are bridged, so feeding 5 V there while the PC's USB also powers the board would
+damage it. What would work is an 18650 cell with a 5 V boost converter feeding
+the board, plus some way to charge the cell; not worth it on the author's setup,
+but an option if your board browns out on every power-on.
 Once Wi-Fi is up, `python scripts/ota_upload.py` flashes over the network.
 
 ### Screenshots
