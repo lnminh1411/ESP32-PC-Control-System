@@ -1210,14 +1210,15 @@ static void drawClock(LGFX_Sprite &c) {
     snprintf(hh, sizeof(hh), "%02d", tmNow.tm_hour);
     snprintf(mm, sizeof(mm), "%02d", tmNow.tm_min);
 
+    // digits centred between the status chip (ends y 32) and the date (y 268)
     c.setFont(fontClock());
     c.setTextColor(C_CLOCK_HOURS);
     c.setTextDatum(lgfx::textdatum_t::top_center);
-    c.drawString(hh, 120, 40);
+    c.drawString(hh, 120, 33);
 
     c.setTextColor(C_TEXT);
     c.setTextDatum(lgfx::textdatum_t::top_center);
-    c.drawString(mm, 120, 148);
+    c.drawString(mm, 120, 141);
 
     // two centred lines under the minutes: "Wednesday" / "September 30th 2026"
     static const char *wdays[] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
