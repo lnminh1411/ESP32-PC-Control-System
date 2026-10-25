@@ -7,6 +7,7 @@
 
 #include "config.h"
 #include "discord.h"
+#include "display.h"
 #include "log.h"
 #include "net.h"
 #include "pc_state.h"
@@ -15,6 +16,8 @@
 #include "usb.h"
 #include "views.h"
 #include "wol.h"
+
+static const char *powerWakeSend();
 
 static bool s_pending = false;
 static char s_action[16] = "";
@@ -152,6 +155,19 @@ void powerPoll() {
 }
 
 const char *powerWake() {
+  // Test (brownout at PC power-on): backlights off while the wake goes out,
+  // back on 500 ms later
+  bool wasIdle = backlightIsIdle();
+  backlightIdle(true);
+  logMsg("wake: backlights off for the wake");
+  const char *err = powerWakeSend();
+  sleepMs(500);
+  backlightIdle(wasIdle);
+  logMsg("wake: backlights restored");
+  return err;
+}
+
+static const char *powerWakeSend() {
   bool usbAttempted = false;
   bool usbOk = false;
   if (usbSuspended()) {
