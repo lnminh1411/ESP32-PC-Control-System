@@ -54,3 +54,5 @@ CONFIG_ESP_MAIN_TASK_AFFINITY_CPU1=y
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 # TLS buffers in PSRAM: internal RAM is too tight for a 16 KB record buffer per connection
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+# Software AES: hardware AES needs DMA bounce buffers in internal RAM for PSRAM data
+CONFIG_MBEDTLS_HARDWARE_AES=n

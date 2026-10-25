@@ -273,7 +273,9 @@ static void postChannelEmbed(DiscordChannel ch, const char *title, const char *d
 
 // One batch of the log ring as a code block in #logging
 static void postLogBatch() {
-  static char chunk[LOG_POST_MAX + 64];
+  static char *chunk;   // PSRAM: internal RAM is kept for TLS and task stacks
+  if (!chunk) chunk = (char *)heap_caps_malloc(LOG_POST_MAX + 64, MALLOC_CAP_SPIRAM);
+  if (!chunk) return;
   size_t n = 0;
   uint32_t dropped;
   taskENTER_CRITICAL(&logMux);
@@ -296,7 +298,9 @@ static void postLogBatch() {
 
   char *content = (char *)malloc(n + 64);
   if (!content) return;
-  snprintf(content, n + 64, "```\n%s\n```%s", chunk, dropped ? " (some lines dropped)" : "");
+  memcpy(content, "```\n", 4);
+  memcpy(content + 4, chunk, n);
+  strcpy(content + 4 + n, dropped ? "\n```(some lines dropped)" : "\n```");
   cJSON *root = cJSON_CreateObject();
   cJSON_AddStringToObject(root, "content", content);
   cJSON *am = cJSON_AddObjectToObject(root, "allowed_mentions");
@@ -513,9 +517,11 @@ static void controlPanelSync() {
     if (code == 404) ctlMsgId[0] = 0;   // deleted: post a new one
   }
   if (!ctlMsgId[0]) {
-    static char resp[8192];
+    const size_t respCap = 8192;
+    char *resp = (char *)heap_caps_malloc(respCap, MALLOC_CAP_SPIRAM);
+    if (!resp) { free(body); return; }
     snprintf(path, sizeof path, "/channels/%s/messages", DISCORD_CH_CONTROL);
-    int code = rest("POST", path, body, resp, sizeof resp);
+    int code = rest("POST", path, body, resp, respCap);
     cJSON *r = code >= 200 && code < 300 ? cJSON_Parse(resp) : nullptr;
     cJSON *jid = r ? cJSON_GetObjectItem(r, "id") : nullptr;
     if (jid && cJSON_IsString(jid)) {
@@ -530,6 +536,7 @@ static void controlPanelSync() {
       logMsg("discord: control panel posted");
     }
     cJSON_Delete(r);
+    free(resp);
   }
   free(body);
 }
@@ -752,6 +759,7 @@ static void handleGatewayMessage(const char *jsonStr, size_t len) {
       break;
     case 7: // reconnect requested
     case 9: // invalid session
+      logMsg("discord: gateway asks to %s", op == 7 ? "reconnect" : "start over (invalid session)");
       requestReconnect = true;
       break;
     case 0: {
@@ -790,6 +798,10 @@ static void onGatewayEvent(void *, esp_event_base_t, int32_t event_id, void *eve
   esp_websocket_event_data_t *data = (esp_websocket_event_data_t *)event_data;
   switch (event_id) {
     case WEBSOCKET_EVENT_CONNECTED:
+      logMsg("discord: gateway connected");
+      break;
+    case WEBSOCKET_EVENT_ERROR:
+      logMsg("discord: gateway error");
       break;
     case WEBSOCKET_EVENT_DISCONNECTED:
     case WEBSOCKET_EVENT_CLOSED:
@@ -854,7 +866,11 @@ static void botTask(void *) {
   ws = esp_websocket_client_init(&ws_cfg);
   if (ws) {
     esp_websocket_register_events(ws, WEBSOCKET_EVENT_ANY, onGatewayEvent, nullptr);
-    esp_websocket_client_start(ws);
+    esp_err_t err = esp_websocket_client_start(ws);
+    if (err != ESP_OK) logMsg("discord: gateway start failed (%s)", esp_err_to_name(err));
+  } else {
+    logMsg("discord: gateway client init failed (internal RAM free %u)",
+           (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
   }
 
   PcState lastPc = pcState();
