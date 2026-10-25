@@ -349,7 +349,10 @@ static class AgyQuota {
       string email = login.ContainsKey("id_token_email") ? Convert.ToString(login["id_token_email"], CultureInfo.InvariantCulture)
           : login.ContainsKey("id_token") ? JwtEmail(Convert.ToString(login["id_token"], CultureInfo.InvariantCulture)) : "";
       Dictionary<string, object> tok = login["token"] as Dictionary<string, object>;
-      if (tok == null || string.IsNullOrEmpty(email)) { CloudSkip("agy login has no token/email"); return; }
+      if (tok == null) { CloudSkip("agy login has no token"); return; }
+      // newer agy logins carry no id_token: ask Google whose token it is (once per login)
+      string refresh = tok.ContainsKey("refresh_token") ? Convert.ToString(tok["refresh_token"], CultureInfo.InvariantCulture) : "";
+      string who = !string.IsNullOrEmpty(email) ? email : "rt:" + refresh;
 
       // agy's own access token while it is valid, else one renewed in memory
       string token = null;
@@ -357,15 +360,21 @@ static class AgyQuota {
       if (tok.ContainsKey("expiry") && DateTime.TryParse(Convert.ToString(tok["expiry"], CultureInfo.InvariantCulture), CultureInfo.InvariantCulture,
               DateTimeStyles.AdjustToUniversal, out expiry) && expiry - DateTime.UtcNow > TimeSpan.FromMinutes(2)) {
         token = Convert.ToString(tok["access_token"], CultureInfo.InvariantCulture);
-      } else if (memToken != null && memTokenFor == email && DateTime.UtcNow < memTokenUntil) {
+      } else if (memToken != null && memTokenFor == who && DateTime.UtcNow < memTokenUntil) {
         token = memToken;
-      } else if (tok.ContainsKey("refresh_token")) {
-        token = memToken = RefreshAgyToken(Convert.ToString(tok["refresh_token"], CultureInfo.InvariantCulture));
-        memTokenFor = email;
+      } else if (refresh.Length > 0) {
+        token = memToken = RefreshAgyToken(refresh);
+        memTokenFor = who;
       }
       if (token == null) {
         if (!cloudErrLogged) { cloudErrLogged = true; Log("agy cloud: no usable token (signed out of agy?)"); }
         return;
+      }
+      if (string.IsNullOrEmpty(email) && !emailByLogin.TryGetValue(who, out email)) {
+        // a running agy shares the one sign-in: its account is the answer when Google won't say
+        email = UserInfoEmail(token) ?? lastLiveEmail;
+        if (string.IsNullOrEmpty(email)) { CloudSkip("cannot tell which account agy is signed in as"); return; }
+        emailByLogin[who] = email;
       }
 
       Dictionary<string, string> h = new Dictionary<string, string>();
@@ -455,6 +464,28 @@ static class AgyQuota {
   }
 
   // newer agy builds keep only the id_token; its payload carries the email
+  static readonly Dictionary<string, string> emailByLogin = new Dictionary<string, string>();
+  static string lastLiveEmail;   // account of the last running agy client seen
+
+  // The account an access token belongs to (Google userinfo), or null
+  static string UserInfoEmail(string token) {
+    try {
+      HttpWebRequest req = (HttpWebRequest)WebRequest.Create("https://www.googleapis.com/oauth2/v3/userinfo");
+      req.Headers["Authorization"] = "Bearer " + token;
+      req.Timeout = 15000;
+      req.KeepAlive = false;
+      req.UserAgent = CloudUserAgent;
+      using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse())
+      using (StreamReader rd = new StreamReader(resp.GetResponseStream(), Encoding.UTF8)) {
+        Dictionary<string, object> r = new JavaScriptSerializer().DeserializeObject(rd.ReadToEnd()) as Dictionary<string, object>;
+        return r != null && r.ContainsKey("email") ? Convert.ToString(r["email"], CultureInfo.InvariantCulture) : null;
+      }
+    } catch (WebException ex) {
+      CloudSkip("userinfo failed (" + ex.Status + (ex.Response is HttpWebResponse ? " " + (int)((HttpWebResponse)ex.Response).StatusCode : "") + ")");
+      return null;
+    }
+  }
+
   static string JwtEmail(string jwt) {
     try {
       string[] parts = jwt.Split('.');
@@ -1025,6 +1056,7 @@ static class AgyQuota {
             UpdateAccount(status, configuredEmails, accountsData);
             AccountState liveAcc;
             if (accountsData.TryGetValue(status.Email, out liveAcc)) liveAcc.Live = true;
+            lastLiveEmail = status.Email;
             break;
           }
         } catch (Exception ex) {

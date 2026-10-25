@@ -783,7 +783,7 @@ static void drawWeather(LGFX_Sprite &c) {
   c.setFont(fontBody());
   c.setTextColor(C_TEXT);
   c.setTextDatum(lgfx::textdatum_t::top_center);
-  c.drawString(w.place[0] ? w.place : "Home", 120, 6);
+  textImgDraw(c, "wx.place", w.place[0] ? w.place : "Home", 120, 6);
 
   char upBuf[32];
   snprintf(upBuf, sizeof(upBuf), "updated %s", w.updated[0] ? w.updated : "--");
@@ -1273,6 +1273,12 @@ bool screensIsGif(Face f) {
 }
 
 void screensDraw(Face f, LGFX_Sprite &c) {
+  // The weather place (secrets.h, may be non-ASCII): the PC renders it once
+  // and the board keeps the image in flash for when the PC is off.
+  textImgPin("wx.place");
+  const WeatherNow &wx = weatherNow();
+  if (wx.place[0]) textImgPrefetch("wx.place", wx.place, fontBody());
+
   switch (f) {
     case FACE_PC_STATS:
       drawPcStats(c);

@@ -1,6 +1,7 @@
 #include "weather.h"
 
 #include <cJSON.h>
+#include <ctype.h>
 #include <esp_crt_bundle.h>
 #include <esp_heap_caps.h>
 #include <esp_http_client.h>
@@ -36,7 +37,7 @@ static volatile bool wxDirty;
 // Location configuration
 static double homeLat;
 static double homeLon;
-static char homeName[24] = "Home";
+static char homeName[48] = "Home";
 static bool homeConfigured;
 
 // Nowcast engines
@@ -68,10 +69,13 @@ enum ErrMask : uint16_t {
   ERR_PHONE_PARSE = 1 << 7,
 };
 static uint16_t loggedErrors;
+static char lastError[96];               // shown by `weather show`
+static esp_err_t lastHttpErr;
 static volatile bool homeChanged;        // new home: poll right away
 static volatile bool testAlertPending;   // sent from the weather task: HTTPS must not block the main loop
 
 static void logErrorOnce(uint16_t mask, const char *msg) {
+  snprintf(lastError, sizeof lastError, "%s", msg);
   if (!(loggedErrors & mask)) {
     loggedErrors |= mask;
     logMsg("%s", msg);
@@ -177,6 +181,7 @@ static bool httpGet(const char *url, char *buf, size_t cap, int *outStatus) {
   if (!client) return false;
 
   esp_err_t err = esp_http_client_perform(client);
+  lastHttpErr = err;
   int status = esp_http_client_get_status_code(client);
   if (outStatus) *outStatus = status;
   esp_http_client_cleanup(client);
@@ -274,8 +279,8 @@ static void fetchForecast(char *buf, size_t cap) {
 
   int status = 0;
   if (!httpGet(url, buf, cap, &status)) {
-    char err[64];
-    snprintf(err, sizeof(err), "weather: forecast HTTP failed (%d)", status);
+    char err[80];
+    snprintf(err, sizeof(err), "weather: forecast HTTP failed (%d, %s)", status, esp_err_to_name(lastHttpErr));
     logErrorOnce(ERR_FC_HTTP, err);
     return;
   }
@@ -514,7 +519,7 @@ static void setHomeLocation(double lat, double lon, const char *name) {
 static void loadNvsConfig() {
   nvs_handle_t h;
   if (nvs_open("wx", NVS_READONLY, &h) == ESP_OK) {
-    char latStr[24] = {0}, lonStr[24] = {0}, nameStr[24] = {0};
+    char latStr[24] = {0}, lonStr[24] = {0}, nameStr[48] = {0};
     size_t len = sizeof(latStr);
     if (nvs_get_str(h, "home_lat", latStr, &len) == ESP_OK) {
       len = sizeof(lonStr);
@@ -591,6 +596,8 @@ static void weatherTask(void *) {
         fetchAirQuality(httpBuf, httpBufCap);
       }
       lastForecastMs = curMs;
+      // failed: try again in a minute, not in 30
+      if (loggedErrors & (ERR_FC_HTTP | ERR_FC_PARSE)) lastForecastMs = curMs - 29 * 60 * 1000;
     }
 
     // 2. Home Nowcast engine
@@ -631,13 +638,33 @@ static void weatherTask(void *) {
 }
 
 // WEATHER_HOME from secrets.h ("lat,lon[,name]"), when set, wins at boot.
+// The name is everything after the second comma (commas allowed), trimmed,
+// with one pair of surrounding ' or " quotes removed.
 static void applyConfiguredHome() {
   const char *cfg = WEATHER_HOME;
   if (!cfg[0]) return;
-  double lat, lon;
-  char name[24] = "Home";
-  int n = sscanf(cfg, "%lf,%lf,%23[^\n]", &lat, &lon, name);
-  if (n < 2 || lat < -90.0 || lat > 90.0 || lon < -180.0 || lon > 180.0) {
+  char *end;
+  double lat = strtod(cfg, &end);
+  bool ok = end != cfg && *end == ',';
+  const char *p = end + 1;
+  double lon = ok ? strtod(p, &end) : 0;
+  ok = ok && end != p && (*end == ',' || *end == 0 || isspace((unsigned char)*end));
+  char name[48] = "Home";
+  if (ok) {
+    while (isspace((unsigned char)*end)) end++;
+    if (*end == ',') {
+      const char *s = end + 1;
+      while (isspace((unsigned char)*s)) s++;
+      size_t n = strlen(s);
+      while (n && isspace((unsigned char)s[n - 1])) n--;
+      if (n >= 2 && (s[0] == '\'' || s[0] == '"') && s[n - 1] == s[0]) { s++; n -= 2; }
+      if (n >= sizeof name) n = sizeof name - 1;
+      if (n) { memcpy(name, s, n); name[n] = 0; }
+    } else if (*end) {
+      ok = false;
+    }
+  }
+  if (!ok || lat < -90.0 || lat > 90.0 || lon < -180.0 || lon > 180.0) {
     logMsg("weather: WEATHER_HOME in secrets.h is not \"lat,lon[,name]\"; ignored");
     return;
   }
@@ -727,8 +754,10 @@ void weatherCommand(const char *a1, const char *a2) {
              now_.place, now_.temp, now_.tmax, now_.tmin, now_.windKmh, now_.windFromDeg,
              now_.aqi, rainHome.active ? "incoming" : "none");
     } else {
-      logMsg("weather: %s (no forecast data yet; needs Wi-Fi)", homeConfigured ? homeName : "Home");
+      logMsg("weather: %s (no forecast data yet; %s)", homeConfigured ? homeName : "Home",
+             !netUp() ? "needs Wi-Fi" : !homeConfigured ? "no home set" : "fetching");
     }
+    if (loggedErrors) logMsg("weather: last error: %s [%s]", lastError, esp_err_to_name(lastHttpErr));
 
     // Home engine
     if (rainHome.active) {

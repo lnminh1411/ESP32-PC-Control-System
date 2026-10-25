@@ -19,6 +19,7 @@ struct TextImg {
   uint16_t w, h, ascent;
   uint8_t *alpha;        // PSRAM, (w + 1) / 2 bytes per row, high nibble = left pixel
   uint32_t usedMs;
+  bool pinned;           // a pinned key's current image: never evicted
 };
 
 constexpr int CACHE_N = 8;
@@ -33,6 +34,30 @@ static size_t incomingLen, incomingCap;
 struct Asked { uint32_t id; uint8_t px, bold; uint32_t ms; };
 static Asked asked[4];
 static uint32_t lastAskMs;
+
+// Pinned keys: the image last asked for, and whether flash was checked for it
+struct Pin { char key[16]; uint32_t id; uint8_t px, bold; bool loaded; };
+static Pin pins[2];
+
+static Pin *pinFor(const char *key) {
+  for (Pin &p : pins)
+    if (p.key[0] && !strcmp(p.key, key)) return &p;
+  return nullptr;
+}
+
+void textImgPin(const char *key) {
+  if (pinFor(key)) return;
+  for (Pin &p : pins)
+    if (!p.key[0]) { snprintf(p.key, sizeof p.key, "%s", key); return; }
+}
+
+// One file per pinned key: header, then the alpha rows
+struct PinFile { uint32_t magic, id; uint8_t px, bold; uint16_t w, h, ascent; };
+constexpr uint32_t PIN_MAGIC = 0x31495854;   // "TXI1"
+
+static void pinPath(const Pin &p, char *out, size_t cap) {
+  snprintf(out, cap, "/ffat/txt_%s.bin", p.key);
+}
 
 static bool isAscii(const char *s) {
   for (; *s; s++) if ((uint8_t)*s >= 0x80) return false;
@@ -53,7 +78,70 @@ static TextImg *find(uint32_t id, uint8_t px, uint8_t bold) {
   return nullptr;
 }
 
-static void request(const char *key, uint32_t id, uint8_t px, uint8_t bold) {
+// A free slot, else the least recently used one that is not pinned
+static TextImg *victim() {
+  TextImg *slot = nullptr;
+  for (TextImg &t : cache) {
+    if (!t.alpha) return &t;
+    if (!t.pinned && (!slot || t.usedMs < slot->usedMs)) slot = &t;
+  }
+  return slot ? slot : &cache[0];
+}
+
+static void store(const TextImg &img, bool pinned) {
+  TextImg *slot = find(img.id, img.px, img.bold);
+  if (!slot) slot = victim();
+  free(slot->alpha);
+  *slot = img;
+  slot->usedMs = nowMs();
+  slot->pinned = pinned;
+}
+
+static void pinSave(const Pin &p, const TextImg &img) {
+  char path[48];
+  pinPath(p, path, sizeof path);
+  FILE *f = fopen(path, "wb");
+  if (!f) {
+    logMsg("textimg: cannot write %s", path);
+    return;
+  }
+  PinFile hdr = {PIN_MAGIC, img.id, img.px, img.bold, img.w, img.h, img.ascent};
+  size_t len = (size_t)(img.w + 1) / 2 * img.h;
+  bool ok = fwrite(&hdr, sizeof hdr, 1, f) == 1 && fwrite(img.alpha, 1, len, f) == len;
+  fclose(f);
+  if (!ok) remove(path);
+  logMsg("textimg: %s %s (%ux%u)", ok ? "saved" : "failed to save", p.key, img.w, img.h);
+}
+
+// The pinned image from flash, if it is the one wanted
+static TextImg *pinLoad(const Pin &p) {
+  char path[48];
+  pinPath(p, path, sizeof path);
+  FILE *f = fopen(path, "rb");
+  if (!f) return nullptr;
+  PinFile hdr;
+  TextImg img = {};
+  bool ok = fread(&hdr, sizeof hdr, 1, f) == 1 && hdr.magic == PIN_MAGIC && hdr.id == p.id &&
+            hdr.px == p.px && hdr.bold == p.bold && hdr.w && hdr.w <= MAX_W && hdr.h && hdr.h <= MAX_H;
+  size_t len = ok ? (size_t)(hdr.w + 1) / 2 * hdr.h : 0;
+  if (ok) img.alpha = (uint8_t *)heap_caps_malloc(len, MALLOC_CAP_SPIRAM);
+  ok = ok && img.alpha && fread(img.alpha, 1, len, f) == len;
+  fclose(f);
+  if (!ok) {
+    free(img.alpha);
+    return nullptr;
+  }
+  img.id = hdr.id;
+  img.px = hdr.px;
+  img.bold = hdr.bold;
+  img.w = hdr.w;
+  img.h = hdr.h;
+  img.ascent = hdr.ascent;
+  store(img, true);
+  return find(img.id, img.px, img.bold);
+}
+
+static void request(const char *key, const char *str, uint32_t id, uint8_t px, uint8_t bold) {
   uint32_t now = nowMs();
   if (incoming.alpha && incoming.id == id) return;   // on its way
   int slot = 0;
@@ -62,8 +150,16 @@ static void request(const char *key, uint32_t id, uint8_t px, uint8_t bold) {
     if (asked[i].ms < asked[slot].ms) slot = i;
   }
   if (now - lastAskMs < 200) return;   // one at a time; the next frame asks again
-  char req[64];
-  snprintf(req, sizeof req, "!txt %lu %u %u %s\n", (unsigned long)id, px, bold, key);
+  char req[200];
+  int n = snprintf(req, sizeof req, "!txt %lu %u %u %s", (unsigned long)id, px, bold, key);
+  if (pinFor(key)) {   // the PC does not know this text: send it along, base64
+    size_t out = 0;
+    req[n++] = ' ';
+    if (mbedtls_base64_encode((unsigned char *)req + n, sizeof req - n - 2, &out,
+                              (const unsigned char *)str, strlen(str)) != 0) return;
+    n += out;
+  }
+  snprintf(req + n, sizeof req - n, "\n");
   usbHidSendLine(req);
   asked[slot] = {id, px, bold, now};
   lastAskMs = now;
@@ -111,32 +207,51 @@ void textImgLine(const char *line) {
       incoming = {};
       return;
     }
-    // replace the same string at the same size, else the least recently used
-    TextImg *slot = find(incoming.id, incoming.px, incoming.bold);
-    if (!slot) {
-      slot = &cache[0];
-      for (TextImg &t : cache) {
-        if (!t.alpha) { slot = &t; break; }
-        if (t.usedMs < slot->usedMs) slot = &t;
-      }
+    // a pinned key's image also goes to flash, replacing its old one
+    Pin *pin = nullptr;
+    for (Pin &p : pins)
+      if (p.key[0] && p.id == incoming.id && p.px == incoming.px && p.bold == incoming.bold) pin = &p;
+    if (pin) {
+      for (TextImg &t : cache)   // the old image of this key is an ordinary entry now
+        if (t.pinned && t.px == pin->px && t.bold == pin->bold && t.id != pin->id) t.pinned = false;
+      pinSave(*pin, incoming);
+      pin->loaded = true;
     }
-    free(slot->alpha);
-    *slot = incoming;
-    slot->usedMs = nowMs();
+    store(incoming, pin != nullptr);
     incoming = {};
   }
 }
 
-// The cached image for str in c's current font, asking the PC when missing
-static TextImg *lookup(LGFX_Sprite &c, const char *key, const char *str) {
+// The cached image for str in font f, from flash for a pinned key, else
+// asking the PC when missing
+static TextImg *lookupFont(const lgfx::IFont *f, const char *key, const char *str) {
   if (!str || !str[0] || isAscii(str)) return nullptr;
   uint8_t px, bold;
-  if (!fontSize(c.getFont(), px, bold)) return nullptr;
+  if (!fontSize(f, px, bold)) return nullptr;
   uint32_t id = esp_rom_crc32_le(0, (const uint8_t *)str, strlen(str));
   TextImg *t = find(id, px, bold);
+  Pin *pin = pinFor(key);
+  if (pin && (pin->id != id || pin->px != px || pin->bold != bold)) {
+    pin->id = id;
+    pin->px = px;
+    pin->bold = bold;
+    pin->loaded = false;
+  }
+  if (!t && pin && !pin->loaded) {
+    pin->loaded = true;   // one flash read per text
+    t = pinLoad(*pin);
+  }
   if (t) t->usedMs = nowMs();
-  else request(key, id, px, bold);
+  else request(key, str, id, px, bold);
   return t;
+}
+
+static TextImg *lookup(LGFX_Sprite &c, const char *key, const char *str) {
+  return lookupFont(c.getFont(), key, str);
+}
+
+void textImgPrefetch(const char *key, const char *str, const lgfx::IFont *font) {
+  lookupFont(font, key, str);
 }
 
 // '?' for each non-ASCII character (UTF-8 continuation bytes dropped)

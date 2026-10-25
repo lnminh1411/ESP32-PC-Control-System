@@ -16,7 +16,7 @@ struct WeatherDay {
 
 struct WeatherNow {
   bool valid;
-  char place[24];        // location label
+  char place[48];        // location label, UTF-8
   char updated[6];       // "21:40" local
   float temp;            // deg C
   int8_t tmax, tmin;     // today

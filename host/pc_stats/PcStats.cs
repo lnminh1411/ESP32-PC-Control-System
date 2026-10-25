@@ -2573,7 +2573,9 @@ class PcStats : ServiceBase {
   static readonly Dictionary<string, DateTime> recentServedTxt = new Dictionary<string, DateTime>();
 
   static void HandleTxtLine(string line) {
-    Match m = Regex.Match(line, @"^!txt\s+(\d+)\s+(\d+)\s+([01])\s+(\S+)$");
+    // "!txt <crc32> <px> <bold> <key> [base64 text]": the text comes along
+    // when the board has it from elsewhere (e.g. the weather place)
+    Match m = Regex.Match(line, @"^!txt\s+(\d+)\s+(\d+)\s+([01])\s+(\S+)(?:\s+([A-Za-z0-9+/=]+))?$");
     if (!m.Success) {
       Log("txt: unrecognized command '" + line + "'");
       return;
@@ -2595,13 +2597,25 @@ class PcStats : ServiceBase {
     bool bold = (boldVal == 1);
     string key = m.Groups[4].Value;
 
-    ProcessTxtRequest(id, px, bold, key);
+    string given = null;
+    if (m.Groups[5].Success) {
+      try {
+        given = Utf8NoBom.GetString(Convert.FromBase64String(m.Groups[5].Value));
+      } catch (FormatException) {
+        Log("txt: rejected key=" + key + " id=" + id + " (bad base64 text)");
+        return;
+      }
+    }
+
+    ProcessTxtRequest(id, px, bold, key, given);
   }
 
-  static void ProcessTxtRequest(uint id, int px, bool bold, string key) {
-    string textVal = null;
-    lock (lastSentTextsLock) {
-      lastSentTexts.TryGetValue(key, out textVal);
+  static void ProcessTxtRequest(uint id, int px, bool bold, string key, string given) {
+    string textVal = given;
+    if (textVal == null) {
+      lock (lastSentTextsLock) {
+        lastSentTexts.TryGetValue(key, out textVal);
+      }
     }
 
     if (textVal == null) {

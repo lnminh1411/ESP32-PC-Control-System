@@ -11,3 +11,10 @@ void textImgLine(const char *line);   // pcstats routes "@x ..." here
 // colour, like c.drawString. Returns the width drawn.
 int textImgDraw(LGFX_Sprite &c, const char *key, const char *str, int x, int y);
 int textImgWidth(LGFX_Sprite &c, const char *key, const char *str);
+
+// Pinned keys hold text the PC never sent (e.g. the weather place from
+// secrets.h). Their requests carry the text, and the rendered image is kept
+// in flash, so it still draws while the PC is off.
+void textImgPin(const char *key);
+// Load or ask for str's image now, without drawing (call it every frame).
+void textImgPrefetch(const char *key, const char *str, const lgfx::IFont *font);
