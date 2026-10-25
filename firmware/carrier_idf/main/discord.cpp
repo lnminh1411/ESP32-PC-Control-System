@@ -165,7 +165,7 @@ static esp_err_t httpEventHandler(esp_http_client_event_t *evt) {
     if (rb && rb->text && rb->len < rb->cap - 1) {
       int copyLen = evt->data_len;
       if (rb->len + copyLen > rb->cap - 1) {
-        copyLen = (int)sizeof(rb->text) - 1 - rb->len;
+        copyLen = rb->cap - 1 - rb->len;   // rb->text is a pointer now: never sizeof it
       }
       memcpy(rb->text + rb->len, evt->data, copyLen);
       rb->len += copyLen;
@@ -265,6 +265,7 @@ static int rest(const char *method, const char *path, const char *body, char *ou
   if (code < 200 || code >= 300) {
     logMsg("discord: %s %s -> %d %.160s", method, shown, code, respBuf.text);
   }
+  if (respBuf.len >= respBuf.cap - 1) logMsg("discord: %s %s response cut at %d bytes", method, shown, respBuf.len);
   if (out && outCap) snprintf(out, outCap, "%s", respBuf.text);
   if (mtx) xSemaphoreGive(mtx);
   return code;
