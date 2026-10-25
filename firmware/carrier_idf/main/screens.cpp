@@ -1229,6 +1229,8 @@ static void drawClock(LGFX_Sprite &c) {
 
 // ---- screens.h API Implementation ----
 
+Face screensForce[N_PANELS];
+
 Face screensFace(View v) {
   GoingKind going = pcGoing();
   bool restartish = (going == GO_RESTART || going == GO_UPDATE_RESTART || going == GO_UPDATE_SHUTDOWN);

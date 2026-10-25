@@ -3435,8 +3435,9 @@ class PcStats : ServiceBase {
               sb.Append("@t ").Append(texts[i].Key).Append(' ').Append(val).Append('\n');
             }
             sb.Append("@e ").Append(seq++).Append('\n');
-            int textChars = AppendTextChunk(sb, 4000);
-            AppendArtChunk(sb, 4000 - textChars);
+            // ~12 KB of base64 per tick: a 144x144 cover arrives in ~2 s
+            int textChars = AppendTextChunk(sb, 12000);
+            AppendArtChunk(sb, 12000 - textChars);
             link.Write(sb.ToString());
             lock (powerLock) {
               if (scheduledAction != null && scheduledActionTimeUtc == DateTime.MinValue && currentAckValue != null) {

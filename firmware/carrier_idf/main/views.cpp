@@ -632,7 +632,7 @@ void viewsService() {
   for (int i = 0; i < N_PANELS; i++) {
     Panel &p = panels[i];
     if (!viewIsAuto(p.view) || p.busy) continue;
-    Face f = screensFace(p.view);
+    Face f = screensForce[i] != FACE_NONE ? screensForce[i] : screensFace(p.view);
     if (f != panelFace[i]) {
       enterFace(i, f);
       continue;

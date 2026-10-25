@@ -29,6 +29,7 @@ constexpr int OVERLAY_Y0 = 248;   // GIF overlay band, multiples of 8 (display B
 constexpr int OVERLAY_Y1 = 304;
 
 Face screensFace(View v);                       // face to show now for an auto view
+extern Face screensForce[N_PANELS];             // `face` command: pin a face (docs, screenshots)
 bool screensIsGif(Face f);                      // FACE_GIF*
 void screensDraw(Face f, LGFX_Sprite &c);       // full canvas redraw (GIF faces: the band only)
 uint32_t screensPeriodMs(Face f);               // redraw period with no new data; 0 = data-driven

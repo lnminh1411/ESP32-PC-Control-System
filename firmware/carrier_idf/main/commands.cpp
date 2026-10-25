@@ -23,6 +23,7 @@
 #include "pc_going.h"
 #include "pc_state.h"
 #include "pcstats.h"
+#include "screens.h"
 #include "power.h"
 #include "usb.h"
 #include "wol.h"
@@ -300,7 +301,30 @@ static void cmdShot(const char *a1, const char *) {
   const size_t bytes = (size_t)TFT_W * TFT_H * 2;
   uint8_t *copy = (uint8_t *)heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM);
   if (!copy) { logMsg("shot: no memory"); return; }
-  memcpy(copy, panels[n - 1].canvas->getBuffer(), bytes);   // snapshot: the canvas keeps changing
+  Panel &p = panels[n - 1];
+  memcpy(copy, p.canvas->getBuffer(), bytes);   // snapshot: the canvas keeps changing
+  if (p.gifMode && gif.n && gif.packed[p.gifShown < 0 ? 0 : p.gifShown]) {
+    // GIF faces bypass the canvas: unpack the frame on glass (RGB444, 2 px
+    // in 3 bytes) and keep only the overlay band from the canvas
+    const uint8_t *src = gif.packed[p.gifShown < 0 ? 0 : p.gifShown];
+    int x0 = ((TFT_W - gif.pw) / 2) & ~1, y0 = (TFT_H - gif.h) / 2;
+    for (int y = 0; y < TFT_H; y++) {
+      if (p.bandY1 > p.bandY0 && y >= p.bandY0 && y < p.bandY1) continue;
+      for (int x = 0; x < TFT_W; x++) {
+        int gx = x - x0, gy = y - y0;
+        uint16_t c = 0;
+        if (gx >= 0 && gx < gif.pw && gy >= 0 && gy < gif.h) {
+          const uint8_t *q = src + ((size_t)gy * gif.pw + (gx & ~1)) * 3 / 2;
+          int r, g, b;
+          if (!(gx & 1)) { r = q[0] >> 4; g = q[0] & 15; b = q[1] >> 4; }
+          else           { r = q[1] & 15; g = q[2] >> 4; b = q[2] & 15; }
+          c = (uint16_t)((r << 12) | (r >> 3 << 11) | (g << 7) | (g >> 2 << 5) | (b << 1) | (b >> 3));
+        }
+        copy[((size_t)y * TFT_W + x) * 2] = c >> 8;
+        copy[((size_t)y * TFT_W + x) * 2 + 1] = c & 0xFF;
+      }
+    }
+  }
   char line[1100];
   int len = snprintf(line, sizeof line, "SHOT begin %d %d %d\n", n, TFT_W, TFT_H);
   usbCdcWrite(line, len);
@@ -314,6 +338,24 @@ static void cmdShot(const char *a1, const char *) {
   }
   usbCdcWrite("SHOT end\n", 9);
   free(copy);
+}
+
+// Pin a face on a panel for screenshots; `face <n> auto` returns to the PC state
+static void cmdFace(const char *a1, const char *a2) {
+  static const struct { const char *name; Face f; } names[] = {
+    {"auto", FACE_NONE}, {"pc", FACE_PC_STATS}, {"gif", FACE_GIF}, {"restart", FACE_GIF_RESTART},
+    {"update", FACE_GIF_UPDATE}, {"media", FACE_MEDIA}, {"weather", FACE_WEATHER},
+    {"ai", FACE_AI_USAGE}, {"localai", FACE_LOCAL_AI}, {"clock", FACE_CLOCK}};
+  int n = a1 ? atoi(a1) : 0;
+  for (auto &e : names) {
+    if (n >= 1 && n <= N_PANELS && a2 && !strcmp(a2, e.name)) {
+      screensForce[n - 1] = e.f;
+      viewsMarkDirty(n - 1);
+      logMsg("face: panel %d -> %s", n, e.name);
+      return;
+    }
+  }
+  logMsg("face: usage face <1|2|3> <auto|pc|gif|restart|update|media|weather|ai|localai|clock>");
 }
 
 static void cmdWeather(const char *a1, const char *a2) {
@@ -339,6 +381,7 @@ static const Command COMMANDS[] = {
   {"pcstats", "[text]",                                       cmdPcStats},
   {"fps",     "[budget <20-95> | cap <1|2|3> <1-60|off>]",   cmdFps},
   {"layout",  "<show|reload|default|begin|data <b64>|end>",  cmdLayout},
+  {"face",    "<1|2|3> <auto|pc|gif|restart|update|media|weather|ai|localai|clock>", cmdFace},
   {"shot",    "<1|2|3>  (panel screenshot, base64 on CDC)",   cmdShot},
   {"weather", "<show|demo [rain]|clear>",                     cmdWeather},
 };

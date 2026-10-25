@@ -1098,6 +1098,10 @@ static class AgyQuota {
 
   static uint lastArtId = 0;
   static string lastTrackKey = null;
+  // Windows often swaps the title first and the thumbnail a moment later:
+  // keep re-reading the cover for a few seconds after a track change
+  static DateTime artRecheckUntilUtc = DateTime.MinValue;
+  static DateTime lastArtCheckUtc = DateTime.MinValue;
   static byte[] currentArtBytes = null;
   static uint[] crcTable;
 
@@ -1336,7 +1340,10 @@ static class AgyQuota {
       lastArtId = 0;
       currentArtBytes = null;
       lastTrackKey = trackKey;
-    } else if (trackChanged || lastArtId == 0) {
+    } else if (trackChanged || lastArtId == 0 ||
+               (DateTime.UtcNow < artRecheckUntilUtc && DateTime.UtcNow - lastArtCheckUtc >= TimeSpan.FromMilliseconds(750))) {
+      if (trackChanged) artRecheckUntilUtc = DateTime.UtcNow.AddSeconds(8);
+      lastArtCheckUtc = DateTime.UtcNow;
       lastTrackKey = trackKey;
       try {
         byte[] rgb565 = ProcessThumbnail(thumbRef);
@@ -1466,8 +1473,8 @@ static class AgyQuota {
         mgr = null;
       }
       int elapsed = (int)(DateTime.UtcNow - t0).TotalMilliseconds;
-      int wait = 1000 - elapsed;
-      if (wait < 100) wait = 100;
+      int wait = 250 - elapsed;   // track changes show up within a quarter second
+      if (wait < 50) wait = 50;
       Thread.Sleep(wait);
     }
   }
@@ -1522,6 +1529,10 @@ static class AgyQuota {
     cfg = LoadConfig(configPath);
 
     ReloadPreviousFile(cfg.OutputPath, cfg.Accounts, accountsData);
+
+    // media runs on its own 250 ms loop; the quota loop below polls every minute
+    Thread mediaThread = new Thread(MediaLoop) { IsBackground = true, Name = "esp32_media" };
+    mediaThread.Start();
 
     while (true) {
       DateTime t0 = DateTime.UtcNow;

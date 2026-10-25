@@ -296,7 +296,7 @@ void usbInit() {
 
   s_cdc_tx_lock = xSemaphoreCreateMutex();
   s_hid_tx_lock = xSemaphoreCreateMutex();
-  s_hid_stream = xStreamBufferCreate(4096, 1);
+  s_hid_stream = xStreamBufferCreate(24576, 1);   // the PC bursts up to ~14 KB per tick (cover art); overflow drops bytes
   s_cdc_stream = xStreamBufferCreate(4096, 1);
 
   const tinyusb_config_t tusb_cfg = {
