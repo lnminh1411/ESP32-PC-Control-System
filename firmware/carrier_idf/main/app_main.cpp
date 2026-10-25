@@ -19,6 +19,7 @@
 #include "usb.h"
 #include "views.h"
 #include "power.h"
+#include "weather.h"
 #include "wol.h"
 
 #include <esp_event.h>
@@ -51,6 +52,7 @@ extern "C" void app_main() {
 
   netInit();                           // joins Wi-Fi in the background
   discordInit();
+  weatherInit();
 
   // 4. displays: restore stored view else defaultView
   displayInit();
@@ -83,6 +85,7 @@ extern "C" void app_main() {
     pcGoingPoll();
     netPoll();
     discordPoll();
+    weatherPoll();
     viewsService();
     sleepMs(1);
   }
