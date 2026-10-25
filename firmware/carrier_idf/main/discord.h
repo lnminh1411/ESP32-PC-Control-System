@@ -6,7 +6,7 @@
 //
 // Slash command (registered on DISCORD_GUILD_ID at boot, instant):
 //   /actions -- opens an ephemeral control panel with status embed and buttons:
-//               Door 1-4, Wake PC, Sleep/Restart/Shut down (confirm dialogs),
+//               Door 1-4, Wake PC, Sleep/Hibernate/Restart/Shut down (confirm dialogs),
 //               Refresh, PC reset (confirm dialog), Close.
 // The panel is temporary and auto-deletes after ACTIONS_PANEL_TTL_MS of inactivity.
 // Everything ends up as a line of the console command set (commands.h), run

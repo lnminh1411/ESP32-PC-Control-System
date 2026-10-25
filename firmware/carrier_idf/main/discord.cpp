@@ -378,7 +378,8 @@ enum PanelView {
   PANEL_CONFIRM_RESET,
   PANEL_CONFIRM_SLEEP,
   PANEL_CONFIRM_RESTART,
-  PANEL_CONFIRM_SHUTDOWN
+  PANEL_CONFIRM_SHUTDOWN,
+  PANEL_CONFIRM_HIBERNATE
 };
 
 static void addButton(cJSON *row, const char *label, const char *id, int style) {
@@ -465,6 +466,7 @@ static void buildComponents(cJSON *data, PanelView view, bool standing) {
     cJSON *r2 = addRow(comps);
     addButton(r2, "Wake PC", "wake", 3);
     addButton(r2, "Sleep", "sleep", 2);
+    addButton(r2, "Hibernate", "hibernate", 2);
     addButton(r2, "Restart", "restart", 4);
     addButton(r2, "Shut down", "shutdown", 4);
 
@@ -487,6 +489,10 @@ static void buildComponents(cJSON *data, PanelView view, bool standing) {
   } else if (view == PANEL_CONFIRM_SHUTDOWN) {
     cJSON *r1 = addRow(comps);
     addButton(r1, "Yes, shut down", "shutdown_confirm", 4);
+    addButton(r1, "Cancel", "refresh", 2);
+  } else if (view == PANEL_CONFIRM_HIBERNATE) {
+    cJSON *r1 = addRow(comps);
+    addButton(r1, "Yes, hibernate", "hibernate_confirm", 2);
     addButton(r1, "Cancel", "refresh", 2);
   }
 }
@@ -720,6 +726,11 @@ static void onInteraction(cJSON *d) {
       sendPanelResponse(id, token, 7, standing, PANEL_CONFIRM_SHUTDOWN, "Shut down the PC?");
     } else if (!strcmp(cid, "shutdown_confirm")) {
       runAndGetFirstLine("power shutdown", lastPanelResult, sizeof lastPanelResult);
+      sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
+    } else if (!strcmp(cid, "hibernate")) {
+      sendPanelResponse(id, token, 7, standing, PANEL_CONFIRM_HIBERNATE, "Hibernate the PC?");
+    } else if (!strcmp(cid, "hibernate_confirm")) {
+      runAndGetFirstLine("power hibernate", lastPanelResult, sizeof lastPanelResult);
       sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
     } else if (!strncmp(cid, "door_", 5)) {
       char cmd[32];
