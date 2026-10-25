@@ -100,10 +100,11 @@ static void drawChip(LGFX_Sprite &c, int x, int y, const char *label, uint16_t b
 static void formatRate(double b, char *buf, size_t len) {
   if (isnan(b)) {
     snprintf(buf, len, "--");
-  } else if (b >= 1048576.0) {
-    snprintf(buf, len, "%.1f MB/s", b / 1048576.0);
   } else {
-    snprintf(buf, len, "%.1f KB/s", b / 1024.0);
+    // no decimal from 100 up, so the rate stays clear of a 2-digit-day uptime
+    bool mb = b >= 1048576.0;
+    double v = mb ? b / 1048576.0 : b / 1024.0;
+    snprintf(buf, len, v >= 100.0 ? "%.0f %s" : "%.1f %s", v, mb ? "MB/s" : "KB/s");
   }
 }
 
@@ -1218,14 +1219,19 @@ static void drawClock(LGFX_Sprite &c) {
     c.setTextDatum(lgfx::textdatum_t::top_center);
     c.drawString(mm, 120, 148);
 
-    static const char *wdays[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
-    static const char *months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    // two centred lines under the minutes: "Wednesday" / "September 30th 2026"
+    static const char *wdays[] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+    static const char *months[] = {"January", "February", "March", "April", "May", "June", "July",
+                                   "August", "September", "October", "November", "December"};
+    int md = tmNow.tm_mday;
+    const char *suf = (md % 100 >= 11 && md % 100 <= 13) ? "th" : md % 10 == 1 ? "st" : md % 10 == 2 ? "nd" : md % 10 == 3 ? "rd" : "th";
     char ds[32];
-    snprintf(ds, sizeof(ds), "%s, %d %s", wdays[tmNow.tm_wday % 7], tmNow.tm_mday, months[tmNow.tm_mon % 12]);
+    snprintf(ds, sizeof(ds), "%s %d%s %d", months[tmNow.tm_mon % 12], md, suf, tmNow.tm_year + 1900);
     c.setFont(fontBody());
     c.setTextColor(C_DIM);
     c.setTextDatum(lgfx::textdatum_t::top_center);
-    c.drawString(ds, 120, 284);
+    c.drawString(wdays[tmNow.tm_wday % 7], 120, 268);
+    c.drawString(ds, 120, 292);
   } else {
     c.setFont(fontDigits());
     c.setTextColor(C_CLOCK_HOURS);

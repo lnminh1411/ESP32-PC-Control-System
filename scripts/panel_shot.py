@@ -5,8 +5,8 @@ streams back (SHOT begin / d <b64> / end lines).
 
   python scripts/panel_shot.py 1 docs/img/screen1.png [--port COM12] [--scale 2]
 
-GIF faces push frames straight to the glass, so their shot shows only the
-canvas (the overlay band); everything else is exactly what is on screen.
+GIF faces come back with the current GIF frame under the canvas overlay, so
+the shot matches the glass.
 """
 import argparse
 import base64
@@ -19,6 +19,14 @@ from PIL import Image
 def shot(port, n):
     s = serial.Serial(port, 115200, timeout=0.5)
     time.sleep(0.3)
+    try:
+        return shot_on(s, n)
+    finally:
+        s.close()
+
+
+def shot_on(s, n):
+    """shot() on a port the caller already holds open."""
     s.reset_input_buffer()
     s.write(f"shot {n}\n".encode())
     data, w, h = bytearray(), 0, 0
@@ -32,7 +40,6 @@ def shot(port, n):
             data += base64.b64decode(line[7:])
         elif line == "SHOT end":
             break
-    s.close()
     if not w or len(data) != w * h * 2:
         raise SystemExit(f"incomplete shot ({len(data)} bytes)")
     img = Image.new("RGB", (w, h))
