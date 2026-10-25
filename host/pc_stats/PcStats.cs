@@ -854,12 +854,15 @@ class PcStats : ServiceBase {
     return false;
   }
 
-  // Windows is installing updates with nobody signed in: the "Working on
-  // updates" screen before a restart and "Updates are underway" after it.
-  // Servicing workers alone are not enough (Windows also installs in the
-  // background while someone works), so a signed-in desktop (explorer) means no.
+  // Windows is installing updates with nobody signed in: "Updates are
+  // underway" after an update restart. Servicing workers alone are not enough:
+  // Windows also services in the background while someone works (explorer
+  // running) and right after an ordinary boot, at the sign-in screen. So it
+  // only counts when the PC went down for an update (the "Working on updates"
+  // phase before that restart is announced by event 1074 already).
   static bool CheckUpdateRunning() {
     try {
+      if (!lastDownKind.StartsWith("update", StringComparison.Ordinal)) return false;
       if (ProcessRunning("explorer")) return false;
       foreach (string name in new string[] { "TiWorker", "poqexec", "SetupHost" })
         if (ProcessRunning(name)) return true;
