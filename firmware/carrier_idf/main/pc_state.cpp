@@ -18,6 +18,7 @@ static volatile uint32_t guardStartMs;
 static volatile bool guardActive;
 static volatile LedMode mode = LED_AUTO;
 static volatile uint8_t ledPct = 100;
+static volatile uint32_t readyMs;   // 0 = still booting
 
 PcState pcState() { return state; }
 
@@ -68,7 +69,6 @@ static uint32_t ledDuty(float level) {
 static void ledTask(void *) {
   for (;;) {
     uint32_t t = nowMs();
-    bool on;
     float lvl = ledPct / 100.0f;
     if (mode == LED_SWEEP) {                              // test ramp: 2 s down, 1 s up
       uint32_t p = t % 3000;
@@ -76,12 +76,17 @@ static void ledTask(void *) {
       vTaskDelay(pdMS_TO_TICKS(5));
       continue;
     }
-    if (mode != LED_AUTO) on = (mode == LED_ON);
-    else if (state == PC_ON) on = true;
-    else if (state == PC_OFF) on = (t % 2000) < 1000;     // slow blink
-    else on = (t % 2000) < 80;                            // short blip
-    pwmWrite(PWM_CH_LED, on ? ledDuty(lvl) : 0);
-    vTaskDelay(pdMS_TO_TICKS(20));
+    GoingKind going = pcGoing();
+    bool booting = !readyMs || (state == PC_UNKNOWN && t - readyMs < 5000);
+    float level;   // 0..1 before brightness
+    if (mode != LED_AUTO) level = (mode == LED_ON) ? 1.0f : 0.0f;
+    else if (booting) level = (t % 200) < 100 ? 1.0f : 0.0f;
+    else if (going == GO_RESTART || going == GO_UPDATE_RESTART || going == GO_UPDATE_SHUTDOWN)
+      level = (t % 400) < 200 ? 1.0f : 0.0f;
+    else if (state == PC_ON) level = 1.0f;
+    else level = 0.5f - 0.5f * cosf((t % 3000) * (2.0f * (float)M_PI / 3000.0f));   // breathing
+    pwmWrite(PWM_CH_LED, ledDuty(lvl * level));
+    vTaskDelay(pdMS_TO_TICKS(10));
   }
 }
 
@@ -90,6 +95,8 @@ void statusLedInit() {
   pwmWrite(PWM_CH_LED, 0);
   xTaskCreatePinnedToCore(ledTask, "led", 2048, nullptr, 1, nullptr, 0);
 }
+
+void statusLedReady() { readyMs = nowMs() ? nowMs() : 1; }
 
 void ledModeSet(LedMode m) { mode = m; }
 

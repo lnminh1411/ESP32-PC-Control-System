@@ -6,9 +6,14 @@
 // boot blips the link during POST (docs/pc-power-detection.md). PC asleep/off
 // turns the backlights off; awake restores them.
 //
-// Status LED (GPIO2): solid = PC on, slow blink = asleep/off, short blip
-// every 2 s = no USB host seen yet. `led on|off` overrides it. The LED is
-// PWM-driven (LEDC): ledBrightnessSet() scales every "on", and LED_SWEEP is
+// Status LED (GPIO2):
+//   board booting            quick pulses, 100 ms on / 100 ms off
+//   PC on                    solid
+//   PC restarting / updating quick pulses, 200 ms on / 200 ms off
+//   PC asleep / off          slow breathing, fading in and out over 3 s
+// "Booting" lasts until statusLedReady(), plus up to 5 s more while the USB
+// host has not shown up yet. `led on|off` overrides it. The LED is
+// PWM-driven (LEDC): ledBrightnessSet() scales every level, and LED_SWEEP is
 // a test ramp, 100% -> 0% over 2 s and back over 1 s.
 #pragma once
 #include <stdint.h>
@@ -18,6 +23,7 @@ enum LedMode { LED_AUTO, LED_ON, LED_OFF, LED_SWEEP };
 
 void pcStateInit();                // register the USB event handler
 void statusLedInit();              // start the LED task
+void statusLedReady();             // boot finished: leave the boot pattern
 PcState pcState();
 const char *pcStateName(PcState s);
 uint32_t bootGuardLeftMs();        // 0 = guard not running

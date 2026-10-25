@@ -77,6 +77,7 @@ extern "C" void app_main() {
   if (!gif.n) logMsg("gif: none stored -- run scripts/gif_stream.py");
   for (int i = 0; i < N_PANELS; i++) viewEnter(i, panels[i].view);   // GIF offsets now that frames exist
   hostUartPrintln("PLAY");
+  statusLedReady();
 
   for (;;) {
     consolePoll();
