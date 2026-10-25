@@ -33,7 +33,7 @@ Print-ready files are in [`out/print/`](out/print/) as STL and STEP. Each one is
 | `lid.stl` | roof | 26.6 | posts and pegs grow up from the roof; window tops are short bridges (1.6 mm wall) |
 | `mask.stl` | front face (windows) | 14.0 | rims, tabs and pegs point up; best surface lands on the visible face |
 
-PETG, 0.2 mm layers, 3 walls, 20 % infill. Print the mask in black.
+PETG, 0.2 mm layers, 3 walls, 20 % infill. All three parts in black.
 
 ## Joints
 

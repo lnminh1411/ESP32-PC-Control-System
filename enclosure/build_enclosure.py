@@ -362,7 +362,7 @@ def mesh(solid, tol=0.05):
     return base64.b64encode(struct.pack(f"<{len(pos)}f", *pos)).decode()
 
 data = []
-colours = {"block": "#8d95a3", "mask": "#2a2a2a", "lid": "#d8dce3"}
+colours = {"block": "#1f2023", "mask": "#26272a", "lid": "#2c2d31"}   # all printed in black
 for n, p in parts.items():
     data.append({"name": n, "group": "enclosure", "colour": colours[n], "pos": mesh(p)})
 for n, (s, c, g) in comps.items():
