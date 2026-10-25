@@ -1750,6 +1750,7 @@ class PcStats : ServiceBase {
           if (live.FiveHour.ResetsAtUtc != DateTime.MinValue) {
             double remSec = Math.Max(0.0, (live.FiveHour.ResetsAtUtc - nowUtc).TotalSeconds);
             tokens.Add("claude.s_reset_s=" + Fmt((double)remSec));
+            tokens.Add("claude.s_reset_ts=" + Fmt(Math.Floor((live.FiveHour.ResetsAtUtc - UnixEpochUtc).TotalSeconds)));
             texts.Add(new KeyValuePair<string, string>("claude.s_reset_at", live.FiveHour.ResetsAtUtc.ToLocalTime().ToString("HH:mm")));
 
             ClaudePace pace = ComputePace(live.FiveHour.Utilization, live.FiveHour.ResetsAtUtc, SessionWindowMs, nowUtc);
@@ -1765,6 +1766,7 @@ class PcStats : ServiceBase {
           if (live.SevenDay.ResetsAtUtc != DateTime.MinValue) {
             double remSec = Math.Max(0.0, (live.SevenDay.ResetsAtUtc - nowUtc).TotalSeconds);
             tokens.Add("claude.w_reset_s=" + Fmt((double)remSec));
+            tokens.Add("claude.w_reset_ts=" + Fmt(Math.Floor((live.SevenDay.ResetsAtUtc - UnixEpochUtc).TotalSeconds)));
             texts.Add(new KeyValuePair<string, string>("claude.w_reset_at", live.SevenDay.ResetsAtUtc.ToLocalTime().ToString("ddd dd MMM HH:mm", CultureInfo.InvariantCulture)));
 
             ClaudePace pace = ComputePace(live.SevenDay.Utilization, live.SevenDay.ResetsAtUtc, WeeklyWindowMs, nowUtc);
@@ -2114,6 +2116,8 @@ class PcStats : ServiceBase {
     p.Open();
     return p;
   }
+
+  static readonly DateTime UnixEpochUtc = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
 
   // Whole numbers go out exact up to 2^53 (uptime, token counters); the
   // rest with 7 significant digits.

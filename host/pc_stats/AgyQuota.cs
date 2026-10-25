@@ -1059,8 +1059,10 @@ static class AgyQuota {
       if (haveCq) {
         if (!double.IsNaN(cq.FivePct)) lines.Add(pfx + "flash_5h_pct=" + cq.FivePct.ToString("0.0", CultureInfo.InvariantCulture));
         if (cq.FiveReset.HasValue) lines.Add(pfx + "flash_5h_reset_at=" + cq.FiveReset.Value.ToLocalTime().ToString("HH:mm", CultureInfo.InvariantCulture));
+        if (cq.FiveReset.HasValue) lines.Add(pfx + "flash_5h_reset_ts=" + ((long)(cq.FiveReset.Value - UnixEpoch).TotalSeconds).ToString(CultureInfo.InvariantCulture));
         if (!double.IsNaN(cq.WeekPct)) lines.Add(pfx + "flash_wk_pct=" + cq.WeekPct.ToString("0.0", CultureInfo.InvariantCulture));
         if (cq.WeekReset.HasValue) lines.Add(pfx + "flash_wk_reset_at=" + cq.WeekReset.Value.ToLocalTime().ToString("ddd HH:mm", CultureInfo.InvariantCulture));
+        if (cq.WeekReset.HasValue) lines.Add(pfx + "flash_wk_reset_ts=" + ((long)(cq.WeekReset.Value - UnixEpoch).TotalSeconds).ToString(CultureInfo.InvariantCulture));
       }
 
       for (int f = 0; f < families.Count; f++) {

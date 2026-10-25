@@ -6,7 +6,7 @@ the ROM then shows up as a USB-Serial-JTAG COM port (a different COM number).
 The ESP32PcStats service opens any Espressif COM port as its serial fallback,
 so it is stopped for the flash and started again afterwards (UAC prompt).
 
-    python scripts/idf_flash.py [--port COM12] [--no-build]
+    python scripts/idf_flash.py [--port COM12] [--no-build] [--idf coredump-info]
 
 Run it with the ESP-IDF Python (it needs pyserial):
     C:\\Espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe scripts\\idf_flash.py
@@ -54,9 +54,10 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     ap.add_argument("--port", default="COM12", help="the running firmware's CDC port")
     ap.add_argument("--no-build", action="store_true")
+    ap.add_argument("--idf", default="flash", help="idf.py action to run on the ROM port (e.g. coredump-info)")
     args = ap.parse_args()
 
-    if not args.no_build and idf("build"):
+    if args.idf == "flash" and not args.no_build and idf("build"):
         sys.exit("build failed")
 
     service("stop")
@@ -78,7 +79,7 @@ def main():
             sys.exit("no download-mode port appeared")
         print(f"ROM downloader on {port}")
         time.sleep(1)   # let Windows finish installing the port
-        rc = idf("-p", port, "flash")
+        rc = idf("-p", port, *args.idf.split())
     finally:
         service("start")
     sys.exit(rc)

@@ -89,8 +89,11 @@ void boardTimeOnSample() {
 }
 
 bool boardLocalTime(struct tm *out) {
-  time_t t = time(nullptr);
-  if (t < 1700000000) return false;   // never set since boot
+  return boardLocalTimeAt(time(nullptr), out);
+}
+
+bool boardLocalTimeAt(time_t t, struct tm *out) {
+  if (time(nullptr) < 1700000000) return false;   // never set since boot
   loadTz();
   t += (time_t)tzMin * 60;
   gmtime_r(&t, out);

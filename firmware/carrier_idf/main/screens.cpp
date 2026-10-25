@@ -107,6 +107,33 @@ static void formatRate(double b, char *buf, size_t len) {
   }
 }
 
+// Reset line from a Unix reset time (tsKey): countdown, then local time.
+//   session: "Resets in 02:01:25 | 13:30"
+//   weekly:  "Resets in 02:16:31:25 | Oct 28" (dd:hh:mm:ss)
+// The "Resets in " prefix goes when the line would not fit the card.
+static void drawReset(LGFX_Sprite &c, const char *tsKey, bool weekly, int x, int y, int maxW) {
+  static const char *months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+  char val[40], buf[56];
+  double ts = pcStat(tsKey);
+  struct tm at;
+  if (isnan(ts) || ts <= 0 || !boardLocalTimeAt((time_t)ts, &at)) {
+    snprintf(val, sizeof(val), "--");
+  } else {
+    long left = (long)(ts - (double)time(nullptr));
+    if (left < 0) left = 0;
+    long d = left / 86400, h = (left / 3600) % 24, m = (left / 60) % 60, sec = left % 60;
+    if (weekly)
+      snprintf(val, sizeof(val), "%02ld:%02ld:%02ld:%02ld | %s %d", d, h, m, sec, months[at.tm_mon % 12], at.tm_mday);
+    else
+      snprintf(val, sizeof(val), "%02ld:%02ld:%02ld | %02d:%02d", d * 24 + h, m, sec, at.tm_hour, at.tm_min);
+  }
+  snprintf(buf, sizeof(buf), "Resets in %s", val);
+  c.setFont(fontSmall());
+  c.setTextColor(C_FAINT);
+  c.setTextDatum(lgfx::textdatum_t::top_left);
+  c.drawString(c.textWidth(buf) <= maxW ? buf : val, x, y);
+}
+
 // GPU load averaged over ~2 s: at idle clocks the cards report bursty
 // utilization (a wallpaper frame keeps a 210 MHz core busy), so the raw
 // value swings 0-50% between samples.
@@ -910,16 +937,13 @@ static void drawAiUsage(LGFX_Sprite &c) {
 
   drawBar(c, 12, 52, 216, 6, isnan(sPct) ? 0.0f : (float)(1.0 - sPct / 100.0), C_CLAUDE);
 
-  const char *sReset = pcText("claude.s_reset_at");
-  snprintf(buf, sizeof(buf), "resets %s", sReset[0] ? sReset : "--");
-  c.setFont(fontSmall());
-  c.setTextColor(C_FAINT);
-  c.setTextDatum(lgfx::textdatum_t::top_left);
-  c.drawString(buf, 12, 62);
-
+  // pace verdict on the right, the reset line in what is left
   const char *sPace = pcText("claude.s_pace_v");
   uint16_t paceCol = (strcmp(sPace, "over") == 0) ? C_WARN : C_DIM;
-  snprintf(buf, sizeof(buf), "pace %s", sPace[0] ? sPace : "--");
+  c.setFont(fontSmall());
+  snprintf(buf, sizeof(buf), "%s", sPace[0] ? sPace : "--");
+  int paceW = c.textWidth(buf);
+  drawReset(c, "claude.s_reset_ts", false, 12, 62, 216 - paceW - 8);
   c.setTextColor(paceCol);
   c.setTextDatum(lgfx::textdatum_t::top_right);
   c.drawString(buf, 228, 62);
@@ -939,12 +963,7 @@ static void drawAiUsage(LGFX_Sprite &c) {
 
   drawBar(c, 12, 104, 216, 6, isnan(wPct) ? 0.0f : (float)(1.0 - wPct / 100.0), C_CLAUDE);
 
-  const char *wReset = pcText("claude.w_reset_at");
-  snprintf(buf, sizeof(buf), "resets %s", wReset[0] ? wReset : "--");
-  c.setFont(fontSmall());
-  c.setTextColor(C_FAINT);
-  c.setTextDatum(lgfx::textdatum_t::top_left);
-  c.drawString(buf, 12, 114);
+  drawReset(c, "claude.w_reset_ts", true, 12, 114, 216);
 
   // Antigravity card: same layout as Claude's (the PC sends remaining %)
   drawCard(c, 4, 138, 232, 130);
@@ -975,19 +994,17 @@ static void drawAiUsage(LGFX_Sprite &c) {
   const char *aPlan = pcText(k);
   drawChip(c, 228, 142, aPlan[0] ? aPlan : "Pro", C_AGY, 0x0000, true);
 
-  // flash_pct / flash_reset_at: the older single value is the 5-hour window
+  // flash_pct: the IDE's older single value is the 5-hour window
   char k5[32], k5r[32], kw[32], kwr[32];
   snprintf(k5, sizeof(k5), "agy%d.flash_5h_pct", agyN);
-  snprintf(k5r, sizeof(k5r), "agy%d.flash_5h_reset_at", agyN);
-  if (isnan(pcStat(k5))) {
-    snprintf(k5, sizeof(k5), "agy%d.flash_pct", agyN);
-    snprintf(k5r, sizeof(k5r), "agy%d.flash_reset_at", agyN);
-  }
+  if (isnan(pcStat(k5))) snprintf(k5, sizeof(k5), "agy%d.flash_pct", agyN);
+  snprintf(k5r, sizeof(k5r), "agy%d.flash_5h_reset_ts", agyN);
   snprintf(kw, sizeof(kw), "agy%d.flash_wk_pct", agyN);
-  snprintf(kwr, sizeof(kwr), "agy%d.flash_wk_reset_at", agyN);
+  snprintf(kwr, sizeof(kwr), "agy%d.flash_wk_reset_ts", agyN);
 
-  struct Row { const char *label, *pctKey, *resetKey; double warn, bad; int y; };
-  const Row rows[2] = {{"Session Remaining", k5, k5r, 75.0, 90.0, 166}, {"Weekly Remaining", kw, kwr, 80.0, 95.0, 218}};
+  struct Row { const char *label, *pctKey, *resetKey; double warn, bad; int y; bool weekly; };
+  const Row rows[2] = {{"Session Remaining", k5, k5r, 75.0, 90.0, 166, false},
+                       {"Weekly Remaining", kw, kwr, 80.0, 95.0, 218, true}};
   for (const Row &r : rows) {
     double left = pcStat(r.pctKey);
     double used = isnan(left) ? left : 100.0 - left;
@@ -1005,12 +1022,7 @@ static void drawAiUsage(LGFX_Sprite &c) {
 
     drawBar(c, 12, r.y + 20, 216, 6, isnan(left) ? 0.0f : (float)(left / 100.0), C_AGY);
 
-    const char *rs = pcText(r.resetKey);
-    snprintf(buf, sizeof(buf), "resets %s", rs[0] ? rs : "--");
-    c.setFont(fontSmall());
-    c.setTextColor(C_FAINT);
-    c.setTextDatum(lgfx::textdatum_t::top_left);
-    c.drawString(buf, 12, r.y + 30);
+    drawReset(c, r.resetKey, r.weekly, 12, r.y + 30, 216);
   }
 
   // Local AI summary card
@@ -1056,6 +1068,7 @@ static void drawLocalAi(LGFX_Sprite &c) {
   c.drawString("Occamy-1.0 35B-A3B", 12, 26);
 
   const char *phase = pcText("ai.phase_name");
+  if (!strcmp(phase, "asleep")) phase = "Not Active";
   drawChip(c, 12, 50, phase[0] ? phase : "generating", C_PURPLE, 0x0000, false);
 
   double el = pcStat("ai.elapsed_s");
@@ -1277,7 +1290,7 @@ void screensDraw(Face f, LGFX_Sprite &c) {
     case FACE_GIF_UPDATE: {
       char sub[48];
       uint32_t mins = pcGoingAgeMs() / 60000;
-      snprintf(sub, sizeof(sub), "installing, %lu min so far", (unsigned long)mins);
+      snprintf(sub, sizeof(sub), "installing, %lu min", (unsigned long)mins);
       drawWarnBox(c, "PC is Updating", sub);
       break;
     }

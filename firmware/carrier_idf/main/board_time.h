@@ -8,5 +8,6 @@
 
 void boardTimeOnSample();               // pcstats calls it at every @e
 bool boardLocalTime(struct tm *out);    // false = no time source yet
+bool boardLocalTimeAt(time_t t, struct tm *out);   // t (Unix) in the local zone; false = no time source
 void boardTimeStartSntp();              // once, when Wi-Fi is up
 void boardTimeSetUtcOffset(int32_t offsetSec);   // forecast's zone, used until the PC sends one
