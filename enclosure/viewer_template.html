@@ -1,0 +1,142 @@
+<!doctype html>
+<title>Carrier Enclosure Viewer</title>
+<style>
+:root{--bg:#f4f5f7;--fg:#1b1f24;--panel:#ffffffee;--line:#d5d9df;--acc:#2b6cb0;color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#15181d;--fg:#e6e9ee;--panel:#1d2229ee;--line:#323a45;--acc:#6aa6e8;color-scheme:dark}}
+:root[data-theme=dark]{--bg:#15181d;--fg:#e6e9ee;--panel:#1d2229ee;--line:#323a45;--acc:#6aa6e8;color-scheme:dark}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font:13px system-ui,sans-serif}
+#c{position:fixed;inset:0;width:100%;height:100%;display:block}
+#ui{position:fixed;top:0;left:0;max-height:100%;overflow:auto;padding:12px 14px;box-sizing:border-box;width:240px;background:var(--panel);border-right:1px solid var(--line);border-bottom:1px solid var(--line);border-radius:0 0 10px 0}
+h1{font-size:14px;margin:0 0 8px}
+h2{font-size:11px;letter-spacing:.06em;text-transform:uppercase;margin:12px 0 4px;opacity:.7}
+label{display:flex;align-items:center;gap:6px;padding:2px 0;cursor:pointer}
+input[type=range]{width:100%}
+button{font:inherit;background:transparent;color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:3px 8px;margin:2px 2px 0 0;cursor:pointer}
+button:hover{border-color:var(--acc)}
+.sw{width:10px;height:10px;border-radius:2px;display:inline-block;border:1px solid #0004}
+#note{position:fixed;right:12px;bottom:10px;opacity:.65;font-size:12px;text-align:right}
+@media (max-width:600px){#ui{width:100%;max-height:40%;border-radius:0}}
+</style>
+<canvas id="c"></canvas>
+<div id="ui">
+<h1>Carrier enclosure</h1>
+<div><button data-v="iso">Iso</button><button data-v="glass">Glass side</button><button data-v="top">Top</button><button data-v="back">Rear</button><button data-v="under">Under</button></div>
+<h2>Explode</h2><input id="ex" type="range" min="0" max="1" step="0.01" value="0">
+<h2>Lid and mask</h2><label><input id="xray" type="checkbox"> see-through</label>
+<label><input id="air" type="checkbox" checked> airflow arrows</label>
+<h2>Show</h2><div id="tg"></div>
+</div>
+<div id="note">drag rotate, right-drag pan, wheel zoom</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const DATA = __DATA__;
+const cv = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({canvas: cv, antialias: true, preserveDrawingBuffer: true});
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+const scene = new THREE.Scene();
+const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+scene.background = new THREE.Color(dark ? 0x15181d : 0xf4f5f7);
+const cam = new THREE.PerspectiveCamera(35, 1, 1, 3000);
+cam.up.set(0, 0, 1);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x556070, 0.75));
+const sun = new THREE.DirectionalLight(0xffffff, 0.9); sun.position.set(-120, -200, 260); scene.add(sun);
+const fill = new THREE.DirectionalLight(0xffffff, 0.35); fill.position.set(200, 120, 80); scene.add(fill);
+
+// shroud reference plane (z = 0), glass-side edge at x_front
+const shroud = new THREE.Mesh(new THREE.BoxGeometry(110, 220, 3),
+  new THREE.MeshStandardMaterial({color: dark ? 0x2a2f37 : 0xcfd4db, roughness: .9}));
+shroud.position.set(DATA.x_front - 55, 70, -1.5); scene.add(shroud);
+
+const groups = {};
+const EXPLODE = {block: [0,0,0], mask: [38,0,0], base: [0,0,0], lid: [0,0,45], lightpipe: [0,0,28], bezel: [38,0,0], baycover: [0,0,70], cradle: [0,0,18],
+                 module: [0,0,32], panel: [30,0,0], screen: [30,0,0], keyfob: [0,0,26]};
+const items = [];
+for (const p of DATA.parts) {
+  const f = new Float32Array(Uint8Array.from(atob(p.pos), c => c.charCodeAt(0)).buffer);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(f, 3));
+  g.computeVertexNormals();
+  const isScreen = p.group === 'screen';
+  const mat = new THREE.MeshStandardMaterial({color: p.colour, roughness: p.group === 'enclosure' ? .6 : .5,
+    metalness: .05, flatShading: true, side: THREE.DoubleSide,
+    emissive: isScreen ? new THREE.Color(p.colour) : 0x000000, emissiveIntensity: isScreen ? .55 : 0});
+  if (p.name === 'lightpipe') { mat.transparent = true; mat.opacity = .8; mat.emissive = new THREE.Color(p.colour); mat.emissiveIntensity = .6; }
+  const m = new THREE.Mesh(g, mat);
+  m.userData = {name: p.name, group: p.group, key: p.group === 'enclosure' ? p.name : p.group};
+  scene.add(m); items.push(m);
+  (groups[m.userData.key] = groups[m.userData.key] || []).push(m);
+}
+const labels = {block:'Plinth block', mask:'Screen mask', base:'Base tray', lid:'Lid', bezel:'Display bezel', cradle:'Keyfob cradle', baycover:'Bay cover', lightpipe:'LED light pipe',
+  pcb:'PCB + parts', module:'ESP32 module', panel:'Display panels', screen:'Screens', keyfob:'Keyfob'};
+const tg = document.getElementById('tg');
+for (const k of Object.keys(labels)) {
+  if (!groups[k]) continue;
+  const col = '#' + groups[k][0].material.color.getHexString();
+  const l = document.createElement('label');
+  l.innerHTML = '<input type="checkbox" checked data-k="' + k + '"><span class="sw" style="background:' + col + '"></span>' + labels[k];
+  tg.appendChild(l);
+}
+tg.addEventListener('change', e => { const k = e.target.dataset.k; (groups[k] || []).forEach(m => m.visible = e.target.checked); });
+
+// airflow arrows (+Y)
+const arrows = new THREE.Group();
+for (const x of [20, 30, 48, 55]) for (const z of [9, 22]) {
+  if (x > 40 && z > 12) continue;
+  arrows.add(new THREE.ArrowHelper(new THREE.Vector3(0,1,0), new THREE.Vector3(x, -34, z), 24, 0x1e90ff, 6, 4));
+}
+for (const x of [18, 30]) arrows.add(new THREE.ArrowHelper(new THREE.Vector3(0,1,0), new THREE.Vector3(x, 143, 8), 22, 0x1e90ff, 6, 4));
+scene.add(arrows);
+document.getElementById('air').onchange = e => arrows.visible = e.target.checked;
+
+function applyExplode(t) {
+  for (const m of items) {
+    const e = EXPLODE[m.userData.key] || [0,0,0];
+    m.position.set(e[0]*t, e[1]*t, e[2]*t);
+  }
+}
+document.getElementById('ex').oninput = e => applyExplode(+e.target.value);
+document.getElementById('xray').onchange = e => {
+  for (const m of (groups.mask || []).concat(groups.lid || [])) { m.material.transparent = e.target.checked; m.material.opacity = e.target.checked ? .22 : 1; m.material.depthWrite = !e.target.checked; m.material.needsUpdate = true; }
+};
+
+// orbit
+const target = new THREE.Vector3(40, 66, 8);
+let theta = -0.9, phi = 1.0, dist = 330;
+function place() {
+  cam.position.set(target.x + dist*Math.sin(phi)*Math.cos(theta), target.y + dist*Math.sin(phi)*Math.sin(theta), target.z + dist*Math.cos(phi));
+  cam.lookAt(target);
+}
+const VIEWS = {iso:[-0.95,1.0,330,[40,66,8]], glass:[0.0,1.35,300,[40,66,-10]], top:[-1.5708,0.02,300,[34,66,10]],
+               back:[-1.5708,1.25,260,[34,66,8]], under:[-1.0,2.6,330,[40,66,0]]};
+window.setView = n => { const v = VIEWS[n]; theta=v[0]; phi=v[1]; dist=v[2]; target.set(v[3][0], v[3][1], v[3][2]); place(); };
+document.querySelectorAll('[data-v]').forEach(b => b.onclick = () => setView(b.dataset.v));
+let drag = null;
+cv.addEventListener('contextmenu', e => e.preventDefault());
+cv.addEventListener('pointerdown', e => { drag = {x:e.clientX, y:e.clientY, b:e.button}; cv.setPointerCapture(e.pointerId); });
+cv.addEventListener('pointerup', () => drag = null);
+cv.addEventListener('pointermove', e => {
+  if (!drag) return;
+  const dx = e.clientX - drag.x, dy = e.clientY - drag.y; drag.x = e.clientX; drag.y = e.clientY;
+  if (drag.b === 0 && !e.shiftKey) { theta -= dx*0.006; phi = Math.min(3.1, Math.max(0.02, phi - dy*0.006)); }
+  else {
+    const d = cam.getWorldDirection(new THREE.Vector3());
+    const r = new THREE.Vector3().crossVectors(d, cam.up).normalize();
+    const u = new THREE.Vector3().crossVectors(r, d).normalize();
+    target.addScaledVector(r, -dx*dist*0.0016).addScaledVector(u, dy*dist*0.0016);
+  }
+  place();
+});
+cv.addEventListener('wheel', e => { e.preventDefault(); dist = Math.min(1200, Math.max(30, dist*Math.exp(e.deltaY*0.001))); place(); }, {passive:false});
+function resize() { renderer.setSize(innerWidth, innerHeight, false); cam.aspect = innerWidth/innerHeight; cam.updateProjectionMatrix(); }
+addEventListener('resize', resize); resize(); setView('iso');
+(function loop(){ renderer.render(scene, cam); requestAnimationFrame(loop); })();
+// hook for scripted renders: {view, explode, xray, hide:[keys], air, cam:[theta,phi,dist,[x,y,z]]}
+window.viewerState = (o) => {
+  if (o.view) setView(o.view);
+  if (o.explode !== undefined) { document.getElementById('ex').value = o.explode; applyExplode(o.explode); }
+  const x = document.getElementById('xray'); x.checked = !!o.xray; x.onchange({target:x});
+  for (const k in groups) groups[k].forEach(m => m.visible = !(o.hide||[]).includes(k));
+  if (o.cam) { theta=o.cam[0]; phi=o.cam[1]; dist=o.cam[2]; target.set(o.cam[3][0], o.cam[3][1], o.cam[3][2]); place(); }
+  arrows.visible = !!o.air;
+};
+</script>
