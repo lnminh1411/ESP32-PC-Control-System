@@ -297,6 +297,11 @@ Details worth knowing:
   own `/usage` panel, so every 10 minutes the helper runs `agy` in a pseudo
   console, types `/usage` and reads the result. It then removes the lines
   this adds to agy's prompt history.
+- **Windows updates:** the service sends `pc.update=1` while Windows is
+  installing updates with nobody signed in (a servicing worker such as
+  `TiWorker` running and no `explorer`): the "Working on updates" screen
+  before the restart and "Updates are underway" after it. The board keeps
+  its Updating faces until that goes back to 0 and the PC is back.
 - Tokens are never logged.
 
 See [host/pc_stats/README.md](host/pc_stats/README.md) for `stats.ini`,

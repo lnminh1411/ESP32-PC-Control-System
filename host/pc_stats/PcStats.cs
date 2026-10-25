@@ -774,6 +774,8 @@ class PcStats : ServiceBase {
 
   static bool updatePending = false;
   static DateTime nextUpdatePendingCheckUtc = DateTime.MinValue;
+  static bool updateRunning = false;
+  static DateTime nextUpdateRunningCheckUtc = DateTime.MinValue;
 
   static string ExtractProcessName(string process) {
     if (string.IsNullOrEmpty(process)) return "";
@@ -850,6 +852,27 @@ class PcStats : ServiceBase {
       Log("going: CheckUpdatePending failed: " + ex.Message);
     }
     return false;
+  }
+
+  // Windows is installing updates with nobody signed in: the "Working on
+  // updates" screen before a restart and "Updates are underway" after it.
+  // Servicing workers alone are not enough (Windows also installs in the
+  // background while someone works), so a signed-in desktop (explorer) means no.
+  static bool CheckUpdateRunning() {
+    try {
+      if (ProcessRunning("explorer")) return false;
+      foreach (string name in new string[] { "TiWorker", "poqexec", "SetupHost" })
+        if (ProcessRunning(name)) return true;
+    } catch (Exception ex) {
+      Log("going: CheckUpdateRunning failed: " + ex.Message);
+    }
+    return false;
+  }
+
+  static bool ProcessRunning(string name) {
+    System.Diagnostics.Process[] ps = System.Diagnostics.Process.GetProcessesByName(name);
+    foreach (System.Diagnostics.Process p in ps) p.Dispose();
+    return ps.Length > 0;
   }
 
   static bool GetUpdatePendingCached() {
@@ -943,6 +966,8 @@ class PcStats : ServiceBase {
   }
 
   static void PrintGoingTest() {
+    Console.WriteLine("update pending (reboot needed): " + (CheckUpdatePending() ? "yes" : "no"));
+    Console.WriteLine("update running (installing, nobody signed in): " + (CheckUpdateRunning() ? "yes" : "no"));
     try {
       string queryStr = "*[System[(EventID=1074)]]";
       var query = new EventLogQuery("System", PathType.LogName, queryStr);
@@ -3182,6 +3207,12 @@ class PcStats : ServiceBase {
           updatePending = CheckUpdatePending();
           nextUpdatePendingCheckUtc = DateTime.UtcNow.AddSeconds(30);
         }
+        if (DateTime.UtcNow >= nextUpdateRunningCheckUtc) {
+          bool running = CheckUpdateRunning();
+          if (running != updateRunning) Log("going: update " + (running ? "running" : "no longer running"));
+          updateRunning = running;
+          nextUpdateRunningCheckUtc = DateTime.UtcNow.AddSeconds(5);
+        }
 
         lock (goingLock) {
           if (goingKind != "none" && (DateTime.UtcNow - goingSetUtc).TotalSeconds >= 120.0) {
@@ -3382,7 +3413,7 @@ class PcStats : ServiceBase {
           }
         }
 
-        // Wire contract: pc.going*, pc.update_pending, pc.last_down*
+        // Wire contract: pc.going*, pc.update_pending, pc.update, pc.last_down*
         string curGoingKind, curGoingBy, curGoingWhy;
         long curGoingId;
         lock (goingLock) {
@@ -3394,6 +3425,7 @@ class PcStats : ServiceBase {
 
         tokens.Add("pc.going_id=" + curGoingId);
         tokens.Add("pc.update_pending=" + (updatePending ? "1" : "0"));
+        tokens.Add("pc.update=" + (updateRunning ? "1" : "0"));   // installing right now
         // wall clock for the board (it keeps counting while the PC is off)
         tokens.Add("pc.epoch=" + ((long)(DateTime.UtcNow - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalSeconds).ToString(CultureInfo.InvariantCulture));
         tokens.Add("pc.tz_min=" + ((int)TimeZoneInfo.Local.GetUtcOffset(DateTime.Now).TotalMinutes).ToString(CultureInfo.InvariantCulture));

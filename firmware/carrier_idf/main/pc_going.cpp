@@ -36,6 +36,11 @@ static uint32_t backWindowMs(GoingKind k) {
   return k == GO_UPDATE_RESTART ? 2 * 60 * 60 * 1000 : 10 * 60 * 1000;
 }
 
+// pc.update = 1: the PC says Windows is installing updates right now.
+static bool hostUpdating() {
+  return pcStatsFresh() && pcStat("pc.update") == 1.0;
+}
+
 static char latchedLastDown[32] = "";
 static char latchedLastDownAt[32] = "";
 
@@ -196,7 +201,24 @@ void pcGoingOnSample() {
 
   double gid = pcStat("pc.going_id");
 
-  if (latchedKind != GO_NONE && fromHost && !pcWentOff && !isnan(gid) && gid == 0.0) {
+  // An update the PC reports without (or long after) an announcement, e.g.
+  // after its restart: latch it as an update restart already under way.
+  if (hostUpdating() && latchedKind != GO_UPDATE_RESTART && latchedKind != GO_UPDATE_SHUTDOWN) {
+    latchedKind = GO_UPDATE_RESTART;
+    fromHost = true;
+    snprintf(latchedBy, sizeof latchedBy, "Windows Update");
+    latchedWhy[0] = '\0';
+    if (!announcementMs) announcementMs = nowMs();
+    pcWentOff = true;   // wait for the "back" condition below
+    offStartMs = nowMs();
+    seqAtOff = pcStatsSeq();
+    logMsg("pc: PC reports updates installing");
+    discordNotify("PC installing updates");
+    syncScreenHold();
+    return;
+  }
+
+  if (latchedKind != GO_NONE && fromHost && !pcWentOff && !isnan(gid) && gid == 0.0 && !hostUpdating()) {
     // id back to 0 without USB ever dropping: either the PC rebooted fast
     // (uptime younger than the announcement) or the shutdown was aborted
     double up = pcStat("uptime");
@@ -265,7 +287,7 @@ void pcGoingPoll() {
       seqAtOff = pcStatsSeq();
       syncScreenHold();
     } else {
-      if (announcementMs && (uint32_t)(nowMs() - announcementMs) >= preOffMs(latchedKind)) {
+      if (announcementMs && !hostUpdating() && (uint32_t)(nowMs() - announcementMs) >= preOffMs(latchedKind)) {
         logMsg("pc: announcement timed out (PC still on)");
         clearLatch();
         return;
@@ -274,7 +296,7 @@ void pcGoingPoll() {
   } else {
     if (st == PC_OFF) seqAtOff = pcStatsSeq();   // another restart: wait for samples after this one
     if (latchedKind == GO_RESTART || latchedKind == GO_UPDATE_RESTART) {
-      bool back = st == PC_ON && pcStatsFresh() && pcStatsSeq() != seqAtOff;
+      bool back = st == PC_ON && pcStatsFresh() && pcStatsSeq() != seqAtOff && !hostUpdating();
       if (back) {
         uint32_t offSec = (nowMs() - offStartMs) / 1000;
         char buf[64];
@@ -283,7 +305,7 @@ void pcGoingPoll() {
         logMsg("pc: %s", buf);
         discordNotify(buf);
         clearLatch();
-      } else if ((uint32_t)(nowMs() - offStartMs) >= backWindowMs(latchedKind)) {
+      } else if (!hostUpdating() && (uint32_t)(nowMs() - offStartMs) >= backWindowMs(latchedKind)) {
         logMsg("pc: did not come back");
         clearLatch();
       }
