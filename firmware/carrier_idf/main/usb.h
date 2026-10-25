@@ -28,6 +28,7 @@ int usbCdcAvailable();
 int usbCdcRead();
 bool usbCdcConnected();
 void usbCdcWrite(const char *buf, size_t len);
+bool usbCdcWriteAll(const char *buf, size_t len);   // blocking, for bulk dumps
 
 #ifdef __cplusplus
 }

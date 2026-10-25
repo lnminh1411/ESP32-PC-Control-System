@@ -136,7 +136,10 @@ static void formatUptime(double uptimeSec, char *buf, size_t len) {
   uint32_t h = (s / 3600) % 24;
   uint32_t m = (s / 60) % 60;
   uint32_t sec = s % 60;
-  if (d > 0) {
+  if (d >= 100) {
+    // 3-digit days: seconds dropped so it stays clear of the net rates
+    snprintf(buf, len, "%lud %02lu:%02lu", (unsigned long)d, (unsigned long)h, (unsigned long)m);
+  } else if (d > 0) {
     snprintf(buf, len, "%lud %02lu:%02lu:%02lu", (unsigned long)d, (unsigned long)h, (unsigned long)m,
              (unsigned long)sec);
   } else {
@@ -714,18 +717,18 @@ static void drawMedia(LGFX_Sprite &c) {
   c.drawString(upBuf, 12, 262);
 
   // Network down throughput
-  drawNetArrow(c, 140, 251, true, C_CPU);
+  drawNetArrow(c, 220, 251, true, C_CPU);
   char rateBuf[32];
   formatRate(pcStat("net_down"), rateBuf, sizeof(rateBuf));
   c.setFont(fontSmall());
   c.setTextColor(C_TEXT);
   c.setTextDatum(lgfx::textdatum_t::top_right);
-  c.drawString(rateBuf, 228, 246);
+  c.drawString(rateBuf, 214, 246);
 
   // Network up throughput
-  drawNetArrow(c, 140, 271, false, C_RAM);
+  drawNetArrow(c, 220, 271, false, C_RAM);
   formatRate(pcStat("net_up"), rateBuf, sizeof(rateBuf));
-  c.drawString(rateBuf, 228, 266);
+  c.drawString(rateBuf, 214, 266);
 
   // 56-sample net_down sparkline
   drawSparkline(c);
@@ -893,18 +896,19 @@ static void drawAiUsage(LGFX_Sprite &c) {
   c.setFont(fontSmall());
   c.setTextColor(C_DIM);
   c.setTextDatum(lgfx::textdatum_t::top_left);
-  c.drawString("Session", 12, 32);
+  c.drawString("Session Remaining", 12, 32);
 
+  // both cards show what is left; colour still follows how much is used
   double sPct = pcStat("claude.s_pct");
   char buf[48];
   if (isnan(sPct)) snprintf(buf, sizeof(buf), "--");
-  else snprintf(buf, sizeof(buf), "%.0f%%", sPct);
+  else snprintf(buf, sizeof(buf), "%.0f%%", 100.0 - sPct);
   c.setFont(fontBody());
   c.setTextColor(sev(sPct, 75.0, 90.0));
   c.setTextDatum(lgfx::textdatum_t::top_right);
   c.drawString(buf, 228, 30);
 
-  drawBar(c, 12, 52, 216, 6, isnan(sPct) ? 0.0f : (float)(sPct / 100.0), C_CLAUDE);
+  drawBar(c, 12, 52, 216, 6, isnan(sPct) ? 0.0f : (float)(1.0 - sPct / 100.0), C_CLAUDE);
 
   const char *sReset = pcText("claude.s_reset_at");
   snprintf(buf, sizeof(buf), "resets %s", sReset[0] ? sReset : "--");
@@ -923,17 +927,17 @@ static void drawAiUsage(LGFX_Sprite &c) {
   c.setFont(fontSmall());
   c.setTextColor(C_DIM);
   c.setTextDatum(lgfx::textdatum_t::top_left);
-  c.drawString("Weekly", 12, 84);
+  c.drawString("Weekly Remaining", 12, 84);
 
   double wPct = pcStat("claude.w_pct");
   if (isnan(wPct)) snprintf(buf, sizeof(buf), "--");
-  else snprintf(buf, sizeof(buf), "%.0f%%", wPct);
+  else snprintf(buf, sizeof(buf), "%.0f%%", 100.0 - wPct);
   c.setFont(fontBody());
   c.setTextColor(sev(wPct, 80.0, 95.0));
   c.setTextDatum(lgfx::textdatum_t::top_right);
   c.drawString(buf, 228, 82);
 
-  drawBar(c, 12, 104, 216, 6, isnan(wPct) ? 0.0f : (float)(wPct / 100.0), C_CLAUDE);
+  drawBar(c, 12, 104, 216, 6, isnan(wPct) ? 0.0f : (float)(1.0 - wPct / 100.0), C_CLAUDE);
 
   const char *wReset = pcText("claude.w_reset_at");
   snprintf(buf, sizeof(buf), "resets %s", wReset[0] ? wReset : "--");
@@ -942,8 +946,7 @@ static void drawAiUsage(LGFX_Sprite &c) {
   c.setTextDatum(lgfx::textdatum_t::top_left);
   c.drawString(buf, 12, 114);
 
-  // Antigravity card: same layout as Claude's. The PC sends remaining
-  // fractions; shown as used % so both cards read the same way.
+  // Antigravity card: same layout as Claude's (the PC sends remaining %)
   drawCard(c, 4, 138, 232, 130);
   c.setFont(fontSmall());
   c.setTextColor(C_AGY);
@@ -984,7 +987,7 @@ static void drawAiUsage(LGFX_Sprite &c) {
   snprintf(kwr, sizeof(kwr), "agy%d.flash_wk_reset_at", agyN);
 
   struct Row { const char *label, *pctKey, *resetKey; double warn, bad; int y; };
-  const Row rows[2] = {{"Session", k5, k5r, 75.0, 90.0, 166}, {"Weekly", kw, kwr, 80.0, 95.0, 218}};
+  const Row rows[2] = {{"Session Remaining", k5, k5r, 75.0, 90.0, 166}, {"Weekly Remaining", kw, kwr, 80.0, 95.0, 218}};
   for (const Row &r : rows) {
     double left = pcStat(r.pctKey);
     double used = isnan(left) ? left : 100.0 - left;
@@ -993,14 +996,14 @@ static void drawAiUsage(LGFX_Sprite &c) {
     c.setTextDatum(lgfx::textdatum_t::top_left);
     c.drawString(r.label, 12, r.y);
 
-    if (isnan(used)) snprintf(buf, sizeof(buf), "--");
-    else snprintf(buf, sizeof(buf), "%.0f%%", used);
+    if (isnan(left)) snprintf(buf, sizeof(buf), "--");
+    else snprintf(buf, sizeof(buf), "%.0f%%", left);
     c.setFont(fontBody());
     c.setTextColor(sev(used, r.warn, r.bad));
     c.setTextDatum(lgfx::textdatum_t::top_right);
     c.drawString(buf, 228, r.y - 2);
 
-    drawBar(c, 12, r.y + 20, 216, 6, isnan(used) ? 0.0f : (float)(used / 100.0), C_AGY);
+    drawBar(c, 12, r.y + 20, 216, 6, isnan(left) ? 0.0f : (float)(left / 100.0), C_AGY);
 
     const char *rs = pcText(r.resetKey);
     snprintf(buf, sizeof(buf), "resets %s", rs[0] ? rs : "--");
@@ -1021,11 +1024,11 @@ static void drawAiUsage(LGFX_Sprite &c) {
   if (!phaseName[0] || !strcmp(phaseName, "asleep")) phaseName = "Not Active";
   drawChip(c, 228, 276, phaseName, C_TRACK, C_DIM, true);
 
-  const char *mName = pcText("ai.model_name");
+  // ai.model_name is the load state (asleep/waking/awake), not the model
   c.setFont(fontSmall());
   c.setTextColor(C_FAINT);
   c.setTextDatum(lgfx::textdatum_t::top_left);
-  textImgDraw(c, "ai.model_name", mName[0] ? mName : "Occamy-1.0", 12, 298);
+  c.drawString("Occamy-1.0", 12, 298);
 
   double reqs = pcStat("ai.requests");
   double errs = pcStat("ai.errors");
@@ -1047,11 +1050,10 @@ static void drawLocalAi(LGFX_Sprite &c) {
   bool pulse = ((nowMs() / 500) % 2) == 0;
   c.fillCircle(220, 16, 5, pulse ? C_PURPLE : C_AI_PULSE_DIM);
 
-  const char *model = pcText("ai.model_name");
   c.setFont(fontBody());
   c.setTextColor(C_TEXT);
   c.setTextDatum(lgfx::textdatum_t::top_left);
-  c.drawString(model[0] ? model : "Occamy-1.0 35B-A3B", 12, 26);
+  c.drawString("Occamy-1.0 35B-A3B", 12, 26);
 
   const char *phase = pcText("ai.phase_name");
   drawChip(c, 12, 50, phase[0] ? phase : "generating", C_PURPLE, 0x0000, false);

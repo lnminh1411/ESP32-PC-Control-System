@@ -1,4 +1,5 @@
 #include "usb.h"
+#include "sys.h"
 
 #include <esp_check.h>
 #include <esp_err.h>
@@ -447,6 +448,21 @@ int usbCdcRead() {
 
 bool usbCdcConnected() {
   return s_cdc_connected;
+}
+
+// Blocking: waits for the FIFO instead of dropping (bulk dumps like `shot`)
+bool usbCdcWriteAll(const char *buf, size_t len) {
+  if (!s_cdc_connected || !buf || !s_cdc_tx_lock) return false;
+  if (xSemaphoreTake(s_cdc_tx_lock, pdMS_TO_TICKS(100)) != pdTRUE) return false;
+  uint32_t t0 = nowMs();
+  while (len && nowMs() - t0 < 2000) {
+    size_t q = tinyusb_cdcacm_write_queue(TINYUSB_CDC_ACM_0, (const uint8_t *)buf, len);
+    buf += q;
+    len -= q;
+    tinyusb_cdcacm_write_flush(TINYUSB_CDC_ACM_0, pdMS_TO_TICKS(20));
+  }
+  xSemaphoreGive(s_cdc_tx_lock);
+  return len == 0;
 }
 
 void usbCdcWrite(const char *buf, size_t len) {

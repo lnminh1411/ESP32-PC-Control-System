@@ -327,16 +327,16 @@ static void cmdShot(const char *a1, const char *) {
   }
   char line[1100];
   int len = snprintf(line, sizeof line, "SHOT begin %d %d %d\n", n, TFT_W, TFT_H);
-  usbCdcWrite(line, len);
+  usbCdcWriteAll(line, len);
   for (size_t off = 0; off < bytes; off += 768) {
     size_t out = 0;
     memcpy(line, "SHOT d ", 7);
     mbedtls_base64_encode((unsigned char *)line + 7, sizeof line - 9, &out, copy + off,
                           bytes - off < 768 ? bytes - off : 768);
     line[7 + out] = '\n';
-    usbCdcWrite(line, 8 + out);
+    usbCdcWriteAll(line, 8 + out);
   }
-  usbCdcWrite("SHOT end\n", 9);
+  usbCdcWriteAll("SHOT end\n", 9);
   free(copy);
 }
 
