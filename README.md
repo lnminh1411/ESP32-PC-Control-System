@@ -1,6 +1,8 @@
 # ESP32 PC Control System
 
-<img src="docs/images/pcb_silkscreen_top.png" alt="Carrier PCB, rev 3.1: top silkscreen over F.Cu" width="200" align="left">
+<table><tr><td width="190" valign="top">
+<img src="docs/images/pcb_silkscreen_top.png" alt="Carrier PCB, rev 3.1: top silkscreen over F.Cu" width="180">
+</td><td valign="top">
 
 An ESP32-S3 carrier board that lives inside a PC case. It drives three 2.4"
 displays, presses the motherboard's hardware-reset line, and works a 4-button
@@ -24,7 +26,7 @@ features to fit my over-engineering stuffs hobby.
   power commands in one cable
 - Wake-on-LAN, Discord bot and OTA over Wi-Fi
 
-<br clear="left">
+</td></tr></table>
 
 ## Screens
 
