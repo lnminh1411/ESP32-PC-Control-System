@@ -35,6 +35,7 @@ esp32-pcstats.exe --transport auto     # Transport mode: auto (default), hid, or
 esp32-pcstats.exe --port COM4          # Manually specify COM port instead of VID_303A auto-detect
 esp32-pcstats.exe --claude <dir>        # Test Claude live fetch & local token totals and exit
 esp32-pcstats.exe --going               # Test restart/update detection and exit
+esp32-pcstats.exe --render-text <px> <bold> <out.png> <text...> # Test non-ASCII GDI text rendering
 ```
 
 ## stats.ini Format
@@ -179,11 +180,59 @@ ASCII lines streamed every `@interval` ms (default 500):
 @e <seq>
 ```
 - `@s`: Space-separated `key=value` numeric tokens, split into lines of at most 300 characters. Value formatted as float `G7` (InvariantCulture), or empty if no reading (e.g. `gpu1_fan=`).
-- `@t <key> <text>`: Text stats (rest of line up to 80 chars, newlines/tabs converted to spaces, e.g. for `ai.tool` or `ai.phase_name`).
+- `@t <key> <text>`: Text stats encoded in UTF-8 without BOM (rest of line up to 120 UTF-8 bytes, never splitting a character or surrogate pair; newlines/tabs converted to spaces, e.g. for track titles, artist, or system status).
 - `@e <seq>`: End of sample packet with an incrementing sequence number.
 
 When transported over the vendor HID interface:
 Each packet is chunked into 63-byte pieces; each report starts with Report ID `0x06` followed by up to 63 payload bytes, zero-padded to 64 bytes total. The firmware discards zero bytes and reassembles lines identically.
+
+### Non-ASCII Text Bitmap Push Protocol (`@x`)
+
+When the ESP32 carrier board needs to display a text value containing non-ASCII characters (e.g. Japanese, CJK, Thai, accented characters, emoji) that its built-in ASCII font cannot display, it requests a rendered grayscale bitmap from the host.
+
+#### 1. Inbound Board Request (`!txt`)
+Sent from the carrier board over HID INPUT report 6 (or serial fallback):
+```
+!txt <id> <px> <bold> <key>
+```
+- `<id>`: Decimal uint32 CRC32 of the UTF-8 bytes of the text value.
+- `<px>`: Font pixel size (em height), integer in range `8`..`64`.
+- `<bold>`: `1` for bold, `0` for regular.
+- `<key>`: Text metric key (e.g. `media.title`).
+
+The host validates the request against its dictionary of last-sent `@t` values under a lock:
+- If `<key>` is not found or its CRC32 does not match `<id>`, the request is ignored (the board will ask again with the updated id).
+- Requests identical to one served within the last 5 seconds are ignored to avoid duplicate rendering spikes.
+- At most 4 pending renders are queued at a time (additional requests dropped when full).
+- Each request served or rejected is logged (key, id, w x h; the text itself is never logged for privacy).
+
+#### 2. Host GDI Rendering
+- **Fonts**: Searches `ComicShannsMonoNerdFontPropo-Regular.otf` and `ComicShannsMonoNerdFontPropo-Bold.otf` in `C:\Windows\Fonts`, then in user directories `C:\Users\*\AppData\Local\Microsoft\Windows\Fonts\`. Loaded once via Win32 `AddFontResourceEx` (`FR_PRIVATE = 0x10`). If unavailable, falls back to `Segoe UI` (logged once).
+- **Fallback Font Linking**: Rendered using Win32 GDI `CreateFontW` (`ANTIALIASED_QUALITY = 4`, grayscale, no ClearType) and `DrawTextW` on a memory DC, enabling automatic Uniscribe font fallback for non-Latin scripts (Japanese, CJK, etc.).
+- **Measurement**: `w = measured width + 2` (capped at 1600), `h = tmHeight` from `GetTextMetricsW`, `ascent = tmAscent`.
+- **Drawing**: Rendered white text (`SetTextColor 0xFFFFFF`, `SetBkMode TRANSPARENT`) onto a black, top-down 32-bpp DIB section (`CreateDIBSection`) at `x = 1`, `y = 0` (`DT_SINGLELINE | DT_NOPREFIX | DT_NOCLIP`).
+- **Packed 4-Bit Alpha Format**: Alpha of each pixel is `max(R, G, B) >> 4` (0..15). Packed rows top-to-bottom with stride `(w + 1) / 2` bytes (2 pixels per byte, HIGH nibble = left pixel, LOW nibble = right pixel). All GDI objects are freed immediately.
+
+#### 3. Outbound Streaming Protocol (`@x`)
+- Header: `@x begin <id> <px> <bold> <w> <h> <ascent>`
+- Data lines: `@x d <base64>` in lines of at most 160 base64 chars
+- Terminator: `@x end <id> <crc32 of packed bytes as 8 lowercase hex digits>`
+
+Text transfers share a combined per-tick budget of 4,000 base64 characters with cover art (`@a`), with text prioritized before art because text payloads are small. Only one text transfer runs at a time, completing fully before the next queued transfer begins.
+
+#### 4. Test Mode
+Inspect font rendering and Uniscribe fallback directly from the command line:
+```cmd
+esp32-pcstats.exe --render-text <px> <bold> <out.png> <text...>
+```
+Example:
+```cmd
+esp32-pcstats.exe --render-text 20 1 K:\scratch\t.png "Atena ア テ ナ"
+```
+Renders the text using the identical GDI pipeline, exports a 4x nearest-neighbor scaled PNG with alpha mapped to brightness for visual inspection, and prints:
+```
+<w> <h> <ascent> <packed_bytes>
+```
 
 ## Power Control and Wake-on-LAN
 
