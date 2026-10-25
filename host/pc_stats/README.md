@@ -46,7 +46,7 @@ key = <hardware> | <sensor type> | <sensor name> [| first|avg|sum|max|min]
 key = @uptime                                (PC uptime in seconds via GetTickCount64)
 key = @drive <letter>: used|free|total|load  (GB, load = used %, via DriveInfo)
 key = @cpu_mhz                               (Task Manager's CPU speed, free)
-key = @ecore_load                            (average % Processor Utility on E-cores)
+key = @ecore_load                            (average % Processor Time on E-cores)
 key = @proc_mb <name>                        (summed WorkingSet64 in MB, 0 if none)
 key = @counter <category> | <counter> | <instance> [| scale]   (Windows perf counter)
 @interval <ms>                               (sample interval, 200-10000, default 500)
@@ -58,7 +58,7 @@ key = @counter <category> | <counter> | <instance> [| scale]   (Windows perf cou
 - `<sensor type>`: `SensorType` enum name (`Temperature`, `Load`, `Clock`, `Fan`, `Data`, `SmallData`, `Throughput`, ...).
 - `<sensor name>`: Sensor name from LibreHardwareMonitor. Supports `*` wildcards.
 - Reduction (`first|avg|sum|max|min`): Defaults to `first`. Empty/null sensor readings are skipped.
-- `@ecore_load`: Average "% Processor Utility" across E-core logical processors identified via `GetSystemCpuSetInformation` (lowest `EfficiencyClass` on hybrid CPUs; falls back to overall CPU load on non-hybrid CPUs). Counters created once at startup.
+- `@ecore_load`: Average "% Processor Time" across E-core logical processors identified via `GetSystemCpuSetInformation` (lowest `EfficiencyClass` on hybrid CPUs; falls back to overall CPU load on non-hybrid CPUs). Counters created once at startup.
 - `@proc_mb <name>`: Summed working set (`WorkingSet64`) in MB across all running processes matching `<name>` (e.g. `@proc_mb llama-server`), or `0` if none are running.
 - `@source <name> <url> <ms>`: Spawns a background thread to poll an HTTP or `file:///` endpoint returning `key=value` lines (e.g. `@source media file:///C:/ProgramData/ESP32PcStats/media.txt 1000`). Numeric values join the `@s` stream; text values stream as `@t` lines. Generates `<name>.ok` (1 if updated within 3 x interval, 0 on timeout/error, dropping other source keys when down).
 - Run `esp32-pcstats.exe --list` to inspect the exact hardware type/name and sensor names available on your system.

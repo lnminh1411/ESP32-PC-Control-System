@@ -2271,14 +2271,14 @@ class PcStats : ServiceBase {
       for (int i = 0; i < entries.Count; i++) {
         if (entries[i].EfficiencyClass == minEff) {
           string inst = entries[i].Group + "," + entries[i].LogicalIndex;
-          var c = OpenCounter("Processor Information", "% Processor Utility", inst);
+          var c = OpenCounter("Processor Information", "% Processor Time", inst);
           if (c != null) list.Add(c);
         }
       }
     }
 
     if (list.Count == 0) {
-      var c = OpenCounter("Processor Information", "% Processor Utility", "_Total");
+      var c = OpenCounter("Processor Information", "% Processor Time", "_Total");
       if (c != null) list.Add(c);
     }
 
