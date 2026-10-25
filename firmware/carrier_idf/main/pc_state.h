@@ -7,12 +7,13 @@
 // turns the backlights off; awake restores them.
 //
 // Status LED (GPIO2):
-//   board booting            quick pulses, 100 ms on / 100 ms off
+//   loading                  quick pulses, 100 ms on / 100 ms off
 //   PC on                    solid
 //   PC restarting / updating quick pulses, 200 ms on / 200 ms off
 //   PC asleep / off          slow breathing, fading in and out over 3 s
-// "Booting" lasts until statusLedReady(), plus up to 5 s more while the USB
-// host has not shown up yet. `led on|off` overrides it. The LED is
+// "Loading" is the board booting (until statusLedReady()), or the PC on
+// without its stats arriving yet (also after a restart), or, for up to 5 s
+// after boot, no USB host seen yet. `led on|off` overrides it. The LED is
 // PWM-driven (LEDC): ledBrightnessSet() scales every level, and LED_SWEEP is
 // a test ramp, 100% -> 0% over 2 s and back over 1 s.
 #pragma once

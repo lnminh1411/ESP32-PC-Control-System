@@ -938,16 +938,7 @@ static void drawAiUsage(LGFX_Sprite &c) {
 
   drawBar(c, 12, 52, 216, 6, isnan(sPct) ? 0.0f : (float)(1.0 - sPct / 100.0), C_CLAUDE);
 
-  // pace verdict on the right, the reset line in what is left
-  const char *sPace = pcText("claude.s_pace_v");
-  uint16_t paceCol = (strcmp(sPace, "over") == 0) ? C_WARN : C_DIM;
-  c.setFont(fontSmall());
-  snprintf(buf, sizeof(buf), "%s", sPace[0] ? sPace : "--");
-  int paceW = c.textWidth(buf);
-  drawReset(c, "claude.s_reset_ts", false, 12, 62, 216 - paceW - 8);
-  c.setTextColor(paceCol);
-  c.setTextDatum(lgfx::textdatum_t::top_right);
-  c.drawString(buf, 228, 62);
+  drawReset(c, "claude.s_reset_ts", false, 12, 62, 216);
 
   c.setFont(fontSmall());
   c.setTextColor(C_DIM);

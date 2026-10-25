@@ -9,6 +9,7 @@
 #include "display.h"
 #include "log.h"
 #include "pc_going.h"
+#include "pcstats.h"
 #include "views.h"
 #include "sys.h"
 #include "usb.h"
@@ -84,12 +85,12 @@ static void ledTask(void *) {
     }
     GoingKind going = pcGoing();
     PcState st = pcState();
-    bool booting = !readyMs || (st == PC_UNKNOWN && t - readyMs < 5000);
+    bool restartish = going == GO_RESTART || going == GO_UPDATE_RESTART || going == GO_UPDATE_SHUTDOWN;
+    bool loading = !readyMs || (st == PC_ON && !pcStatsFresh()) || (st == PC_UNKNOWN && t - readyMs < 5000);
     float level;   // 0..1 before brightness
     if (mode != LED_AUTO) level = (mode == LED_ON) ? 1.0f : 0.0f;
-    else if (booting) level = (t % 200) < 100 ? 1.0f : 0.0f;
-    else if (going == GO_RESTART || going == GO_UPDATE_RESTART || going == GO_UPDATE_SHUTDOWN)
-      level = (t % 400) < 200 ? 1.0f : 0.0f;
+    else if (restartish) level = (t % 400) < 200 ? 1.0f : 0.0f;
+    else if (loading) level = (t % 200) < 100 ? 1.0f : 0.0f;
     else if (st == PC_ON) level = 1.0f;
     else level = 0.5f - 0.5f * cosf((t % 3000) * (2.0f * (float)M_PI / 3000.0f));   // breathing
     pwmWrite(PWM_CH_LED, ledDuty(lvl * level));
