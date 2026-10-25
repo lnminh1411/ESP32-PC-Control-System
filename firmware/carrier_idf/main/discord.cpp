@@ -45,7 +45,7 @@ static char reqLine[64];
 static char reqReply[1500];
 static volatile bool reqPending;
 static SemaphoreHandle_t reqDone;
-static SemaphoreHandle_t restMutex;
+static SemaphoreHandle_t restMutex[2];
 
 static bool runOnMainLoop(const char *line, uint32_t timeoutMs = 2500) {
   snprintf(reqLine, sizeof reqLine, "%s", line);
@@ -174,15 +174,21 @@ static esp_err_t httpEventHandler(esp_http_client_event_t *evt) {
 }
 
 // out (optional) gets the response body
+// Two connections: the bot task's (posts, log, panel) and everyone else's
+// (button presses, which Discord wants answered within 3 s)
 static int rest(const char *method, const char *path, const char *body, char *out = nullptr, size_t outCap = 0) {
-  if (restMutex) xSemaphoreTake(restMutex, portMAX_DELAY);
-  static esp_http_client_handle_t client;
-  static HttpRespBuf respBuf;
-  static char respFallback[128];
+  int slot = xTaskGetCurrentTaskHandle() == botTaskHandle ? 0 : 1;
+  SemaphoreHandle_t mtx = restMutex[slot];
+  if (mtx) xSemaphoreTake(mtx, portMAX_DELAY);
+  static esp_http_client_handle_t clients[2];
+  static HttpRespBuf respBufs[2];
+  static char respFallback[2][128];
+  esp_http_client_handle_t &client = clients[slot];
+  HttpRespBuf &respBuf = respBufs[slot];
   if (!respBuf.text) {
     respBuf.text = (char *)heap_caps_malloc(8192, MALLOC_CAP_SPIRAM);
-    respBuf.cap = respBuf.text ? 8192 : sizeof respFallback;
-    if (!respBuf.text) respBuf.text = respFallback;
+    respBuf.cap = respBuf.text ? 8192 : sizeof respFallback[slot];
+    if (!respBuf.text) respBuf.text = respFallback[slot];
   }
   char url[256];
   snprintf(url, sizeof url, "%s%s", API, path);
@@ -204,7 +210,7 @@ static int rest(const char *method, const char *path, const char *body, char *ou
     cfg.timeout_ms = 10000;
     client = esp_http_client_init(&cfg);
     if (!client) {
-      if (restMutex) xSemaphoreGive(restMutex);
+      if (mtx) xSemaphoreGive(mtx);
       return -1;
     }
   } else {
@@ -241,14 +247,14 @@ static int rest(const char *method, const char *path, const char *body, char *ou
   int code = esp_http_client_get_status_code(client);
   if (err != ESP_OK) {
     logMsg("discord: %s %s -> err %s", method, path, esp_err_to_name(err));
-    if (restMutex) xSemaphoreGive(restMutex);
+    if (mtx) xSemaphoreGive(mtx);
     return -1;
   }
   if (code < 200 || code >= 300) {
     logMsg("discord: %s %s -> %d %.160s", method, path, code, respBuf.text);
   }
   if (out && outCap) snprintf(out, outCap, "%s", respBuf.text);
-  if (restMutex) xSemaphoreGive(restMutex);
+  if (mtx) xSemaphoreGive(mtx);
   return code;
 }
 
@@ -472,10 +478,16 @@ static void buildComponents(cJSON *data, PanelView view, bool standing) {
   }
 }
 
+// 4 = reply with a new (ephemeral) panel; 7 = update the panel the button is
+// on, sent as an edit after ackButton() so slow actions don't time out
 static void sendPanelResponse(const char *id, const char *token, int callbackType, bool standing, PanelView view, const char *footerText) {
+  bool edit = callbackType == 7 && DISCORD_APP_ID[0];
   cJSON *root = cJSON_CreateObject();
-  cJSON_AddNumberToObject(root, "type", callbackType); // 4 = reply, 7 = update
-  cJSON *data = cJSON_AddObjectToObject(root, "data");
+  cJSON *data = root;
+  if (!edit) {
+    cJSON_AddNumberToObject(root, "type", callbackType);
+    data = cJSON_AddObjectToObject(root, "data");
+  }
   if (callbackType == 4) {
     cJSON_AddNumberToObject(data, "flags", 64); // ephemeral
   }
@@ -489,9 +501,17 @@ static void sendPanelResponse(const char *id, const char *token, int callbackTyp
   cJSON_Delete(root);
 
   char path[256];
-  snprintf(path, sizeof path, "/interactions/%s/%s/callback", id, token);
-  rest("POST", path, body);
+  if (edit) snprintf(path, sizeof path, "/webhooks/%s/%s/messages/@original", DISCORD_APP_ID, token);
+  else snprintf(path, sizeof path, "/interactions/%s/%s/callback", id, token);
+  rest(edit ? "PATCH" : "POST", path, body);
   free(body);
+}
+
+// "Got it, the message will change": Discord's 3 s deadline met before any work
+static void ackButton(const char *id, const char *token) {
+  char path[256];
+  snprintf(path, sizeof path, "/interactions/%s/%s/callback", id, token);
+  rest("POST", path, "{\"type\":6}");
 }
 
 // Post the standing panel in #control, or bring the one there up to date
@@ -652,6 +672,7 @@ static void onInteraction(cJSON *d) {
     }
 
     if (!standing) panelTouchedMs = nowMs();
+    if (DISCORD_APP_ID[0]) ackButton(id, token);
 
     if (!strcmp(cid, "refresh")) {
       snprintf(lastPanelResult, sizeof lastPanelResult, "Refreshed");
@@ -935,7 +956,8 @@ static void botTask(void *) {
 void discordInit() {
   if (!DISCORD_TOKEN[0]) { logMsg("discord: off (no DISCORD_TOKEN in secrets.h)"); return; }
   reqDone = xSemaphoreCreateBinary();
-  restMutex = xSemaphoreCreateMutex();
+  restMutex[0] = xSemaphoreCreateMutex();
+  restMutex[1] = xSemaphoreCreateMutex();
   notifyQueue = xQueueCreateWithCaps(NOTIFY_QUEUE_DEPTH, sizeof(NotifyMsg), MALLOC_CAP_SPIRAM);
   if (!notifyQueue) notifyQueue = xQueueCreate(NOTIFY_QUEUE_DEPTH, sizeof(NotifyMsg));
   wsBuf = (char *)heap_caps_malloc(WS_BUF_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
