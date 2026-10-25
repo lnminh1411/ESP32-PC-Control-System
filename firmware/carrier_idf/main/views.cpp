@@ -11,6 +11,7 @@
 #include "fonts.h"
 #include "gif_store.h"
 #include "layout.h"
+#include "screens.h"
 #include "optos.h"
 #include "pc_state.h"
 #include "pc_going.h"
@@ -63,6 +64,10 @@ static uint32_t lastMetricsHeartbeatMs = 0;
 static uint32_t lastDashHeartbeatMs[N_PANELS] = {0, 0, 0};
 static bool wasIdle = false;
 
+// Auto views (pc / media / ai): the face on glass and when it was last drawn
+static Face panelFace[N_PANELS];
+static uint32_t lastFaceDrawMs[N_PANELS];
+
 static double getBucketCapacity() {
   double ratePerUs = ((double)displayBus.hz / 8.0 * (double)busBudgetPct / 100.0) / 1000000.0;
   return ratePerUs * 100000.0;   // ~100 ms worth
@@ -101,7 +106,7 @@ void viewsSetPanelCap(int panel, uint8_t capFps) {
 
 static PanelPriority getPriority(int panel, uint32_t now) {
   if ((int32_t)(boostUntilMs[panel] - now) > 0) return PRIO_HIGH;
-  if (panels[panel].view == VIEW_GIF) return PRIO_LOW;
+  if (panels[panel].gifMode) return PRIO_LOW;
   return PRIO_NORMAL;
 }
 
@@ -158,12 +163,15 @@ const char *viewName(View v) {
     case VIEW_STATS:   return "stats";
     case VIEW_METRICS: return "metrics";
     case VIEW_DASH:    return "dash";
+    case VIEW_PC:      return "pc";
+    case VIEW_MEDIA:   return "media";
+    case VIEW_AI:      return "ai";
     default:           return "?";
   }
 }
 
 bool viewParse(const char *name, View &v) {
-  for (View c : {VIEW_GIF, VIEW_STATUS, VIEW_STATS, VIEW_METRICS, VIEW_DASH}) {
+  for (View c : {VIEW_GIF, VIEW_STATUS, VIEW_STATS, VIEW_METRICS, VIEW_DASH, VIEW_PC, VIEW_MEDIA, VIEW_AI}) {
     if (!strcmp(name, viewName(c))) {
       v = c;
       return true;
@@ -186,7 +194,7 @@ void viewsNoteAction(const char *what) {
 void viewsShowGifFrame(int idx) {
   for (int i = 0; i < N_PANELS; i++) {
     Panel &p = panels[i];
-    if (p.view == VIEW_GIF) {
+    if (p.gifMode) {
       p.gifFrame = idx;
       displaySubmit(i);
       displayWait(i);
@@ -443,14 +451,18 @@ static void drawDash(Panel &p, int panelIdx, bool full) {
 void viewEnter(int i, View v) {
   displayWait(i);
   Panel &p = panels[i];
+  p.gifMode = false;        // normal canvas flush until a GIF face starts
+  p.bandY0 = p.bandY1 = 0;
   if (v == VIEW_GIF) {
-    p.view = VIEW_STATUS;   // normal canvas flush
+    p.view = VIEW_STATUS;
     p.canvas->fillScreen(C_BG);
     displaySubmit(i);
     displayWait(i);
     p.gifShown = -1;
+    p.gifMode = true;
   }
   p.view = v;
+  panelFace[i] = FACE_NONE;   // auto views pick their face on the next service pass
   p.canvas->fillScreen(C_BG);
   memset(p.sent, 0xA5, (size_t)TFT_W * TFT_H * 2);
   p.gifIdx = gif.n ? (uint16_t)(i * gif.n / N_PANELS) : 0;
@@ -458,6 +470,42 @@ void viewEnter(int i, View v) {
   panelDirty[i] = true;
   panelFirstFrame[i] = true;
   lastFrameMs[i] = 0;
+  viewsRefreshIdle();
+}
+
+bool viewIsAuto(View v) { return v == VIEW_PC || v == VIEW_MEDIA || v == VIEW_AI; }
+
+void viewsRefreshIdle() {
+  bool anyAuto = false;
+  for (int i = 0; i < N_PANELS; i++) anyAuto |= viewIsAuto(panels[i].view);
+  backlightIdle(pcState() == PC_OFF && !pcGoingHoldsScreens() && !anyAuto);
+}
+
+// Put face f on panel i. GIF faces clear the glass once and let the flush
+// task push GIF frames (with the overlay band from the canvas); canvas faces
+// force a full resend.
+static void enterFace(int i, Face f) {
+  Panel &p = panels[i];
+  bool gifNow = screensIsGif(f);
+  if (gifNow && !p.gifMode) {
+    p.canvas->fillScreen(C_BG);
+    displaySubmit(i);
+    displayWait(i);
+  }
+  p.gifMode = gifNow;
+  p.gifShown = -1;                               // full GIF frame: repaints an old band too
+  if (gifNow && f != FACE_GIF) {
+    p.bandY0 = OVERLAY_Y0;
+    p.bandY1 = OVERLAY_Y1;
+    screensDraw(f, *p.canvas);
+  } else {
+    p.bandY0 = p.bandY1 = 0;
+  }
+  if (!gifNow) memset(p.sent, 0xA5, (size_t)TFT_W * TFT_H * 2);
+  panelFace[i] = f;
+  lastFaceDrawMs[i] = nowMs();
+  panelDirty[i] = true;
+  panelFirstFrame[i] = true;
 }
 
 void viewsService() {
@@ -492,7 +540,7 @@ void viewsService() {
     for (int i = 0; i < N_PANELS; i++) {
       panels[i].deferred = deferredCount[i];
       deferredCount[i] = 0;
-      if (panels[i].view == VIEW_GIF && gifNominalMs[i] > 0) {
+      if (panels[i].gifMode && gifNominalMs[i] > 0) {
         panels[i].gifStretch = (dt * 1000.0f) / (float)gifNominalMs[i];
       } else {
         panels[i].gifStretch = 1.0f;
@@ -510,6 +558,7 @@ void viewsService() {
       if (panels[i].view == VIEW_METRICS || panels[i].view == VIEW_DASH || panels[i].view == VIEW_STATS) {
         panelDirty[i] = true;
       }
+      if (viewIsAuto(panels[i].view) && !panels[i].gifMode) panelDirty[i] = true;
     }
   }
 
@@ -579,6 +628,27 @@ void viewsService() {
     }
   }
 
+  // Auto views: follow the PC state, redraw on their own period
+  for (int i = 0; i < N_PANELS; i++) {
+    Panel &p = panels[i];
+    if (!viewIsAuto(p.view) || p.busy) continue;
+    Face f = screensFace(p.view);
+    if (f != panelFace[i]) {
+      enterFace(i, f);
+      continue;
+    }
+    uint32_t period = screensPeriodMs(f);
+    if (screensIsGif(f)) {
+      // the band's text can change (update minutes); the next GIF frame sends it
+      if (f != FACE_GIF && now - lastFaceDrawMs[i] >= 1000) {
+        screensDraw(f, *p.canvas);
+        lastFaceDrawMs[i] = now;
+      }
+    } else if (period && now - lastFaceDrawMs[i] >= period) {
+      panelDirty[i] = true;
+    }
+  }
+
   // Schedule due panels
   for (;;) {
     int best = -1;
@@ -593,7 +663,7 @@ void viewsService() {
       bool isDue = false;
       int32_t overdue = 0;
 
-      if (p.view == VIEW_GIF) {
+      if (p.gifMode) {
         if (!gif.n) {
           p.dueMs = now + 200;
           continue;
@@ -639,7 +709,7 @@ void viewsService() {
     wasDeferred[best] = false;
     lastFrameMs[best] = now;
 
-    if (p.view == VIEW_GIF) {
+    if (p.gifMode) {
       uint16_t idx = p.gifIdx;
       if (idx >= gif.n) idx = 0;
       p.gifFrame = idx;
@@ -655,6 +725,10 @@ void viewsService() {
       else if (p.view == VIEW_STATS) drawStats(p);
       else if (p.view == VIEW_METRICS) drawMetrics(p, best);
       else if (p.view == VIEW_DASH) drawDash(p, best, panelFirstFrame[best]);
+      else if (viewIsAuto(p.view)) {
+        screensDraw(panelFace[best], *p.canvas);
+        lastFaceDrawMs[best] = now;
+      }
 
       panelFirstFrame[best] = false;
       panelDirty[best] = false;

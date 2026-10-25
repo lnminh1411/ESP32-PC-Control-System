@@ -70,19 +70,18 @@ static void syncScreenHold() {
   bool holdNow = pcGoingHoldsScreens();
   if (holdNow && !holdingScreens) {
     holdingScreens = true;
+    // auto views show restart/update themselves; only the old views switch to status
     for (int i = 0; i < N_PANELS; i++) {
       savedViews[i] = panels[i].view;
+      if (!viewIsAuto(savedViews[i])) viewEnter(i, VIEW_STATUS);
     }
-    for (int i = 0; i < N_PANELS; i++) {
-      viewEnter(i, VIEW_STATUS);
-    }
-    backlightIdle(false);
+    viewsRefreshIdle();
   } else if (!holdNow && holdingScreens) {
     holdingScreens = false;
     for (int i = 0; i < N_PANELS; i++) {
-      viewEnter(i, savedViews[i]);
+      if (!viewIsAuto(savedViews[i])) viewEnter(i, savedViews[i]);
     }
-    backlightIdle(pcState() == PC_OFF);
+    viewsRefreshIdle();
   }
 }
 

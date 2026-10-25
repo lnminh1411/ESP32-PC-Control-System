@@ -13,6 +13,7 @@
 #include "discord.h"
 #include "display.h"
 #include "layout.h"
+#include "weather.h"
 #include "gif_store.h"
 #include "log.h"
 #include "net.h"
@@ -119,7 +120,7 @@ static void cmdPcStats(const char *a1, const char *) {
 static void cmdView(const char *a1, const char *a2) {
   int n = a1 ? atoi(a1) : 0;
   View v;
-  if (n < 1 || n > N_PANELS || !a2 || !viewParse(a2, v)) { logMsg("view: usage view <1|2|3> <gif|status|stats|metrics|dash>"); return; }
+  if (n < 1 || n > N_PANELS || !a2 || !viewParse(a2, v)) { logMsg("view: usage view <1|2|3> <pc|media|ai|gif|status|stats|metrics|dash>"); return; }
   viewEnter(n - 1, v);
   displaySaveView(n - 1, v);
   viewsBoost(n - 1);
@@ -237,7 +238,7 @@ static void cmdFps(const char *a1, const char *a2) {
       if (cap >= 1 && cap <= 60) snprintf(capBuf, sizeof(capBuf), "%u", cap);
       else snprintf(capBuf, sizeof(capBuf), "20");
 
-      if (p.view == VIEW_GIF) {
+      if (p.gifMode) {
         logMsg("panel %d: %-7s %-6s target %-3s %4.1f fps %5.0f KB/s  deferred %lu  stretch %.2f",
                i + 1, viewName(p.view), viewsPanelPriorityName(i), capBuf,
                p.fps, p.kbps, (unsigned long)p.deferred, p.gifStretch);
@@ -289,6 +290,10 @@ static void cmdFps(const char *a1, const char *a2) {
   logMsg("fps: usage fps [budget <20-95> | cap <1|2|3> <1-60|off>]");
 }
 
+static void cmdWeather(const char *a1, const char *a2) {
+  weatherCommand(a1, a2);
+}
+
 static void cmdLayout(const char *a1, const char *a2) {
   layoutCommand(a1, a2);
 }
@@ -296,7 +301,7 @@ static void cmdLayout(const char *a1, const char *a2) {
 static const Command COMMANDS[] = {
   {"help",    "",                                    cmdHelp},
   {"status",  "",                                    cmdStatus},
-  {"view",    "<1|2|3> <gif|status|stats|metrics|dash>", cmdView},
+  {"view",    "<1|2|3> <pc|media|ai|gif|status|stats|metrics|dash>", cmdView},
   {"door",    "<1-4> [ms]",                          cmdDoor},
   {"reset",   "",                                    cmdReset},
   {"wake",    "[force | mac <AA:BB:..>]",            cmdWake},
@@ -308,6 +313,7 @@ static const Command COMMANDS[] = {
   {"pcstats", "[text]",                                       cmdPcStats},
   {"fps",     "[budget <20-95> | cap <1|2|3> <1-60|off>]",   cmdFps},
   {"layout",  "<show|reload|default|begin|data <b64>|end>",  cmdLayout},
+  {"weather", "<show|demo [rain]|clear>",                     cmdWeather},
 };
 
 static void cmdHelp(const char *, const char *) {

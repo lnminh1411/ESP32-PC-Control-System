@@ -110,12 +110,12 @@ static bool bandDiff(Panel &p, int y, int n, int &x0, int &x1) {
   return true;
 }
 
-static uint32_t displayFlush(Panel &p) {
-  uint32_t t0 = nowUs();
+// Push the changed parts of canvas rows [yStart, yEnd) (yStart a multiple of BAND).
+static void flushRows(Panel &p, int yStart, int yEnd) {
   int runY = -1, rx0 = TFT_W, rx1 = -1;
-  for (int y = 0; y <= TFT_H; y += BAND) {
+  for (int y = yStart; y <= yEnd; y += BAND) {
     int x0, x1;
-    bool dirty = y < TFT_H && bandDiff(p, y, std::min(BAND, TFT_H - y), x0, x1);
+    bool dirty = y < yEnd && bandDiff(p, y, std::min(BAND, yEnd - y), x0, x1);
     if (dirty) {
       if (runY < 0) runY = y;
       rx0 = std::min(rx0, x0);
@@ -128,6 +128,11 @@ static uint32_t displayFlush(Panel &p) {
       runY = -1; rx0 = TFT_W; rx1 = -1;
     }
   }
+}
+
+static uint32_t displayFlush(Panel &p) {
+  uint32_t t0 = nowUs();
+  flushRows(p, 0, TFT_H);
   waitTx(0);
   uint32_t us = nowUs() - t0;
   p.pushUs += us;
@@ -135,7 +140,18 @@ static uint32_t displayFlush(Panel &p) {
   return us;
 }
 
+static void pushGifRectRaw(Panel &p, const uint8_t *framePacked, int rx, int ry, int rw, int rh, int x0, int y0);
+
+// GIF rect minus the overlay band: up to two slices above and below it
 static void pushGifRect(Panel &p, const uint8_t *framePacked, int rx, int ry, int rw, int rh, int x0, int y0) {
+  if (p.bandY1 <= p.bandY0) { pushGifRectRaw(p, framePacked, rx, ry, rw, rh, x0, y0); return; }
+  int top = y0 + ry, bot = top + rh;                    // panel rows
+  int a1 = std::min(bot, (int)p.bandY0), b0 = std::max(top, (int)p.bandY1);
+  if (a1 > top) pushGifRectRaw(p, framePacked, rx, ry, rw, a1 - top, x0, y0);
+  if (bot > b0) pushGifRectRaw(p, framePacked, rx, ry + (b0 - top), rw, bot - b0, x0, y0);
+}
+
+static void pushGifRectRaw(Panel &p, const uint8_t *framePacked, int rx, int ry, int rw, int rh, int x0, int y0) {
   int gx = x0 + rx;
   int gy = y0 + ry;
   waitTx(0);
@@ -177,6 +193,7 @@ static void pushGif(Panel &p) {
   } else {
     pushGifRect(p, gif.packed[fIdx], 0, 0, gif.pw, gif.h, x0, y0);
   }
+  if (p.bandY1 > p.bandY0) flushRows(p, p.bandY0 & ~(BAND - 1), p.bandY1);   // overlay drawn on the canvas
   waitTx(0);
   p.gifShown = fIdx;
   uint32_t us = nowUs() - t0;
@@ -192,7 +209,7 @@ static void flushTask(void *) {
       if (idx >= 0 && idx < N_PANELS) {
         Panel &p = panels[idx];
         uint32_t bytesBefore = p.bytes;
-        if (p.view == VIEW_GIF) pushGif(p);
+        if (p.gifMode) pushGif(p);
         else displayFlush(p);
         uint32_t frameBytes = p.bytes - bytesBefore;
         p.lastFrameBytes = frameBytes;
@@ -335,6 +352,8 @@ void displayInit() {
     p.busy = false;
     p.gifShown = -1;
     p.gifFrame = 0;
+    p.gifMode = false;
+    p.bandY0 = p.bandY1 = 0;
     p.lastFrameBytes = 0;
     p.emaBytes = (float)(cfg.w * cfg.h * 3 / 2);
     p.deferred = 0;

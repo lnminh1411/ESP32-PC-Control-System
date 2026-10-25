@@ -22,6 +22,9 @@ enum View : uint8_t {
   VIEW_STATS,
   VIEW_METRICS,
   VIEW_DASH,
+  VIEW_PC,        // screen 1: PC stats, GIF while the PC is off
+  VIEW_MEDIA,     // screen 2: media + uptime/network, weather while off
+  VIEW_AI,        // screen 3: AI usage / local AI, clock while off
   VIEW_COUNT
 };
 
@@ -39,6 +42,8 @@ struct Panel {
   uint16_t *sent;
   bool canvasInternal;
   View view;
+  bool gifMode;                     // flush pushes GIF frames instead of the canvas
+  int16_t bandY0, bandY1;           // GIF skips rows [bandY0, bandY1); the canvas fills them
   uint16_t gifIdx;
   uint32_t dueMs;
   uint32_t frames, pushUs, bytes;   // this 1 s window

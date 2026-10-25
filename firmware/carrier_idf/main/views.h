@@ -20,6 +20,8 @@ float busLoadPct();                          // whole SPI bus wire load, last 1 
 
 // FPS engine controls & queries:
 void viewsMarkDirty(int panel);              // -1 = all panels
+bool viewIsAuto(View v);                     // pc / media / ai: face follows the PC state
+void viewsRefreshIdle();                     // screens go dark only when no auto view needs them
 void viewsBoost(int panel);                  // boost priority to HIGH for 2 s (-1 = all)
 uint8_t viewsBusBudget();                    // 20-95%
 void viewsSetBusBudget(uint8_t pct);

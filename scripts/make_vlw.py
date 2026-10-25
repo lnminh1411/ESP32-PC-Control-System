@@ -8,7 +8,7 @@ VLW layout (all int32 big-endian), as parsed by LovyanGFX's VLWfont:
             baseline), dX (left offset), 0 -- sorted by unicode
   bitmaps : per glyph width*height bytes of 8-bit alpha, same order
 
-    python scripts/make_vlw.py FONT.otf SIZE NAME OUT.cpp [--extra U+00B0,U+F2C9]
+    python scripts/make_vlw.py FONT.otf SIZE NAME OUT.cpp [--extra U+00B0,U+F2C9] [--chars "0123456789:"]
 
 The default charset is printable ASCII plus the degree and micro signs. LovyanGFX
 stores code points in 16 bits, so --extra glyphs must be in the BMP
@@ -72,8 +72,11 @@ def main():
     ap.add_argument("name", help="C identifier of the array")
     ap.add_argument("out", help="output .cpp")
     ap.add_argument("--extra", default="", help="extra code points, e.g. U+F2C9,U+F108")
+    ap.add_argument("--chars", default=None,
+                    help="literal characters to use instead of the default set (big digit fonts, icon-only fonts)")
     args = ap.parse_args()
-    blob, asc, desc = build_vlw(args.font, args.size, DEFAULT_CHARS + parse_extra(args.extra))
+    base = [ord(c) for c in args.chars] if args.chars is not None else DEFAULT_CHARS
+    blob, asc, desc = build_vlw(args.font, args.size, base + parse_extra(args.extra))
     write_cpp(blob, args.name, args.out, args.font, args.size)
     print(f"{args.name}: {len(blob)} bytes, ascent {asc}, descent {desc}")
 

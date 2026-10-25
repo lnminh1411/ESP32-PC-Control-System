@@ -9,6 +9,7 @@
 #include "display.h"
 #include "log.h"
 #include "pc_going.h"
+#include "views.h"
 #include "sys.h"
 #include "usb.h"
 
@@ -31,7 +32,7 @@ uint32_t bootGuardLeftMs() {
 
 static void pcSet(PcState s) {
   state = s;
-  backlightIdle(s == PC_OFF && !pcGoingHoldsScreens());
+  viewsRefreshIdle();
 }
 
 static void usbEventHandler(UsbEvent ev) {

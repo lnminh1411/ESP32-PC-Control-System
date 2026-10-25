@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "art.h"
+#include "board_time.h"
 #include "pc_going.h"
 #include "sys.h"
 
@@ -29,6 +31,7 @@ static uint32_t sampleSeq;
 
 void pcStatsLine(const char *line) {
   if (!line || line[0] != '@') return;
+  if (line[1] == 'a' && line[2] == ' ') { artLine(line); return; }
   if (line[1] == 's' && (line[2] == ' ' || line[2] == '\0')) {
     const char *p = line + 2;
     while (*p) {
@@ -114,6 +117,7 @@ void pcStatsLine(const char *line) {
     lastSampleMs = nowMs();
     sampleSeq++;
     pcGoingOnSample();
+    boardTimeOnSample();
   }
 }
 

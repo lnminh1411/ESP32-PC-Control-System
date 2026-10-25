@@ -8,3 +8,7 @@ const lgfx::IFont *fontSmall();   // 12 px regular: labels, metric rows
 const lgfx::IFont *fontBody();    // 16 px regular: values
 const lgfx::IFont *fontHead();    // 20 px bold: panel titles
 const lgfx::IFont *fontBig();     // 28 px bold: the big status values
+const lgfx::IFont *fontDigits();  // 56 px bold, digits . - : % and degree only: weather temp, tok/s
+const lgfx::IFont *fontClock();   // 128 px bold, digits only: the stacked clock
+const lgfx::IFont *fontIcons();   // 44 px Nerd Font weather icons (U+E3xx)
+const lgfx::IFont *fontIconsSm(); // 18 px weather + media/status icons
