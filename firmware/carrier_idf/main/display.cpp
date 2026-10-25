@@ -17,6 +17,7 @@
 #include <LovyanGFX.hpp>
 
 #include "gif_store.h"
+#include "screens.h"
 #include "log.h"
 #include "sys.h"
 
@@ -182,6 +183,55 @@ static void pushGifRectRaw(Panel &p, const uint8_t *framePacked, int rx, int ry,
   p.bytes += rowBytes * rh;
 }
 
+// Overlay band over a GIF: canvas pixels, except C_GIF_KEY ones, which take
+// the GIF pixel underneath. Pushed whole (full width) whenever either side
+// of it changed.
+static void pushBand(Panel &p, const uint8_t *framePacked, int x0, int y0) {
+  const uint16_t key = __builtin_bswap16(C_GIF_KEY);   // sprite stores big-endian
+  const uint16_t *canvas = (const uint16_t *)p.canvas->getBuffer();
+  const size_t frameStride = (size_t)gif.pw * 3 / 2;
+  int yA = p.bandY0, yB = p.bandY1;
+  waitTx(0);
+  setWindow(p, 0, yA, TFT_W, yB - yA);
+  const size_t rowBytes = (size_t)TFT_W * 3 / 2;
+  int rowsPerChunk = std::max(1, (int)(CHUNK_BYTES / rowBytes));
+  bool first = true;
+  for (int r0 = yA; r0 < yB; r0 += rowsPerChunk) {
+    int rows = std::min(rowsPerChunk, yB - r0);
+    waitTx(1);
+    uint8_t *b = dmaBuf[txIssued & 1], *o = b;
+    for (int y = r0; y < r0 + rows; y++) {
+      const uint16_t *s = canvas + (size_t)y * TFT_W;
+      int gy = y - y0;
+      const uint8_t *g = (gy >= 0 && gy < gif.h) ? framePacked + (size_t)gy * frameStride : nullptr;
+      for (int x = 0; x < TFT_W; x += 2) {
+        uint16_t px[2];
+        for (int k = 0; k < 2; k++) {
+          uint16_t c = s[x + k];
+          if (c != key) { px[k] = __builtin_bswap16(c); continue; }
+          int gx = x + k - x0;
+          if (!g || gx < 0 || gx >= gif.pw) { px[k] = 0; continue; }
+          const uint8_t *q = g + (size_t)(gx & ~1) * 3 / 2;
+          int rr, gg, bb;
+          if (!(gx & 1)) { rr = q[0] >> 4; gg = q[0] & 15; bb = q[1] >> 4; }
+          else           { rr = q[1] & 15; gg = q[2] >> 4; bb = q[2] & 15; }
+          px[k] = (uint16_t)((rr << 12) | (gg << 7) | (bb << 1));   // RGB444 back in 565 slots
+        }
+        uint16_t a = px[0], c = px[1];
+        o[0] = ((a >> 8) & 0xF0) | ((a >> 7) & 0x0F);               // R1 G1
+        o[1] = ((a << 3) & 0xF0) | (c >> 12);                       // B1 R2
+        o[2] = ((c >> 3) & 0xF0) | ((c >> 1) & 0x0F);               // G2 B2
+        o += 3;
+      }
+    }
+    txIssued++;
+    esp_lcd_panel_io_tx_color(p.io, first ? 0x2C : 0x3C, b, o - b);
+    first = false;
+  }
+  memcpy(p.sent + (size_t)yA * TFT_W, canvas + (size_t)yA * TFT_W, (size_t)(yB - yA) * TFT_W * 2);
+  p.bytes += rowBytes * (yB - yA);
+}
+
 static void pushGif(Panel &p) {
   if (!gif.n || !gif.packed[p.gifFrame]) return;
   uint32_t t0 = nowUs();
@@ -189,16 +239,23 @@ static void pushGif(Panel &p) {
   int x0 = ((TFT_W - gif.pw) / 2) & ~1;
   int y0 = (TFT_H - gif.h) / 2;
   uint16_t prevIdx = (fIdx == 0) ? (gif.n - 1) : (fIdx - 1);
+  bool band = p.bandY1 > p.bandY0, bandDirty = false;
   if (p.gifShown == (int16_t)prevIdx) {
     uint8_t nr = gif.nRects[fIdx];
     for (uint8_t i = 0; i < nr; i++) {
       const GifRect &r = gif.rects[fIdx][i];
       pushGifRect(p, gif.packed[fIdx], r.x, r.y, r.w, r.h, x0, y0);
+      if (y0 + r.y < p.bandY1 && y0 + r.y + r.h > p.bandY0) bandDirty = true;
     }
   } else {
     pushGifRect(p, gif.packed[fIdx], 0, 0, gif.pw, gif.h, x0, y0);
+    bandDirty = true;
   }
-  if (p.bandY1 > p.bandY0) flushRows(p, p.bandY0 & ~(BAND - 1), p.bandY1);   // overlay drawn on the canvas
+  if (band) {   // the overlay sits on the GIF: re-mix it when the GIF or the overlay changed
+    int bx0, bx1;
+    if (!bandDirty) bandDirty = bandDiff(p, p.bandY0, p.bandY1 - p.bandY0, bx0, bx1);
+    if (bandDirty) pushBand(p, gif.packed[fIdx], x0, y0);
+  }
   waitTx(0);
   p.gifShown = fIdx;
   uint32_t us = nowUs() - t0;

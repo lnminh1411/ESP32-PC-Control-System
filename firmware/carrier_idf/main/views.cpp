@@ -144,6 +144,7 @@ void viewsMarkDirty(int panel) {
 static uint32_t getMinFrameMs(int panel) {
   uint8_t cap = panelCapFps[panel];
   if (cap >= 1 && cap <= 60) return 1000 / cap;
+  if (panels[panel].gifMode) return 16;   // GIFs keep their own frame times (up to 60 fps)
   return 50;   // default 20 fps cap (MIN_FRAME_MS)
 }
 

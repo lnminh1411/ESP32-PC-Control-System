@@ -351,7 +351,7 @@ static inline void drawNetArrow(LGFX_Sprite &c, int x, int y, bool down, uint16_
 
 // Warning overlay box for restarting / updating on GIF faces.
 static void drawWarnBox(LGFX_Sprite &c, const char *title, const char *sub) {
-  c.fillRect(0, OVERLAY_Y0, TFT_W, OVERLAY_Y1 - OVERLAY_Y0, C_BG);
+  c.fillRect(0, OVERLAY_Y0, TFT_W, OVERLAY_Y1 - OVERLAY_Y0, C_GIF_KEY);
 
   int y = 248;
   c.fillRoundRect(12, y, 216, 56, 8, C_WARN);

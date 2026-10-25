@@ -318,8 +318,10 @@ static void cmdShot(const char *a1, const char *) {
     const uint8_t *src = gif.packed[p.gifShown < 0 ? 0 : p.gifShown];
     int x0 = ((TFT_W - gif.pw) / 2) & ~1, y0 = (TFT_H - gif.h) / 2;
     for (int y = 0; y < TFT_H; y++) {
-      if (p.bandY1 > p.bandY0 && y >= p.bandY0 && y < p.bandY1) continue;
+      bool inBand = p.bandY1 > p.bandY0 && y >= p.bandY0 && y < p.bandY1;
       for (int x = 0; x < TFT_W; x++) {
+        uint8_t *cp = copy + ((size_t)y * TFT_W + x) * 2;
+        if (inBand && !(cp[0] == (C_GIF_KEY >> 8) && cp[1] == (C_GIF_KEY & 0xFF))) continue;   // overlay pixel
         int gx = x - x0, gy = y - y0;
         uint16_t c = 0;
         if (gx >= 0 && gx < gif.pw && gy >= 0 && gy < gif.h) {

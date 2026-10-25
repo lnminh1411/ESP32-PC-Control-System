@@ -1,5 +1,9 @@
 // GIF frames: pre-packed RGB444 with precomputed dirty rects held in PSRAM,
 // saved as RGB565-BE to /gif.bin in FAT, uploaded over UART by scripts/gif_stream.py.
+// Frames are scaled (same factor both ways, bilinear) so the GIF fills the
+// screen height; whatever is then wider than the screen is cropped evenly
+// from both sides. gif.w / gif.h are the scaled size; the file keeps the
+// uploaded size.
 //
 // Upload protocol (host -> device unless noted; little-endian):
 //   device: "READY\n" after boot, then 1.5 s for an upload to start
@@ -23,7 +27,7 @@ struct GifRect {
 };
 
 struct Gif {
-  uint16_t w, h, n;
+  uint16_t w, h, n;               // scaled size (what is pushed), frame count
   uint16_t pw;                    // packed width = w rounded UP to even (pad pixel black)
   uint16_t durMs[MAX_FRAMES];
   uint8_t *packed[MAX_FRAMES];    // pw*h*3/2 bytes each, PSRAM, exact push444 byte layout

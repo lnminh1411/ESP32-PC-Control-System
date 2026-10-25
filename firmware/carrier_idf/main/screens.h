@@ -27,6 +27,9 @@ enum Face : uint8_t {
 
 constexpr int OVERLAY_Y0 = 248;   // GIF overlay band, multiples of 8 (display BAND)
 constexpr int OVERLAY_Y1 = 304;
+// Canvas colour inside the overlay band that means "GIF shows through here",
+// so the warning box sits on top of the GIF instead of blanking the rows.
+constexpr uint16_t C_GIF_KEY = 0xF81F;
 
 Face screensFace(View v);                       // face to show now for an auto view
 extern Face screensForce[N_PANELS];             // `face` command: pin a face (docs, screenshots)

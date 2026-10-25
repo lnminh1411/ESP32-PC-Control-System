@@ -52,14 +52,53 @@ static bool readExact(void *dst, size_t len, uint32_t timeoutMs = 5000) {
   return true;
 }
 
-static void packFrame(uint8_t *dst, const uint8_t *srcRawBe, uint16_t w, uint16_t pw, uint16_t h) {
-  size_t dstStride = (size_t)pw * 3 / 2;
-  for (uint16_t y = 0; y < h; y++) {
-    const uint8_t *s = srcRawBe + (size_t)y * w * 2;
+// Width of the source once scaled to the screen height, before the crop.
+static int fitFullWidth(uint16_t sw, uint16_t sh) {
+  return ((int)sw * TFT_H + sh / 2) / sh;
+}
+
+static inline uint16_t px565(const uint8_t *src, int sw, int x, int y) {
+  const uint8_t *q = src + ((size_t)y * sw + x) * 2;
+  return ((uint16_t)q[0] << 8) | q[1];
+}
+
+// Weighted mix of four RGB565 pixels; wx, wy are 0..256 towards b / the lower row.
+static uint16_t mix565(uint16_t a, uint16_t b, uint16_t c, uint16_t d, uint32_t wx, uint32_t wy) {
+  uint32_t wa = (256 - wx) * (256 - wy), wb = wx * (256 - wy), wc = (256 - wx) * wy, wd = wx * wy;
+  uint32_t r = ((a >> 11) * wa + (b >> 11) * wb + (c >> 11) * wc + (d >> 11) * wd + 32768) >> 16;
+  uint32_t g = (((a >> 5) & 63) * wa + ((b >> 5) & 63) * wb + ((c >> 5) & 63) * wc + ((d >> 5) & 63) * wd + 32768) >> 16;
+  uint32_t bl = ((a & 31) * wa + (b & 31) * wb + (c & 31) * wc + (d & 31) * wd + 32768) >> 16;
+  return (uint16_t)((r << 11) | (g << 5) | bl);
+}
+
+// Source RGB565-BE frame (sw x sh) -> gif.w x gif.h packed RGB444: bilinear
+// scale to the screen height, centre crop to gif.w.
+static void packFrame(uint8_t *dst, const uint8_t *srcRawBe, uint16_t sw, uint16_t sh) {
+  const int fullW = fitFullWidth(sw, sh), cx = (fullW - gif.w) / 2;
+  static uint16_t xs0[TFT_W + 1], xs1[TFT_W + 1];
+  static uint16_t xw[TFT_W + 1];
+  for (int x = 0; x < gif.pw; x++) {   // pixel-centre mapping, 8-bit fraction
+    int32_t f = (int32_t)(((int64_t)(2 * (x + cx) + 1) * sw * 256) / (2 * fullW)) - 128;
+    if (f < 0) f = 0;
+    xs0[x] = f >> 8;
+    xs1[x] = std::min(xs0[x] + 1, sw - 1);
+    xw[x] = f & 255;
+  }
+  size_t dstStride = (size_t)gif.pw * 3 / 2;
+  for (int y = 0; y < gif.h; y++) {
+    int32_t f = (int32_t)(((int64_t)(2 * y + 1) * sh * 256) / (2 * gif.h)) - 128;
+    if (f < 0) f = 0;
+    int y0 = f >> 8, y1 = std::min(y0 + 1, sh - 1);
+    uint32_t wy = f & 255;
     uint8_t *o = dst + (size_t)y * dstStride;
-    for (uint16_t x = 0; x < pw; x += 2) {
-      uint16_t a = (x < w) ? (((uint16_t)s[x * 2] << 8) | s[x * 2 + 1]) : 0;
-      uint16_t c = (x + 1 < w) ? (((uint16_t)s[(x + 1) * 2] << 8) | s[(x + 1) * 2 + 1]) : 0;
+    for (int x = 0; x < gif.pw; x += 2) {
+      uint16_t a = 0, c = 0;
+      if (x < gif.w)
+        a = mix565(px565(srcRawBe, sw, xs0[x], y0), px565(srcRawBe, sw, xs1[x], y0),
+                   px565(srcRawBe, sw, xs0[x], y1), px565(srcRawBe, sw, xs1[x], y1), xw[x], wy);
+      if (x + 1 < gif.w)
+        c = mix565(px565(srcRawBe, sw, xs0[x + 1], y0), px565(srcRawBe, sw, xs1[x + 1], y0),
+                   px565(srcRawBe, sw, xs0[x + 1], y1), px565(srcRawBe, sw, xs1[x + 1], y1), xw[x + 1], wy);
       o[0] = ((a >> 8) & 0xF0) | ((a >> 7) & 0x0F);               // R1 G1
       o[1] = ((a << 3) & 0xF0) | (c >> 12);                       // B1 R2
       o[2] = ((c >> 3) & 0xF0) | ((c >> 1) & 0x0F);               // G2 B2
@@ -136,11 +175,14 @@ static void computeFrameRects(int i) {
   }
 }
 
-static bool allocFrames() {
-  if (gif.w == 0 || gif.w > TFT_W || gif.h == 0 || gif.h > TFT_H || gif.n == 0 || gif.n > MAX_FRAMES) {
-    hostUartPrintf("ERR bad size %ux%u x%u\n", gif.w, gif.h, gif.n);
+// Sets gif.w / gif.h to the scaled size of an sw x sh source and allocates frames.
+static bool allocFrames(uint16_t sw, uint16_t sh) {
+  if (sw == 0 || sw > TFT_W || sh == 0 || sh > TFT_H || gif.n == 0 || gif.n > MAX_FRAMES) {
+    hostUartPrintf("ERR bad size %ux%u x%u\n", sw, sh, gif.n);
     return false;
   }
+  gif.h = TFT_H;
+  gif.w = (uint16_t)std::min(fitFullWidth(sw, sh), TFT_W);
   displayWaitAll();
   for (uint16_t i = 0; i < MAX_FRAMES; i++) {
     free(gif.packed[i]);
@@ -166,19 +208,20 @@ bool gifReceive(void (*onFrame)(int idx)) {
   displayWaitAll();
   uint16_t hdr[3];
   if (!readExact(hdr, sizeof hdr)) { hostUartPrintln("ERR header timeout"); return false; }
-  gif.w = hdr[0]; gif.h = hdr[1]; gif.n = hdr[2];
+  uint16_t sw = hdr[0], sh = hdr[1];
+  gif.n = hdr[2];
   if (gif.n == 0 || gif.n > MAX_FRAMES) { hostUartPrintf("ERR bad count %u\n", gif.n); return false; }
   if (!readExact(gif.durMs, gif.n * 2)) { hostUartPrintln("ERR duration timeout"); return false; }
-  if (!allocFrames()) return false;
+  if (!allocFrames(sw, sh)) return false;
 
-  size_t rawBytes = (size_t)gif.w * gif.h * 2;
+  size_t rawBytes = (size_t)sw * sh * 2;
   uint8_t *temp = (uint8_t *)heap_caps_malloc(rawBytes, MALLOC_CAP_SPIRAM);
   if (!temp) { hostUartPrintln("ERR psram alloc temp"); return false; }
 
   FILE *f = fatOk ? fopen(GIF_FILE, "wb") : nullptr;
   bool fileOk = (f != nullptr);
   if (fileOk) {
-    uint16_t h[3] = {gif.w, gif.h, gif.n};
+    uint16_t h[3] = {sw, sh, gif.n};
     fileOk = (fwrite("GIF5", 1, 4, f) == 4) &&
              (fwrite(h, 1, 6, f) == 6) &&
              (fwrite(gif.durMs, 1, gif.n * 2, f) == (size_t)(gif.n * 2));
@@ -198,7 +241,7 @@ bool gifReceive(void (*onFrame)(int idx)) {
     if (fileOk) {
       if (fwrite(temp, 1, rawBytes, f) != rawBytes) fileOk = false;
     }
-    packFrame(gif.packed[i], temp, gif.w, gif.pw, gif.h);
+    packFrame(gif.packed[i], temp, sw, sh);
     if (onFrame) onFrame(i);
     hostUartPrintf("K%u\n", i);
     i++;
@@ -218,18 +261,19 @@ bool gifLoad() {
   uint16_t h[3];
   bool ok = (fread(magic, 1, 4, f) == 4) && !memcmp(magic, "GIF5", 4) && (fread(h, 1, 6, f) == 6);
   if (!ok) { fclose(f); return false; }
-  gif.w = h[0]; gif.h = h[1]; gif.n = h[2];
-  if (!allocFrames()) { fclose(f); gif.n = 0; return false; }
+  uint16_t sw = h[0], sh = h[1];
+  gif.n = h[2];
+  if (!allocFrames(sw, sh)) { fclose(f); gif.n = 0; return false; }
   ok = (fread(gif.durMs, 1, gif.n * 2, f) == (size_t)(gif.n * 2));
   if (!ok) { fclose(f); gif.n = 0; return false; }
 
-  size_t rawBytes = (size_t)gif.w * gif.h * 2;
+  size_t rawBytes = (size_t)sw * sh * 2;
   uint8_t *temp = (uint8_t *)heap_caps_malloc(rawBytes, MALLOC_CAP_SPIRAM);
   if (!temp) { fclose(f); gif.n = 0; return false; }
 
   for (uint16_t i = 0; ok && i < gif.n; i++) {
     if (fread(temp, 1, rawBytes, f) != rawBytes) { ok = false; break; }
-    packFrame(gif.packed[i], temp, gif.w, gif.pw, gif.h);
+    packFrame(gif.packed[i], temp, sw, sh);
   }
   free(temp);
   fclose(f);
