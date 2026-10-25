@@ -12,7 +12,9 @@
 #include <freertos/task.h>
 #include <nvs.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/time.h>
 #include <time.h>
 
 #include "board_time.h"
@@ -190,7 +192,7 @@ static int rest(const char *method, const char *path, const char *body, char *ou
     respBuf.cap = respBuf.text ? 8192 : sizeof respFallback[slot];
     if (!respBuf.text) respBuf.text = respFallback[slot];
   }
-  char url[256];
+  char url[720];
   snprintf(url, sizeof url, "%s%s", API, path);
 
   respBuf.len = 0;
@@ -245,13 +247,21 @@ static int rest(const char *method, const char *path, const char *body, char *ou
   }
 
   int code = esp_http_client_get_status_code(client);
+  // the path without interaction tokens (long, and not for #logging)
+  char shown[64];
+  snprintf(shown, sizeof shown, "%s", path);
+  if (!strncmp(path, "/interactions/", 14) || !strncmp(path, "/webhooks/", 10)) {
+    char *tok = strchr(shown + 1, '/');
+    tok = tok ? strchr(tok + 1, '/') : nullptr;
+    if (tok) snprintf(tok, shown + sizeof shown - tok, "/...");
+  }
   if (err != ESP_OK) {
-    logMsg("discord: %s %s -> err %s", method, path, esp_err_to_name(err));
+    logMsg("discord: %s %s -> err %s", method, shown, esp_err_to_name(err));
     if (mtx) xSemaphoreGive(mtx);
     return -1;
   }
   if (code < 200 || code >= 300) {
-    logMsg("discord: %s %s -> %d %.160s", method, path, code, respBuf.text);
+    logMsg("discord: %s %s -> %d %.160s", method, shown, code, respBuf.text);
   }
   if (out && outCap) snprintf(out, outCap, "%s", respBuf.text);
   if (mtx) xSemaphoreGive(mtx);
@@ -332,7 +342,7 @@ static char lastPanelResult[128];
 
 static void deleteActivePanel() {
   if (!panelActive || !panelToken[0] || !DISCORD_APP_ID[0]) return;
-  char delPath[256];
+  char delPath[640];
   snprintf(delPath, sizeof delPath, "/webhooks/%s/%s/messages/@original", DISCORD_APP_ID, panelToken);
   rest("DELETE", delPath, "");
   panelActive = false;
@@ -500,7 +510,7 @@ static void sendPanelResponse(const char *id, const char *token, int callbackTyp
   char *body = cJSON_PrintUnformatted(root);
   cJSON_Delete(root);
 
-  char path[256];
+  char path[640];
   if (edit) snprintf(path, sizeof path, "/webhooks/%s/%s/messages/@original", DISCORD_APP_ID, token);
   else snprintf(path, sizeof path, "/interactions/%s/%s/callback", id, token);
   rest(edit ? "PATCH" : "POST", path, body);
@@ -509,9 +519,17 @@ static void sendPanelResponse(const char *id, const char *token, int callbackTyp
 
 // "Got it, the message will change": Discord's 3 s deadline met before any work
 static void ackButton(const char *id, const char *token) {
-  char path[256];
+  // the interaction id is a snowflake: when Discord made it, ms since 2015
+  int64_t madeMs = (int64_t)(strtoull(id, nullptr, 10) >> 22) + 1420070400000LL;
+  struct timeval tv;
+  gettimeofday(&tv, nullptr);
+  int64_t lateMs = (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000 - madeMs;
+  uint32_t t0 = nowMs();
+  char path[640];
   snprintf(path, sizeof path, "/interactions/%s/%s/callback", id, token);
-  rest("POST", path, "{\"type\":6}");
+  int code = rest("POST", path, "{\"type\":6}");
+  logMsg("discord: button reached the board %lld ms after the click, answered in %lu ms (%d)",
+         (long long)lateMs, (unsigned long)(nowMs() - t0), code);
 }
 
 // Post the standing panel in #control, or bring the one there up to date
@@ -582,7 +600,7 @@ static void replyEphemeralText(const char *id, const char *token, const char *te
   char *body = cJSON_PrintUnformatted(root);
   cJSON_Delete(root);
 
-  char path[256];
+  char path[640];
   snprintf(path, sizeof path, "/interactions/%s/%s/callback", id, token);
   rest("POST", path, body);
   free(body);
@@ -638,7 +656,7 @@ static void onInteraction(cJSON *d) {
       lastPanelResult[0] = 0;
       sendPanelResponse(id, token, 4, false, PANEL_NORMAL, nullptr);
       if (hadOld && oldToken[0] && DISCORD_APP_ID[0]) {
-        char delPath[256];
+        char delPath[640];
         snprintf(delPath, sizeof delPath, "/webhooks/%s/%s/messages/@original", DISCORD_APP_ID, oldToken);
         rest("DELETE", delPath, "");
       }
@@ -654,14 +672,14 @@ static void onInteraction(cJSON *d) {
       char *body = cJSON_PrintUnformatted(r);
       cJSON_Delete(r);
 
-      char path[256];
+      char path[640];
       snprintf(path, sizeof path, "/interactions/%s/%s/callback", id, token);
       rest("POST", path, body);
       free(body);
 
       const char *delToken = token[0] ? token : panelToken;
       if (DISCORD_APP_ID[0] && delToken[0]) {
-        char delPath[256];
+        char delPath[640];
         snprintf(delPath, sizeof delPath, "/webhooks/%s/%s/messages/@original", DISCORD_APP_ID, delToken);
         rest("DELETE", delPath, "");
       }
