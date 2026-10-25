@@ -14,7 +14,7 @@
 //
 // Wire format, ASCII lines (firmware side: firmware/carrier_main/pcstats.h):
 //   @s key=value key=value ...   (split into lines <= 300 chars)
-//   @t key text                  (text stats, up to 80 chars)
+//   @t key text                  (text stats, UTF-8, up to 120 bytes)
 //   @e <seq>                     end of one sample (every @interval ms, default 500)
 //
 // Usage: esp32-pcstats.exe            run as service (installed by install.ps1)
@@ -26,6 +26,9 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics.Eventing.Reader;
+using System.Drawing;
+using System.Drawing.Imaging;
+using System.Drawing.Text;
 using System.Globalization;
 using System.IO;
 using System.IO.Ports;
@@ -44,6 +47,22 @@ using Microsoft.Win32;
 using Microsoft.Win32.SafeHandles;
 
 class PcStats : ServiceBase {
+  static readonly Encoding Utf8NoBom = new UTF8Encoding(false);
+
+  static string TruncateUtf8(string s, int maxBytes) {
+    if (string.IsNullOrEmpty(s) || maxBytes <= 0) return "";
+    int byteCount = 0;
+    int charIndex = 0;
+    while (charIndex < s.Length) {
+      int charStep = (char.IsHighSurrogate(s[charIndex]) && charIndex + 1 < s.Length && char.IsLowSurrogate(s[charIndex + 1])) ? 2 : 1;
+      int bytesForChar = Utf8NoBom.GetByteCount(s.Substring(charIndex, charStep));
+      if (byteCount + bytesForChar > maxBytes) break;
+      byteCount += bytesForChar;
+      charIndex += charStep;
+    }
+    return s.Substring(0, charIndex);
+  }
+
   const string Vid = "VID_303A";
   const int MaxLineLen = 300;
   static int intervalMs = 500;             // "@interval <ms>" in stats.ini overrides
@@ -369,7 +388,7 @@ class PcStats : ServiceBase {
 
     public void Write(string text) {
       if (isFaulted) throw new IOException("HID link is faulted");
-      byte[] bytes = Encoding.ASCII.GetBytes(text);
+      byte[] bytes = Utf8NoBom.GetBytes(text);
       int offset = 0;
       while (offset < bytes.Length) {
         int count = Math.Min(63, bytes.Length - offset);
@@ -458,6 +477,8 @@ class PcStats : ServiceBase {
     line = line.Trim();
     if (line.StartsWith("!art", StringComparison.OrdinalIgnoreCase)) {
       HandleArtLine(line);
+    } else if (line.StartsWith("!txt", StringComparison.OrdinalIgnoreCase)) {
+      HandleTxtLine(line);
     } else if (line.StartsWith("!power", StringComparison.OrdinalIgnoreCase)) {
       HandlePowerLine(line);
     } else {
@@ -1049,7 +1070,7 @@ class PcStats : ServiceBase {
                 newNumbers[k] = num;
               } else {
                 string text = CleanText(v);
-                if (text.Length > 80) text = text.Substring(0, 80);
+                text = TruncateUtf8(text, 120);
                 newTexts[k] = text;
               }
             }
@@ -1857,6 +1878,16 @@ class PcStats : ServiceBase {
       else if (args[i] == "--bench") { Bench(); return; }
       else if (args[i] == "--claude" && i + 1 < args.Length) { ClaudeTest(args[++i]); return; }
       else if (args[i] == "--going") { PrintGoingTest(); return; }
+      else if (args[i] == "--render-text" && i + 3 < args.Length) {
+        int px = int.Parse(args[++i]);
+        bool bold = (args[++i] == "1");
+        string outPath = args[++i];
+        var textParts = new List<string>();
+        for (int j = i + 1; j < args.Length; j++) textParts.Add(args[j]);
+        string text = string.Join(" ", textParts.ToArray());
+        RenderTextTest(px, bold, outPath, text);
+        return;
+      }
     }
     string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ESP32PcStats");
     Directory.CreateDirectory(dir);
@@ -2189,7 +2220,463 @@ class PcStats : ServiceBase {
     }
   }
 
-  static void AppendArtChunk(StringBuilder sb) {
+
+  // --- Non-ASCII Text Rendering & Streaming Support ---
+  static readonly object lastSentTextsLock = new object();
+  static readonly Dictionary<string, string> lastSentTexts = new Dictionary<string, string>();
+
+  const uint FR_PRIVATE = 0x10;
+  const uint DEFAULT_CHARSET = 1;
+  const uint OUT_DEFAULT_PRECIS = 0;
+  const uint CLIP_DEFAULT_PRECIS = 0;
+  const uint ANTIALIASED_QUALITY = 4;
+  const uint DEFAULT_PITCH = 0;
+
+  const int DT_CALCRECT = 0x00000400;
+  const int DT_SINGLELINE = 0x00000020;
+  const int DT_NOPREFIX = 0x00000800;
+  const int DT_NOCLIP = 0x00000100;
+  const int TRANSPARENT = 1;
+  const uint DIB_RGB_COLORS = 0;
+
+  [StructLayout(LayoutKind.Sequential)]
+  struct RECT { public int Left, Top, Right, Bottom; }
+
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+  struct TEXTMETRICW {
+    public int tmHeight, tmAscent, tmDescent, tmInternalLeading, tmExternalLeading;
+    public int tmAveCharWidth, tmMaxCharWidth, tmWeight, tmOverhang, tmDigitizedAspectX, tmDigitizedAspectY;
+    public char tmFirstChar, tmLastChar, tmDefaultChar, tmBreakChar;
+    public byte tmItalic, tmUnderlined, tmStruckOut, tmPitchAndFamily, tmCharSet;
+  }
+
+  [StructLayout(LayoutKind.Sequential)]
+  struct BITMAPINFOHEADER {
+    public uint biSize;
+    public int biWidth, biHeight;
+    public ushort biPlanes, biBitCount;
+    public uint biCompression, biSizeImage;
+    public int biXPelsPerMeter, biYPelsPerMeter;
+    public uint biClrUsed, biClrImportant;
+  }
+
+  [StructLayout(LayoutKind.Sequential)]
+  struct BITMAPINFO { public BITMAPINFOHEADER bmiHeader; }
+
+  [DllImport("gdi32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+  static extern int AddFontResourceEx(string lpszFilename, uint fl, IntPtr pdv);
+
+  [DllImport("gdi32.dll", SetLastError = true)]
+  static extern IntPtr CreateCompatibleDC(IntPtr hdc);
+
+  [DllImport("gdi32.dll", SetLastError = true)]
+  static extern bool DeleteDC(IntPtr hdc);
+
+  [DllImport("gdi32.dll", SetLastError = true)]
+  static extern IntPtr SelectObject(IntPtr hdc, IntPtr hgdiobj);
+
+  [DllImport("gdi32.dll", SetLastError = true)]
+  static extern bool DeleteObject(IntPtr hObject);
+
+  [DllImport("gdi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  static extern IntPtr CreateFontW(
+    int nHeight, int nWidth, int nEscapement, int nOrientation, int fnWeight,
+    uint fdwItalic, uint fdwUnderline, uint fdwStrikeOut, uint fdwCharSet,
+    uint fdwOutputPrecision, uint fdwClipPrecision, uint fdwQuality,
+    uint fdwPitchAndFamily, string lpszFace);
+
+  [DllImport("gdi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  static extern bool GetTextMetricsW(IntPtr hdc, out TEXTMETRICW lptm);
+
+  [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  static extern int DrawTextW(IntPtr hdc, string lpchText, int nCount, ref RECT lpRect, uint uFormat);
+
+  [DllImport("gdi32.dll", SetLastError = true)]
+  static extern uint SetTextColor(IntPtr hdc, uint crColor);
+
+  [DllImport("gdi32.dll", SetLastError = true)]
+  static extern int SetBkMode(IntPtr hdc, int iBkMode);
+
+  [DllImport("gdi32.dll", SetLastError = true)]
+  static extern IntPtr CreateDIBSection(IntPtr hdc, [In] ref BITMAPINFO pbmi, uint iUsage, out IntPtr ppvBits, IntPtr hSection, uint dwOffset);
+
+  static readonly object fontLock = new object();
+  static bool fontsInitialized = false;
+  static string fontRegularFamily = null;
+  static string fontBoldFamily = null;
+  static bool fontFallbackLogged = false;
+
+  static void EnsureFontsLoaded() {
+    if (fontsInitialized) return;
+    lock (fontLock) {
+      if (fontsInitialized) return;
+
+      string regPath = null;
+      string boldPath = null;
+
+      string winFonts = @"C:\Windows\Fonts";
+      string rWin = Path.Combine(winFonts, "ComicShannsMonoNerdFontPropo-Regular.otf");
+      if (File.Exists(rWin)) regPath = rWin;
+      string bWin = Path.Combine(winFonts, "ComicShannsMonoNerdFontPropo-Bold.otf");
+      if (File.Exists(bWin)) boldPath = bWin;
+
+      if (regPath == null || boldPath == null) {
+        if (Directory.Exists(@"C:\Users")) {
+          try {
+            string[] userDirs = Directory.GetDirectories(@"C:\Users");
+            for (int i = 0; i < userDirs.Length; i++) {
+              string uFonts = Path.Combine(userDirs[i], @"AppData\Local\Microsoft\Windows\Fonts");
+              if (Directory.Exists(uFonts)) {
+                if (regPath == null) {
+                  string r = Path.Combine(uFonts, "ComicShannsMonoNerdFontPropo-Regular.otf");
+                  if (File.Exists(r)) regPath = r;
+                }
+                if (boldPath == null) {
+                  string b = Path.Combine(uFonts, "ComicShannsMonoNerdFontPropo-Bold.otf");
+                  if (File.Exists(b)) boldPath = b;
+                }
+                if (regPath != null && boldPath != null) break;
+              }
+            }
+          } catch (Exception) { }
+        }
+      }
+
+      if (regPath != null) {
+        try {
+          AddFontResourceEx(regPath, FR_PRIVATE, IntPtr.Zero);
+          using (var pfc = new PrivateFontCollection()) {
+            pfc.AddFontFile(regPath);
+            if (pfc.Families.Length > 0) {
+              fontRegularFamily = pfc.Families[0].Name;
+            }
+          }
+        } catch (Exception ex) {
+          Log("txt: failed loading regular font " + regPath + ": " + ex.Message);
+        }
+      }
+
+      if (boldPath != null) {
+        try {
+          AddFontResourceEx(boldPath, FR_PRIVATE, IntPtr.Zero);
+          using (var pfc = new PrivateFontCollection()) {
+            pfc.AddFontFile(boldPath);
+            if (pfc.Families.Length > 0) {
+              fontBoldFamily = pfc.Families[0].Name;
+            }
+          }
+        } catch (Exception ex) {
+          Log("txt: failed loading bold font " + boldPath + ": " + ex.Message);
+        }
+      }
+
+      if (fontRegularFamily == null && fontBoldFamily == null) {
+        if (!fontFallbackLogged) {
+          Log("txt: ComicShannsMonoNerdFontPropo font not found, using Segoe UI");
+          fontFallbackLogged = true;
+        }
+      }
+
+      fontsInitialized = true;
+    }
+  }
+
+  class RenderedText {
+    public int W;
+    public int H;
+    public int Ascent;
+    public byte[] Packed;
+  }
+
+  static RenderedText RenderText(string text, int px, bool bold) {
+    if (text == null) text = "";
+    EnsureFontsLoaded();
+
+    string family = bold ? (fontBoldFamily ?? fontRegularFamily) : (fontRegularFamily ?? fontBoldFamily);
+    if (string.IsNullOrEmpty(family)) family = "Segoe UI";
+
+    IntPtr memDC = CreateCompatibleDC(IntPtr.Zero);
+    if (memDC == IntPtr.Zero) return null;
+
+    IntPtr hFont = CreateFontW(
+      -px, 0, 0, 0, bold ? 700 : 400, 0, 0, 0,
+      DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH, family);
+    IntPtr oldFont = SelectObject(memDC, hFont);
+
+    RECT rc = new RECT();
+    DrawTextW(memDC, text, text.Length, ref rc, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
+    int measuredWidth = rc.Right - rc.Left;
+    if (measuredWidth < 0) measuredWidth = 0;
+    int w = measuredWidth + 2;
+    if (w > 1600) w = 1600;
+    if (w < 1) w = 1;
+
+    TEXTMETRICW tm;
+    GetTextMetricsW(memDC, out tm);
+    int h = tm.tmHeight;
+    if (h < 1) h = 1;
+    int ascent = tm.tmAscent;
+
+    BITMAPINFO bmi = new BITMAPINFO();
+    bmi.bmiHeader.biSize = (uint)Marshal.SizeOf(typeof(BITMAPINFOHEADER));
+    bmi.bmiHeader.biWidth = w;
+    bmi.bmiHeader.biHeight = -h;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = 0;
+
+    IntPtr pBits;
+    IntPtr hBmp = CreateDIBSection(memDC, ref bmi, DIB_RGB_COLORS, out pBits, IntPtr.Zero, 0);
+    if (hBmp == IntPtr.Zero || pBits == IntPtr.Zero) {
+      SelectObject(memDC, oldFont);
+      DeleteObject(hFont);
+      DeleteDC(memDC);
+      return null;
+    }
+
+    IntPtr oldBmp = SelectObject(memDC, hBmp);
+
+    SetTextColor(memDC, 0x00FFFFFF);
+    SetBkMode(memDC, TRANSPARENT);
+    RECT drawRc = new RECT();
+    drawRc.Left = 1;
+    drawRc.Top = 0;
+    drawRc.Right = w;
+    drawRc.Bottom = h;
+    DrawTextW(memDC, text, text.Length, ref drawRc, DT_SINGLELINE | DT_NOPREFIX | DT_NOCLIP);
+
+    byte[] dibBytes = new byte[w * h * 4];
+    Marshal.Copy(pBits, dibBytes, 0, dibBytes.Length);
+
+    SelectObject(memDC, oldBmp);
+    DeleteObject(hBmp);
+    SelectObject(memDC, oldFont);
+    DeleteObject(hFont);
+    DeleteDC(memDC);
+
+    int stride = (w + 1) / 2;
+    byte[] packed = new byte[stride * h];
+    for (int y = 0; y < h; y++) {
+      int dibRowOffset = y * w * 4;
+      int packedRowOffset = y * stride;
+      for (int x = 0; x < w; x++) {
+        int pxOffset = dibRowOffset + (x * 4);
+        byte b = dibBytes[pxOffset];
+        byte g = dibBytes[pxOffset + 1];
+        byte r = dibBytes[pxOffset + 2];
+        int maxVal = Math.Max(r, Math.Max(g, b));
+        byte alpha4 = (byte)(maxVal >> 4);
+
+        int byteIdx = packedRowOffset + (x >> 1);
+        if ((x & 1) == 0) {
+          packed[byteIdx] |= (byte)(alpha4 << 4);
+        } else {
+          packed[byteIdx] |= (byte)(alpha4 & 0x0F);
+        }
+      }
+    }
+
+    RenderedText res = new RenderedText();
+    res.W = w;
+    res.H = h;
+    res.Ascent = ascent;
+    res.Packed = packed;
+    return res;
+  }
+
+  static void RenderTextTest(int px, bool bold, string outPath, string text) {
+    RenderedText res = RenderText(text, px, bold);
+    if (res == null) {
+      Console.WriteLine("Render failed");
+      return;
+    }
+
+    int stride = (res.W + 1) / 2;
+    using (var bmp = new Bitmap(res.W * 4, res.H * 4, PixelFormat.Format32bppArgb)) {
+      for (int y = 0; y < res.H; y++) {
+        for (int x = 0; x < res.W; x++) {
+          int byteIdx = y * stride + (x >> 1);
+          int a4 = ((x & 1) == 0) ? (res.Packed[byteIdx] >> 4) : (res.Packed[byteIdx] & 0x0F);
+          int gray = (a4 << 4) | a4;
+          Color c = Color.FromArgb(gray, gray, gray);
+          for (int dy = 0; dy < 4; dy++) {
+            for (int dx = 0; dx < 4; dx++) {
+              bmp.SetPixel(x * 4 + dx, y * 4 + dy, c);
+            }
+          }
+        }
+      }
+      string dir = Path.GetDirectoryName(outPath);
+      if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir)) {
+        Directory.CreateDirectory(dir);
+      }
+      bmp.Save(outPath, ImageFormat.Png);
+    }
+
+    Console.WriteLine("{0} {1} {2} {3}", res.W, res.H, res.Ascent, res.Packed.Length);
+  }
+
+  class TextTransfer {
+    public string Id;
+    public int Px;
+    public bool Bold;
+    public int W;
+    public int H;
+    public int Ascent;
+    public string Base64;
+    public string CrcHex;
+    public int CharsSent;
+    public bool SentBegin;
+    public bool Done;
+  }
+
+  static readonly object txtLock = new object();
+  static readonly Queue<TextTransfer> pendingTextTransfers = new Queue<TextTransfer>();
+  static TextTransfer activeTextTransfer = null;
+  static readonly Dictionary<string, DateTime> recentServedTxt = new Dictionary<string, DateTime>();
+
+  static void HandleTxtLine(string line) {
+    Match m = Regex.Match(line, @"^!txt\s+(\d+)\s+(\d+)\s+([01])\s+(\S+)$");
+    if (!m.Success) {
+      Log("txt: unrecognized command '" + line + "'");
+      return;
+    }
+
+    uint id;
+    if (!uint.TryParse(m.Groups[1].Value, NumberStyles.None, CultureInfo.InvariantCulture, out id)) {
+      Log("txt: rejected id=" + m.Groups[1].Value + " (invalid id)");
+      return;
+    }
+
+    int px;
+    if (!int.TryParse(m.Groups[2].Value, NumberStyles.None, CultureInfo.InvariantCulture, out px) || px < 8 || px > 64) {
+      Log("txt: rejected id=" + id + " px=" + m.Groups[2].Value + " (px out of range 8..64)");
+      return;
+    }
+
+    int boldVal = int.Parse(m.Groups[3].Value);
+    bool bold = (boldVal == 1);
+    string key = m.Groups[4].Value;
+
+    ProcessTxtRequest(id, px, bold, key);
+  }
+
+  static void ProcessTxtRequest(uint id, int px, bool bold, string key) {
+    string textVal = null;
+    lock (lastSentTextsLock) {
+      lastSentTexts.TryGetValue(key, out textVal);
+    }
+
+    if (textVal == null) {
+      Log(string.Format("txt: rejected key={0} id={1} (key not found)", key, id));
+      return;
+    }
+
+    byte[] textUtf8 = Utf8NoBom.GetBytes(textVal);
+    uint textCrc = ComputeCrc32(textUtf8);
+    if (textCrc != id) {
+      Log(string.Format("txt: rejected key={0} id={1} (crc mismatch: current={2})", key, id, textCrc));
+      return;
+    }
+
+    DateTime now = DateTime.UtcNow;
+    string reqSig = key + "|" + id + "|" + px + "|" + (bold ? "1" : "0");
+
+    lock (txtLock) {
+      var toRemove = new List<string>();
+      foreach (KeyValuePair<string, DateTime> kv in recentServedTxt) {
+        if ((now - kv.Value).TotalSeconds >= 10.0) {
+          toRemove.Add(kv.Key);
+        }
+      }
+      for (int i = 0; i < toRemove.Count; i++) {
+        recentServedTxt.Remove(toRemove[i]);
+      }
+
+      DateTime servedTime;
+      if (recentServedTxt.TryGetValue(reqSig, out servedTime) && (now - servedTime).TotalSeconds < 5.0) {
+        Log(string.Format("txt: rejected key={0} id={1} (duplicate request within 5s)", key, id));
+        return;
+      }
+
+      if (pendingTextTransfers.Count >= 4) {
+        Log(string.Format("txt: rejected key={0} id={1} (queue full)", key, id));
+        return;
+      }
+
+      recentServedTxt[reqSig] = now;
+    }
+
+    RenderedText rendered = RenderText(textVal, px, bold);
+    if (rendered == null) {
+      Log(string.Format("txt: rejected key={0} id={1} (render failed)", key, id));
+      return;
+    }
+
+    TextTransfer transfer = new TextTransfer();
+    transfer.Id = id.ToString(CultureInfo.InvariantCulture);
+    transfer.Px = px;
+    transfer.Bold = bold;
+    transfer.W = rendered.W;
+    transfer.H = rendered.H;
+    transfer.Ascent = rendered.Ascent;
+    transfer.Base64 = Convert.ToBase64String(rendered.Packed);
+    transfer.CrcHex = ComputeCrc32(rendered.Packed).ToString("x8");
+    transfer.CharsSent = 0;
+    transfer.SentBegin = false;
+    transfer.Done = false;
+
+    lock (txtLock) {
+      pendingTextTransfers.Enqueue(transfer);
+    }
+
+    Log(string.Format("txt: served key={0} id={1} {2}x{3}", key, id, rendered.W, rendered.H));
+  }
+
+  static int AppendTextChunk(StringBuilder sb, int budget) {
+    if (budget <= 0) return 0;
+    lock (txtLock) {
+      if (activeTextTransfer == null || activeTextTransfer.Done) {
+        if (pendingTextTransfers.Count > 0) {
+          activeTextTransfer = pendingTextTransfers.Dequeue();
+        } else {
+          activeTextTransfer = null;
+          return 0;
+        }
+      }
+
+      if (!activeTextTransfer.SentBegin) {
+        sb.Append("@x begin ")
+          .Append(activeTextTransfer.Id).Append(' ')
+          .Append(activeTextTransfer.Px).Append(' ')
+          .Append(activeTextTransfer.Bold ? "1" : "0").Append(' ')
+          .Append(activeTextTransfer.W).Append(' ')
+          .Append(activeTextTransfer.H).Append(' ')
+          .Append(activeTextTransfer.Ascent).Append('\n');
+        activeTextTransfer.SentBegin = true;
+      }
+
+      int charsThisTick = 0;
+      while (activeTextTransfer.CharsSent < activeTextTransfer.Base64.Length && charsThisTick < budget) {
+        int take = Math.Min(160, Math.Min(activeTextTransfer.Base64.Length - activeTextTransfer.CharsSent, budget - charsThisTick));
+        string chunk = activeTextTransfer.Base64.Substring(activeTextTransfer.CharsSent, take);
+        sb.Append("@x d ").Append(chunk).Append('\n');
+        activeTextTransfer.CharsSent += take;
+        charsThisTick += take;
+      }
+
+      if (activeTextTransfer.CharsSent >= activeTextTransfer.Base64.Length) {
+        sb.Append("@x end ").Append(activeTextTransfer.Id).Append(' ').Append(activeTextTransfer.CrcHex).Append('\n');
+        activeTextTransfer.Done = true;
+        activeTextTransfer = null;
+      }
+
+      return charsThisTick;
+    }
+  }
+
+  static void AppendArtChunk(StringBuilder sb, int budget) {
+    if (budget <= 0) return;
     lock (artLock) {
       if (activeArtTransfer == null || activeArtTransfer.Done) return;
 
@@ -2199,8 +2686,8 @@ class PcStats : ServiceBase {
       }
 
       int charsThisTick = 0;
-      while (activeArtTransfer.CharsSent < activeArtTransfer.Base64.Length && charsThisTick < 4000) {
-        int take = Math.Min(160, Math.Min(activeArtTransfer.Base64.Length - activeArtTransfer.CharsSent, 4000 - charsThisTick));
+      while (activeArtTransfer.CharsSent < activeArtTransfer.Base64.Length && charsThisTick < budget) {
+        int take = Math.Min(160, Math.Min(activeArtTransfer.Base64.Length - activeArtTransfer.CharsSent, budget - charsThisTick));
         string chunk = activeArtTransfer.Base64.Substring(activeArtTransfer.CharsSent, take);
         sb.Append("@a d ").Append(chunk).Append('\n');
         activeArtTransfer.CharsSent += take;
@@ -2910,7 +3397,8 @@ class PcStats : ServiceBase {
           string fullLine = "@s" + (tokens.Count > 0 ? " " + string.Join(" ", tokens.ToArray()) : "");
           Console.WriteLine("[" + updateMs + " ms] " + fullLine);
           for (int i = 0; i < texts.Count; i++) {
-            Console.WriteLine("  @t " + texts[i].Key + " " + texts[i].Value);
+            string val = TruncateUtf8(texts[i].Value, 120);
+            Console.WriteLine("  @t " + texts[i].Key + " " + val);
           }
           if (link == null) {
             lock (powerLock) {
@@ -2940,10 +3428,15 @@ class PcStats : ServiceBase {
               }
             }
             for (int i = 0; i < texts.Count; i++) {
-              sb.Append("@t ").Append(texts[i].Key).Append(' ').Append(texts[i].Value).Append('\n');
+              string val = TruncateUtf8(texts[i].Value, 120);
+              lock (lastSentTextsLock) {
+                lastSentTexts[texts[i].Key] = val;
+              }
+              sb.Append("@t ").Append(texts[i].Key).Append(' ').Append(val).Append('\n');
             }
             sb.Append("@e ").Append(seq++).Append('\n');
-            AppendArtChunk(sb);
+            int textChars = AppendTextChunk(sb, 4000);
+            AppendArtChunk(sb, 4000 - textChars);
             link.Write(sb.ToString());
             lock (powerLock) {
               if (scheduledAction != null && scheduledActionTimeUtc == DateTime.MinValue && currentAckValue != null) {
