@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "discord.h"
 #include "host_uart.h"
 #include "usb.h"
 
@@ -27,6 +28,7 @@ void logCapture(char *buf, unsigned size) {
 void logMute(bool m) { s_muted = m; }
 
 static void logEmit(const char *buf, size_t len) {
+  discordLog(buf, len);
   if (!s_muted) hostUartPrintln(buf);
   if (usbCdcConnected()) {
     usbCdcWrite(buf, len);

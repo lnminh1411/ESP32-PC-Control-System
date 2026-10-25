@@ -253,6 +253,19 @@ with a 1200-baud touch, flashes over the ROM's USB-Serial-JTAG port and
 starts the service again. `--idf coredump-info` runs any other `idf.py`
 action on that port instead. Wi-Fi, Discord and OTA settings go in
 `main/secrets.h` (copy `secrets_example.h`; the real file is gitignored).
+
+The Discord bot uses up to four channels, each set by its channel id in
+`secrets.h` and off when empty:
+
+| Key | Channel | Posts |
+|---|---|---|
+| `DISCORD_CH_PC` | #pc-announcement | Board online, PC on/off, restart and update, power keys, door, reset |
+| `DISCORD_CH_WEATHER` | #weather-announcement | Rain alerts (home and phone), a forecast each morning after 06:00 |
+| `DISCORD_CH_LOG` | #logging | The board's log, timestamped, in batches every 10 s |
+| `DISCORD_CH_CONTROL` | #control | One control panel message with the `/actions` buttons, kept up to date |
+
+PC and weather posts fall back to `DISCORD_CHANNEL_ID` when their own key is
+empty. Only `DISCORD_OWNER_ID` can use the buttons.
 Once Wi-Fi is up, `python scripts/ota_upload.py` flashes over the network.
 
 ### Screenshots

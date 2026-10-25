@@ -431,10 +431,72 @@ static void runHomeNowcast(char *buf, size_t cap) {
   }
   clearError(ERR_HOME_PARSE);
 
+  bool started = alert.active && !rainHome.active;
   if (wxMutex) xSemaphoreTake(wxMutex, portMAX_DELAY);
   rainHome = alert;
   if (wxMutex) xSemaphoreGive(wxMutex);
   wxDirty = true;
+
+  if (started) {
+    char msg[128];
+    snprintf(msg, sizeof msg, "In ~%u min, %.1f mm/h%s%s", (unsigned)alert.etaMin, alert.mmh,
+             alert.from[0] ? ", from " : "", alert.from);
+    char title[80];
+    snprintf(title, sizeof title, "Rain soon at %s", homeName);
+    discordPost(DC_WEATHER, title, msg, 0x3498DB);
+  }
+}
+
+static const char *iconWord(WxIcon i) {
+  switch (i) {
+    case WX_CLEAR: return "clear";
+    case WX_PARTLY: return "partly cloudy";
+    case WX_CLOUDY: return "cloudy";
+    case WX_FOG: return "fog";
+    case WX_DRIZZLE: return "drizzle";
+    case WX_RAIN: return "rain";
+    case WX_SHOWERS: return "showers";
+    case WX_SNOW: return "snow";
+    case WX_STORM: return "thunderstorms";
+  }
+  return "";
+}
+
+// Morning forecast to #weather-announcement: the first good forecast after
+// 06:00, once a day (the day is kept in NVS so a reboot does not repeat it)
+static void postMorningForecast() {
+  struct tm t;
+  if (!now_.valid || !boardLocalTime(&t) || t.tm_hour < 6) return;
+  uint32_t day = (uint32_t)(t.tm_year + 1900) * 1000 + t.tm_yday;
+  static uint32_t postedDay;
+  nvs_handle_t h;
+  if (!postedDay && nvs_open("wx", NVS_READONLY, &h) == ESP_OK) {
+    nvs_get_u32(h, "fc_day", &postedDay);
+    nvs_close(h);
+  }
+  if (postedDay == day) return;
+  postedDay = day;
+  if (nvs_open("wx", NVS_READWRITE, &h) == ESP_OK) {
+    nvs_set_u32(h, "fc_day", day);
+    nvs_commit(h);
+    nvs_close(h);
+  }
+
+  WeatherNow w;
+  if (wxMutex) xSemaphoreTake(wxMutex, portMAX_DELAY);
+  w = now_;
+  if (wxMutex) xSemaphoreGive(wxMutex);
+  char desc[320];
+  int n = snprintf(desc, sizeof desc, "%d\u00b0 / %d\u00b0, %s\nWind %.0f km/h", w.tmax, w.tmin, iconWord(w.icon), w.windKmh);
+  if (w.aqi >= 0) n += snprintf(desc + n, sizeof desc - n, ", AQI %d", w.aqi);
+  for (int i = 0; i < 3 && n < (int)sizeof desc; i++)
+    if (w.days[i].name[0])
+      n += snprintf(desc + n, sizeof desc - n, "\n%s: %d\u00b0 / %d\u00b0, %s", w.days[i].name, w.days[i].tmax, w.days[i].tmin,
+                    iconWord(w.days[i].icon));
+  char title[80];
+  snprintf(title, sizeof title, "Today in %s", w.place[0] ? w.place : "Home");
+  discordPost(DC_WEATHER, title, desc, 0x3498DB);
+  logMsg("weather: morning forecast posted");
 }
 
 static void runPhoneNowcast(char *buf, size_t cap) {
@@ -476,7 +538,7 @@ static void runPhoneNowcast(char *buf, size_t cap) {
         snprintf(msg, sizeof(msg), "Rain at your location in ~%u min (%.1f mm/h)",
                  (unsigned)alert.etaMin, alert.mmh);
       }
-      discordNotify(msg);
+      discordPost(DC_WEATHER, "Rain soon where you are", msg, 0x3498DB);
       pushoverSend("Rain soon", msg);
       phoneAlertSent = true;
       logMsg("weather: phone rain alert sent: %s", msg);
@@ -576,7 +638,7 @@ static void weatherTask(void *) {
     if (currentNet && testAlertPending) {
       testAlertPending = false;
       const char *testMsg = "Rain at your location in ~25 min (2.5 mm/h, from NW) [TEST]";
-      discordNotify(testMsg);
+      discordPost(DC_WEATHER, "Rain soon where you are", testMsg, 0x3498DB);
       pushoverSend("Rain soon", testMsg);
       logMsg("weather: test-alert sent");
     }
@@ -591,6 +653,7 @@ static void weatherTask(void *) {
     if (forceImmediate || lastForecastMs == 0 || (curMs - lastForecastMs >= 30 * 60 * 1000)) {
       if (checkBudgetForecast()) {
         fetchForecast(httpBuf, httpBufCap);
+        postMorningForecast();
       }
       if (checkBudgetForecast()) {
         fetchAirQuality(httpBuf, httpBufCap);

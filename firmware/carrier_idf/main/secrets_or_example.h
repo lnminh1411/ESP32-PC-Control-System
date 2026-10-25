@@ -7,6 +7,18 @@
 #endif
 
 // Keys added after a local secrets.h was made: default to off
+#ifndef DISCORD_CH_PC
+#define DISCORD_CH_PC ""
+#endif
+#ifndef DISCORD_CH_WEATHER
+#define DISCORD_CH_WEATHER ""
+#endif
+#ifndef DISCORD_CH_LOG
+#define DISCORD_CH_LOG ""
+#endif
+#ifndef DISCORD_CH_CONTROL
+#define DISCORD_CH_CONTROL ""
+#endif
 #ifndef MQTT_URI
 #define MQTT_URI ""
 #endif

@@ -11,7 +11,14 @@
 #define DISCORD_APP_ID     ""   // application id
 #define DISCORD_GUILD_ID   ""   // your server's id (slash commands register there)
 #define DISCORD_OWNER_ID   ""   // your user id: the only account allowed to use it
-#define DISCORD_CHANNEL_ID ""   // optional: where it posts online / PC on / asleep
+#define DISCORD_CHANNEL_ID ""   // optional: default for #pc / #weather below when they are empty
+// Channel ids (Discord: Settings > Advanced > Developer Mode, then right-click
+// a channel > Copy Channel ID). Empty = that feature is off (or, for PC and
+// weather, posts go to DISCORD_CHANNEL_ID).
+#define DISCORD_CH_PC      ""   // #pc-announcement: board online, PC on/off, restart/update, power, door
+#define DISCORD_CH_WEATHER ""   // #weather-announcement: rain alerts, morning forecast
+#define DISCORD_CH_LOG     ""   // #logging: the board's log, posted in batches
+#define DISCORD_CH_CONTROL ""   // #control: a standing control panel with buttons
 
 // Password for over-the-air firmware updates (arduino-cli / Arduino IDE
 // network port). Empty = OTA disabled.

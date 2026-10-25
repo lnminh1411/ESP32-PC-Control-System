@@ -124,9 +124,11 @@ The firmware dynamically balances Home and Phone nowcasting:
   - Two independent nowcast engines run: **HOME** and **PHONE**.
   - **Phone Priority**: Phone engine gets 65% of the nowcasting call budget, Home engine gets 35%.
   - When the phone engine detects rain arriving within 60 min (or raining now), it sends **one alert** per rain event:
-    - Discord: `discordNotify("Rain at your location in ~N min (X mm/h, from NW)")`
+    - Discord #weather-announcement (`DISCORD_CH_WEATHER`): "Rain at your location in ~N min (X mm/h, from NW)"
     - Pushover: POST to `https://api.pushover.net/1/messages.json` with title "Rain soon".
   - **Re-arm**: The phone rain alert re-arms only after 60 minutes of continuously dry conditions.
+  - The home engine posts to the same channel when rain starts heading for home, and the
+    first forecast after 06:00 each day is posted there as a morning summary.
 
 ---
 
