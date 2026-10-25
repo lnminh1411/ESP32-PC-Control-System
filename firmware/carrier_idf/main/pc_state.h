@@ -25,6 +25,7 @@ void pcStateInit();                // register the USB event handler
 void statusLedInit();              // start the LED task
 void statusLedReady();             // boot finished: leave the boot pattern
 PcState pcState();
+void pcStateSimulate(int s);       // test hook: PC_ON / PC_OFF overrides the USB state, -1 = real again
 const char *pcStateName(PcState s);
 uint32_t bootGuardLeftMs();        // 0 = guard not running
 void ledModeSet(LedMode m);

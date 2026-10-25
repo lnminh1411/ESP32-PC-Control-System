@@ -221,6 +221,15 @@ static void cmdBacklight(const char *a1, const char *a2) {
   logMsg("bl: %u/%u/%u%%", backlightPct(0), backlightPct(1), backlightPct(2));
 }
 
+// pcsim <on|off|auto>: pretend the PC is on or off (LED, faces, backlights)
+static void cmdPcSim(const char *a1, const char *) {
+  if (a1 && !strcmp(a1, "on")) pcStateSimulate(PC_ON);
+  else if (a1 && !strcmp(a1, "off")) pcStateSimulate(PC_OFF);
+  else if (a1 && !strcmp(a1, "auto")) pcStateSimulate(-1);
+  else { logMsg("pcsim: usage pcsim <on|off|auto>"); return; }
+  logMsg("pcsim: PC %s", pcStateName(pcState()));
+}
+
 // led <auto|on|off|sweep|0-100>: a number sets the brightness of every "on"
 static void cmdLed(const char *a1, const char *) {
   if (a1 && !strcmp(a1, "on")) ledModeSet(LED_ON);
@@ -377,6 +386,7 @@ static const Command COMMANDS[] = {
   {"power",   "<sleep|hibernate|restart|shutdown>",  cmdPower},
   {"bl",      "<1|2|3|all> <0-100|on|off>",          cmdBacklight},
   {"led",     "<auto|on|off|sweep|0-100>",           cmdLed},
+  {"pcsim",   "<on|off|auto>  (test: pretend the PC is on/off)", cmdPcSim},
   {"perf",    "",                                             cmdPerf},
   {"pcstats", "[text]",                                       cmdPcStats},
   {"fps",     "[budget <20-95> | cap <1|2|3> <1-60|off>]",   cmdFps},

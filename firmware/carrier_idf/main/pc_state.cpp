@@ -19,8 +19,14 @@ static volatile bool guardActive;
 static volatile LedMode mode = LED_AUTO;
 static volatile uint8_t ledPct = 100;
 static volatile uint32_t readyMs;   // 0 = still booting
+static volatile int simState = -1;  // `pcsim`: -1 = follow USB
 
-PcState pcState() { return state; }
+PcState pcState() { return simState >= 0 ? (PcState)simState : state; }
+
+void pcStateSimulate(int s) {
+  simState = s;
+  viewsRefreshIdle();
+}
 
 const char *pcStateName(PcState s) {
   return s == PC_ON ? "on" : s == PC_OFF ? "asleep/off" : "unknown (no USB host yet)";
@@ -77,13 +83,14 @@ static void ledTask(void *) {
       continue;
     }
     GoingKind going = pcGoing();
-    bool booting = !readyMs || (state == PC_UNKNOWN && t - readyMs < 5000);
+    PcState st = pcState();
+    bool booting = !readyMs || (st == PC_UNKNOWN && t - readyMs < 5000);
     float level;   // 0..1 before brightness
     if (mode != LED_AUTO) level = (mode == LED_ON) ? 1.0f : 0.0f;
     else if (booting) level = (t % 200) < 100 ? 1.0f : 0.0f;
     else if (going == GO_RESTART || going == GO_UPDATE_RESTART || going == GO_UPDATE_SHUTDOWN)
       level = (t % 400) < 200 ? 1.0f : 0.0f;
-    else if (state == PC_ON) level = 1.0f;
+    else if (st == PC_ON) level = 1.0f;
     else level = 0.5f - 0.5f * cosf((t % 3000) * (2.0f * (float)M_PI / 3000.0f));   // breathing
     pwmWrite(PWM_CH_LED, ledDuty(lvl * level));
     vTaskDelay(pdMS_TO_TICKS(10));
