@@ -52,8 +52,9 @@ CONFIG_HTTPD_WS_SUPPORT=n
 CONFIG_ESP_MAIN_TASK_AFFINITY_CPU1=y
 # OTA safety: a new image that never marks itself valid is rolled back
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
-# TLS buffers in PSRAM: internal RAM is too tight for a 16 KB record buffer per connection
-CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+# TLS: plain malloc, so small allocations (Wi-Fi WPA3 bignums) stay internal and the
+# 16 KB record buffers go to PSRAM (SPIRAM_MALLOC_ALWAYSINTERNAL=4096)
+CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC=y
 # Software AES: hardware AES needs DMA bounce buffers in internal RAM for PSRAM data
 CONFIG_MBEDTLS_HARDWARE_AES=n
 # Internal RAM for TLS/sockets: Wi-Fi hot paths stay in flash, fewer fixed RX buffers

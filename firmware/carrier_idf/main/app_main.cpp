@@ -23,7 +23,26 @@
 #include "wol.h"
 
 #include <esp_event.h>
+#include <esp_system.h>
 #include <nvs_flash.h>
+
+// Why the board last restarted: in the log, and in #pc-announcement when it
+// was not a normal power-on or a requested restart
+static void logResetReason() {
+  esp_reset_reason_t r = esp_reset_reason();
+  const char *why = r == ESP_RST_POWERON ? "power-on" : r == ESP_RST_SW ? "restart requested" :
+                    r == ESP_RST_PANIC ? "crash" : r == ESP_RST_INT_WDT ? "interrupt watchdog" :
+                    r == ESP_RST_TASK_WDT ? "task watchdog" : r == ESP_RST_WDT ? "watchdog" :
+                    r == ESP_RST_BROWNOUT ? "brownout (supply voltage dropped)" :
+                    r == ESP_RST_USB ? "USB reset" : r == ESP_RST_EXT ? "reset pin" :
+                    r == ESP_RST_DEEPSLEEP ? "deep sleep" : "unknown";
+  logMsg("boot: last reset: %s (%d)", why, (int)r);
+  if (r != ESP_RST_POWERON && r != ESP_RST_SW && r != ESP_RST_USB) {
+    char msg[80];
+    snprintf(msg, sizeof msg, "Board restarted after %s", why);
+    discordNotify(msg);
+  }
+}
 
 extern "C" void app_main() {
   // 1. opto rows first: LOW before anything else can glitch them
@@ -50,10 +69,6 @@ extern "C" void app_main() {
   usbInit();
   pcStateInit();
 
-  netInit();                           // joins Wi-Fi in the background
-  discordInit();
-  weatherInit();
-
   // 4. displays: restore stored view else defaultView
   displayInit();
   for (int i = 0; i < N_PANELS; i++) {
@@ -76,6 +91,13 @@ extern "C" void app_main() {
   if (!gif.n && gifLoad()) logMsg("gif: %u frames %ux%u from flash", gif.n, gif.w, gif.h);
   if (!gif.n) logMsg("gif: none stored -- run scripts/gif_stream.py");
   for (int i = 0; i < N_PANELS; i++) viewEnter(i, panels[i].view);   // GIF offsets now that frames exist
+
+  // Wi-Fi only after the GIF is read: a WPA3 handshake running alongside the
+  // 140 KB flash read deadlocked the two cores at boot (interrupt watchdog)
+  netInit();                           // joins Wi-Fi in the background
+  discordInit();
+  weatherInit();
+  logResetReason();
   hostUartPrintln("PLAY");
   statusLedReady();
 
