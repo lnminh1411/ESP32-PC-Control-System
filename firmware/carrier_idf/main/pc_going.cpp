@@ -21,6 +21,20 @@ static uint64_t lastLatchedId = 0;
 static bool pcWentOff = false;
 static bool fromHost = false;               // injected latches ignore the host's "none"
 static uint32_t offStartMs = 0;
+static uint32_t seqAtOff = 0;               // stats sample count when the PC last went off
+
+// How long the PC may stay on after the announcement (Windows can spend a
+// long time on "Working on updates" before it restarts), and how long after
+// it first goes off we wait for it to be back, stats and all. An update
+// restart runs "Updates are underway" before any service starts and may
+// restart a few more times, so "back" means fresh stats, not just USB.
+static uint32_t preOffMs(GoingKind k) {
+  return (k == GO_UPDATE_RESTART || k == GO_UPDATE_SHUTDOWN) ? 60 * 60 * 1000 : 120 * 1000;
+}
+
+static uint32_t backWindowMs(GoingKind k) {
+  return k == GO_UPDATE_RESTART ? 2 * 60 * 60 * 1000 : 10 * 60 * 1000;
+}
 
 static char latchedLastDown[32] = "";
 static char latchedLastDownAt[32] = "";
@@ -129,7 +143,7 @@ uint32_t pcGoingLeftMs() {
       latchedKind != GO_UPDATE_SHUTDOWN) {
     return 0;
   }
-  uint32_t windowMs = (latchedKind == GO_RESTART) ? (180 * 1000) : (45 * 60 * 1000);
+  uint32_t windowMs = backWindowMs(latchedKind);
   if (pcWentOff) {
     uint32_t elapsed = nowMs() - offStartMs;
     return elapsed < windowMs ? (windowMs - elapsed) : 0;
@@ -248,36 +262,33 @@ void pcGoingPoll() {
     if (st == PC_OFF) {
       pcWentOff = true;
       offStartMs = nowMs();
+      seqAtOff = pcStatsSeq();
       syncScreenHold();
     } else {
-      if (announcementMs && (uint32_t)(nowMs() - announcementMs) >= 120000) {
+      if (announcementMs && (uint32_t)(nowMs() - announcementMs) >= preOffMs(latchedKind)) {
         logMsg("pc: announcement timed out (PC still on)");
         clearLatch();
         return;
       }
     }
   } else {
+    if (st == PC_OFF) seqAtOff = pcStatsSeq();   // another restart: wait for samples after this one
     if (latchedKind == GO_RESTART || latchedKind == GO_UPDATE_RESTART) {
-      uint32_t windowMs = (latchedKind == GO_RESTART) ? (180 * 1000) : (45 * 60 * 1000);
-      if (st == PC_ON) {
+      bool back = st == PC_ON && pcStatsFresh() && pcStatsSeq() != seqAtOff;
+      if (back) {
         uint32_t offSec = (nowMs() - offStartMs) / 1000;
         char buf[64];
-        snprintf(buf, sizeof buf, "PC back after restart (%lu s)", (unsigned long)offSec);
+        snprintf(buf, sizeof buf, "PC back after %s (%lu min %lu s)", latchedKind == GO_RESTART ? "restart" : "updates",
+                 (unsigned long)(offSec / 60), (unsigned long)(offSec % 60));
         logMsg("pc: %s", buf);
         discordNotify(buf);
         clearLatch();
-      } else if ((uint32_t)(nowMs() - offStartMs) >= windowMs) {
+      } else if ((uint32_t)(nowMs() - offStartMs) >= backWindowMs(latchedKind)) {
         logMsg("pc: did not come back");
         clearLatch();
       }
-    } else if (latchedKind == GO_UPDATE_SHUTDOWN) {
-      uint32_t windowMs = 45 * 60 * 1000;
-      if (st == PC_ON) {
-        clearLatch();
-      } else if ((uint32_t)(nowMs() - offStartMs) >= windowMs) {
-        clearLatch();
-      }
-    } else if (latchedKind == GO_SHUTDOWN || latchedKind == GO_SLEEP) {
+    } else if (latchedKind == GO_UPDATE_SHUTDOWN || latchedKind == GO_SHUTDOWN || latchedKind == GO_SLEEP) {
+      // the update work happens before the PC goes off; once off, it is just off
       if ((uint32_t)(nowMs() - offStartMs) >= 5000) {
         clearLatch();
       }
