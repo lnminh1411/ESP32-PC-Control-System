@@ -38,4 +38,7 @@ struct RainAlert {
 
 const WeatherNow &weatherNow();
 const RainAlert &rainAlertHome();
+const RainAlert &rainAlertPhone();
+void weatherInit();
+void weatherPoll();
 void weatherCommand(const char *a1, const char *a2);   // `weather <demo|clear|show>`

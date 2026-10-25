@@ -16,3 +16,13 @@
 // Password for over-the-air firmware updates (arduino-cli / Arduino IDE
 // network port). Empty = OTA disabled.
 #define OTA_PASS ""
+
+// OwnTracks over MQTT (TLS HiveMQ Cloud or similar). Empty MQTT_URI = phone engine off.
+#define MQTT_URI        ""
+#define MQTT_USER       ""
+#define MQTT_PASS       ""
+#define OWNTRACKS_TOPIC "owntracks/#"
+
+// Pushover notifications for rain alerts. Empty token/user = Pushover disabled.
+#define PUSHOVER_TOKEN  ""
+#define PUSHOVER_USER   ""
