@@ -7,6 +7,7 @@
 #include <math.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <lwip/sockets.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,6 +40,28 @@ struct Command {
 };
 
 static void cmdHelp(const char *, const char *);
+
+// socks: every open lwIP socket with its local and remote address
+static void cmdSocks(const char *, const char *) {
+  int n = 0;
+  for (int fd = LWIP_SOCKET_OFFSET; fd < LWIP_SOCKET_OFFSET + CONFIG_LWIP_MAX_SOCKETS; fd++) {
+    int type = 0;
+    socklen_t tl = sizeof type;
+    if (getsockopt(fd, SOL_SOCKET, SO_TYPE, &type, &tl) != 0) continue;
+    struct sockaddr_in me = {}, peer = {};
+    socklen_t ml = sizeof me, pl = sizeof peer;
+    getsockname(fd, (struct sockaddr *)&me, &ml);
+    bool hasPeer = getpeername(fd, (struct sockaddr *)&peer, &pl) == 0;
+    char a[16], b[16] = "-";
+    inet_ntoa_r(me.sin_addr, a, sizeof a);
+    if (hasPeer) inet_ntoa_r(peer.sin_addr, b, sizeof b);
+    logMsg("sock %d %s %s:%u -> %s:%u", fd, type == SOCK_STREAM ? "tcp" : type == SOCK_DGRAM ? "udp" : "raw",
+           a, ntohs(me.sin_port), b, hasPeer ? ntohs(peer.sin_port) : 0);
+    n++;
+  }
+  logMsg("socks: %d of %d open | internal RAM free %u, largest %u", n, CONFIG_LWIP_MAX_SOCKETS,
+         (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL), (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+}
 
 // perf: CPU per core + busiest tasks since the previous `perf` (run it twice).
 // Diffs FreeRTOS run-time counters, so it never blocks the main loop.
@@ -390,6 +413,7 @@ static const Command COMMANDS[] = {
   {"led",     "<auto|on|off|sweep|0-100>",           cmdLed},
   {"pcsim",   "<on|off|auto>  (test: pretend the PC is on/off)", cmdPcSim},
   {"perf",    "",                                             cmdPerf},
+  {"socks",   "",                                             cmdSocks},
   {"pcstats", "[text]",                                       cmdPcStats},
   {"fps",     "[budget <20-95> | cap <1|2|3> <1-60|off>]",   cmdFps},
   {"layout",  "<show|reload|default|begin|data <b64>|end>",  cmdLayout},
