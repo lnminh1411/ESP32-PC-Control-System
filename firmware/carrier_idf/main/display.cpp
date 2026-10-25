@@ -29,22 +29,27 @@ static uint8_t *dmaBuf[2];
 static volatile uint32_t txDone;
 static uint32_t txIssued;
 static QueueHandle_t flushQueue;
+static TaskHandle_t flushTaskHandle;   // the only task that waits on DMA
 static volatile float busWirePct = 0.0f;
 
 float busLoadPct() { return busWirePct; }
 
 static bool IRAM_ATTR onTxDone(esp_lcd_panel_io_handle_t, esp_lcd_panel_io_event_data_t *, void *) {
   txDone = txDone + 1;   // only this ISR writes it
-  return false;
+  BaseType_t woken = pdFALSE;
+  if (flushTaskHandle) vTaskNotifyGiveFromISR(flushTaskHandle, &woken);
+  return woken == pdTRUE;
 }
 
-uint32_t displaySpinUs;   // perf: time spent waiting for DMA (temporary)
+uint32_t displaySpinUs;   // perf: time the flush task spends blocked on DMA
 
+// Blocks (core 0 free for other work) until at most inFlight transfers are
+// queued. Each finished transfer notifies; the timeout only guards against a
+// lost interrupt.
 static void waitTx(uint32_t inFlight) {
   if (txIssued - txDone <= inFlight) return;
   uint32_t t = nowUs();
-  while (txIssued - txDone > inFlight) {
-  }
+  while (txIssued - txDone > inFlight) ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(20));
   displaySpinUs += nowUs() - t;
 }
 
@@ -364,7 +369,7 @@ void displayInit() {
          panels[2].canvasInternal ? "internal" : "psram");
 
   flushQueue = xQueueCreate(N_PANELS, sizeof(int));
-  xTaskCreatePinnedToCore(flushTask, "flush", 4096, nullptr, 2, nullptr, 0);
+  xTaskCreatePinnedToCore(flushTask, "flush", 4096, nullptr, 2, &flushTaskHandle, 0);
 }
 
 // ---- backlights & NVS persistence ----
