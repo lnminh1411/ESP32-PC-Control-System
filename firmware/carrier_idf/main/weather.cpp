@@ -630,9 +630,26 @@ static void weatherTask(void *) {
   }
 }
 
+// WEATHER_HOME from secrets.h ("lat,lon[,name]"), when set, wins at boot.
+static void applyConfiguredHome() {
+  const char *cfg = WEATHER_HOME;
+  if (!cfg[0]) return;
+  double lat, lon;
+  char name[24] = "Home";
+  int n = sscanf(cfg, "%lf,%lf,%23[^\n]", &lat, &lon, name);
+  if (n < 2 || lat < -90.0 || lat > 90.0 || lon < -180.0 || lon > 180.0) {
+    logMsg("weather: WEATHER_HOME in secrets.h is not \"lat,lon[,name]\"; ignored");
+    return;
+  }
+  if (homeConfigured && fabs(homeLat - lat) < 1e-5 && fabs(homeLon - lon) < 1e-5 && !strcmp(homeName, name)) return;
+  setHomeLocation(lat, lon, name);
+  logMsg("weather: home from secrets.h (%s)", homeName);
+}
+
 void weatherInit() {
   wxMutex = xSemaphoreCreateMutex();
   loadNvsConfig();
+  applyConfiguredHome();
   owntracksInit();
   pushoverInit();
 

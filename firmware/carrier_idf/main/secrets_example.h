@@ -26,3 +26,7 @@
 // Pushover notifications for rain alerts. Empty token/user = Pushover disabled.
 #define PUSHOVER_TOKEN  ""
 #define PUSHOVER_USER   ""
+
+// Weather home location, "lat,lon" or "lat,lon,name" (e.g. "21.0285,105.8542,Home").
+// Applied at every boot; empty = use the one set with `weather home <lat>,<lon> [name]`.
+#define WEATHER_HOME    ""

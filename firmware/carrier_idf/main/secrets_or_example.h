@@ -25,3 +25,6 @@
 #ifndef PUSHOVER_USER
 #define PUSHOVER_USER ""
 #endif
+#ifndef WEATHER_HOME
+#define WEATHER_HOME ""
+#endif

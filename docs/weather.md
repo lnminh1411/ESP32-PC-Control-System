@@ -17,7 +17,14 @@ Runs on the carrier firmware (ESP-IDF 5.5) in its own FreeRTOS task.
 
 ## 2. Setting Home Location
 
-Set the home coordinates via serial or Discord console:
+Put it in `main/secrets.h` (applied at every boot):
+
+```c
+#define WEATHER_HOME "21.0285,105.8542,Home"   // "lat,lon" or "lat,lon,name"
+```
+
+or set it at runtime via serial or Discord console (saved in NVS; a
+non-empty `WEATHER_HOME` replaces it at the next boot):
 
 ```
 weather home <lat>,<lon> [name]
