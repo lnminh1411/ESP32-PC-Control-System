@@ -1038,9 +1038,10 @@ static void drawAiUsage(LGFX_Sprite &c) {
 
   // ai.model_name is the load state (asleep/waking/awake), not the model
   c.setFont(fontSmall());
-  c.setTextColor(C_FAINT);
+  c.setTextColor(C_DIM);
   c.setTextDatum(lgfx::textdatum_t::top_left);
   c.drawString("Occamy-1.0", 12, 298);
+  c.setTextColor(C_FAINT);
 
   double reqs = pcStat("ai.requests");
   double errs = pcStat("ai.errors");
