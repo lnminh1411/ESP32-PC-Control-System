@@ -2201,10 +2201,18 @@ class PcStats : ServiceBase {
                 uint crc = ComputeCrc32(bytes);
                 string crcDec = crc.ToString(CultureInfo.InvariantCulture);
                 if (crcDec == targetId || crc.ToString("x8").Equals(targetId, StringComparison.OrdinalIgnoreCase)) {
+                  // the panels are 12-bit: send RGB444 (2 px in 3 bytes), 25% less to move
+                  byte[] packed = new byte[144 * 144 * 3 / 2];
+                  for (int px = 0, o = 0; px < 144 * 144; px += 2, o += 3) {
+                    int a = (bytes[2 * px] << 8) | bytes[2 * px + 1], b = (bytes[2 * px + 2] << 8) | bytes[2 * px + 3];
+                    packed[o] = (byte)(((a >> 12) << 4) | ((a >> 7) & 15));
+                    packed[o + 1] = (byte)((((a >> 1) & 15) << 4) | (b >> 12));
+                    packed[o + 2] = (byte)((((b >> 7) & 15) << 4) | ((b >> 1) & 15));
+                  }
                   activeArtTransfer = new ArtTransfer {
                     Id = targetId,
-                    CrcHex = crc.ToString("x8"),
-                    Base64 = Convert.ToBase64String(bytes),
+                    CrcHex = ComputeCrc32(packed).ToString("x8"),
+                    Base64 = Convert.ToBase64String(packed),
                     CharsSent = 0,
                     SentBegin = false,
                     Done = false
@@ -2681,7 +2689,7 @@ class PcStats : ServiceBase {
       if (activeArtTransfer == null || activeArtTransfer.Done) return;
 
       if (!activeArtTransfer.SentBegin) {
-        sb.Append("@a begin ").Append(activeArtTransfer.Id).Append(" 144 144\n");
+        sb.Append("@a begin ").Append(activeArtTransfer.Id).Append(" 144 144 444\n");
         activeArtTransfer.SentBegin = true;
       }
 
@@ -3435,9 +3443,9 @@ class PcStats : ServiceBase {
               sb.Append("@t ").Append(texts[i].Key).Append(' ').Append(val).Append('\n');
             }
             sb.Append("@e ").Append(seq++).Append('\n');
-            // ~12 KB of base64 per tick: a 144x144 cover arrives in ~2 s
+            // a whole cover (41 KB of base64) fits one tick: ~0.7 s on the HID link
             int textChars = AppendTextChunk(sb, 12000);
-            AppendArtChunk(sb, 12000 - textChars);
+            AppendArtChunk(sb, 48000 - textChars);
             link.Write(sb.ToString());
             lock (powerLock) {
               if (scheduledAction != null && scheduledActionTimeUtc == DateTime.MinValue && currentAckValue != null) {

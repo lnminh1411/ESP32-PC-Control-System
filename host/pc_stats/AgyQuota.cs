@@ -262,7 +262,7 @@ static class AgyQuota {
   static string[] agyClient;               // {id, secret} read from agy.exe, kept out of the repo
   static bool cloudErrLogged;
 
-  // agy's login blob: {"token":{access_token, refresh_token, expiry, ...}, "id_token_email"}
+  // agy's login blob: {"token":{access_token, refresh_token, expiry, ...}, "id_token" or "id_token_email"}
   static Dictionary<string, object> ReadAgyLogin() {
     IntPtr p;
     if (!CredReadW("gemini:antigravity", 1, 0, out p)) return null;
@@ -276,20 +276,35 @@ static class AgyQuota {
     }
   }
 
-  // agy's installed-app OAuth clients (id + secret pairs) out of agy.exe
+  // agy's installed-app OAuth clients (id + secret pairs) out of agy.exe.
+  // The exe is ~200 MB: scan the bytes for the two markers instead of
+  // regexing a string copy, and only once per helper run.
   static List<string[]> AgyClientCandidates() {
     List<string[]> list = new List<string[]>();
     string exe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"agy\bin\agy.exe");
     if (!File.Exists(exe)) return list;
-    string text = Encoding.ASCII.GetString(File.ReadAllBytes(exe));
+    byte[] b = File.ReadAllBytes(exe);
     List<string> ids = new List<string>(), secrets = new List<string>();
-    foreach (Match m in Regex.Matches(text, @"[0-9]{6,}-[a-z0-9]{20,}\.apps\.googleusercontent\.com"))
-      if (!ids.Contains(m.Value)) ids.Add(m.Value);
-    foreach (Match m in Regex.Matches(text, @"GOCSPX-[A-Za-z0-9_-]{28}"))
-      if (!secrets.Contains(m.Value)) secrets.Add(m.Value);
+    byte[] sec = Encoding.ASCII.GetBytes("GOCSPX-"), dom = Encoding.ASCII.GetBytes(".apps.googleusercontent.com");
+    for (int i = 0; i + dom.Length < b.Length; i++) {
+      if (b[i] == 'G' && Matches(b, i, sec) && i + 35 <= b.Length) {
+        string v = Encoding.ASCII.GetString(b, i, 35);
+        if (Regex.IsMatch(v, @"^GOCSPX-[A-Za-z0-9_-]{28}$") && !secrets.Contains(v)) secrets.Add(v);
+      } else if (b[i] == '.' && Matches(b, i, dom)) {
+        int st = i;
+        while (st > 0 && i - st < 80 && (char.IsLetterOrDigit((char)b[st - 1]) || b[st - 1] == '-')) st--;
+        string v = Encoding.ASCII.GetString(b, st, i - st + dom.Length);
+        if (Regex.IsMatch(v, @"^[0-9]{6,}-[a-z0-9]{20,}\.apps\.googleusercontent\.com$") && !ids.Contains(v)) ids.Add(v);
+      }
+    }
     foreach (string id in ids)
-      foreach (string sec in secrets) list.Add(new string[] { id, sec });
+      foreach (string s in secrets) list.Add(new string[] { id, s });
     return list;
+  }
+
+  static bool Matches(byte[] b, int at, byte[] pat) {
+    for (int k = 0; k < pat.Length; k++) if (b[at + k] != pat[k]) return false;
+    return true;
   }
 
   // Google does not rotate the refresh token here, so agy's stored login
@@ -327,10 +342,11 @@ static class AgyQuota {
     lastCloudPollUtc = DateTime.UtcNow;
     try {
       Dictionary<string, object> login = ReadAgyLogin();
-      if (login == null || !login.ContainsKey("token")) return;
-      string email = login.ContainsKey("id_token_email") ? Convert.ToString(login["id_token_email"], CultureInfo.InvariantCulture) : "";
+      if (login == null || !login.ContainsKey("token")) { CloudSkip("no agy login in Credential Manager"); return; }
+      string email = login.ContainsKey("id_token_email") ? Convert.ToString(login["id_token_email"], CultureInfo.InvariantCulture)
+          : login.ContainsKey("id_token") ? JwtEmail(Convert.ToString(login["id_token"], CultureInfo.InvariantCulture)) : "";
       Dictionary<string, object> tok = login["token"] as Dictionary<string, object>;
-      if (tok == null || string.IsNullOrEmpty(email)) return;
+      if (tok == null || string.IsNullOrEmpty(email)) { CloudSkip("agy login has no token/email"); return; }
 
       // agy's own access token while it is valid, else one renewed in memory
       string token = null;
@@ -361,7 +377,7 @@ static class AgyQuota {
         object po = lc != null && lc.ContainsKey("cloudaicompanionProject") ? lc["cloudaicompanionProject"] : null;
         Dictionary<string, object> pd = po as Dictionary<string, object>;
         project = pd != null ? GetString(pd, "id") : Convert.ToString(po, CultureInfo.InvariantCulture);
-        if (string.IsNullOrEmpty(project)) return;
+        if (string.IsNullOrEmpty(project)) { CloudSkip("loadCodeAssist returned no project"); return; }
         cloudProject[email] = project;
       }
       Dictionary<string, object> pb = new Dictionary<string, object>();
@@ -420,6 +436,24 @@ static class AgyQuota {
     } catch (Exception ex) {
       if (!cloudErrLogged) { cloudErrLogged = true; Log("agy cloud: " + ex.GetType().Name); }
     }
+  }
+
+  // newer agy builds keep only the id_token; its payload carries the email
+  static string JwtEmail(string jwt) {
+    try {
+      string[] parts = jwt.Split('.');
+      string b64 = parts[1].Replace('-', '+').Replace('_', '/');
+      b64 = b64.PadRight(b64.Length + (4 - b64.Length % 4) % 4, '=');
+      Dictionary<string, object> pl = new JavaScriptSerializer().DeserializeObject(
+          Encoding.UTF8.GetString(Convert.FromBase64String(b64))) as Dictionary<string, object>;
+      return pl != null ? GetString(pl, "email") ?? "" : "";
+    } catch (Exception) {
+      return "";
+    }
+  }
+
+  static void CloudSkip(string why) {
+    if (!cloudErrLogged) { cloudErrLogged = true; Log("agy cloud: " + why); }
   }
 
   static DateTime? ParseUtc(string s) {
