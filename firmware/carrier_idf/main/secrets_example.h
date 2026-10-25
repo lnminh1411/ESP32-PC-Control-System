@@ -41,6 +41,11 @@
 #define WOL_MAC         ""   // "AA:BB:CC:DD:EE:FF"
 #define WOL_TARGET      ""
 
+// Some motherboards pull the USB 5 V rail down while the PC powers on, and the
+// board browns out and restarts. true = backlights off for 500 ms while a
+// wake goes out, which rides through it on boards with that quirk.
+#define WAKE_DIM_BACKLIGHTS false
+
 // Weather home location, "lat,lon" or "lat,lon,name" (e.g. "21.0285,105.8542,Home").
 // Applied at every boot; empty = use the one set with `weather home <lat>,<lon> [name]`.
 #define WEATHER_HOME    ""

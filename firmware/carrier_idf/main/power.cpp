@@ -15,6 +15,7 @@
 #include "sys.h"
 #include "usb.h"
 #include "views.h"
+#include "secrets_or_example.h"
 #include "wol.h"
 
 static const char *powerWakeSend();
@@ -155,8 +156,10 @@ void powerPoll() {
 }
 
 const char *powerWake() {
-  // Test (brownout at PC power-on): backlights off while the wake goes out,
-  // back on 500 ms later
+  if (!WAKE_DIM_BACKLIGHTS) return powerWakeSend();
+  // Motherboard quirk (WAKE_DIM_BACKLIGHTS in secrets.h): the PC's power-on
+  // drags the USB 5 V rail down and the board browns out. Backlights off while
+  // the wake goes out, back 500 ms later.
   bool wasIdle = backlightIsIdle();
   backlightIdle(true);
   logMsg("wake: backlights off for the wake");

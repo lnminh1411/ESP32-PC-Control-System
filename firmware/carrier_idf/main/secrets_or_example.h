@@ -37,6 +37,9 @@
 #ifndef PUSHOVER_USER
 #define PUSHOVER_USER ""
 #endif
+#ifndef WAKE_DIM_BACKLIGHTS
+#define WAKE_DIM_BACKLIGHTS false
+#endif
 #ifndef WOL_MAC
 #define WOL_MAC ""
 #endif

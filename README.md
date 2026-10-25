@@ -266,6 +266,13 @@ The Discord bot uses up to four channels, each set by its channel id in
 
 PC and weather posts fall back to `DISCORD_CHANNEL_ID` when their own key is
 empty. Only `DISCORD_OWNER_ID` can use the buttons.
+
+`WAKE_DIM_BACKLIGHTS` (secrets.h, default false) is for motherboards that drag
+the USB 5 V rail down while the PC powers on from shutdown: the board browns
+out and restarts (`boot: last reset: brownout` in the log). With it on, a wake
+turns the backlights off for 500 ms while the WoL / USB wake goes out. Seen on
+the author's board, both with Wake PC and with the PC's own power button;
+waking from sleep is not affected.
 Once Wi-Fi is up, `python scripts/ota_upload.py` flashes over the network.
 
 ### Screenshots
