@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "bench.h"
 #include "config.h"
 #include "layout.h"
 #include "log.h"
@@ -288,6 +289,14 @@ void netPoll() {
         .user_ctx = nullptr
       };
       httpd_register_uri_handler(otaServer, &put_layout);
+
+      httpd_uri_t get_bench = {
+        .uri = "/bench",
+        .method = HTTP_GET,
+        .handler = benchHttpHandler,
+        .user_ctx = nullptr
+      };
+      httpd_register_uri_handler(otaServer, &get_bench);
 
       logMsg("ota: ready at %s.local / %s", NET_HOSTNAME, ip);
     }
