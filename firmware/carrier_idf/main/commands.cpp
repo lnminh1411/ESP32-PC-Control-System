@@ -2,6 +2,8 @@
 
 #include <ctype.h>
 #include <esp_heap_caps.h>
+#include <mbedtls/base64.h>
+#include <LovyanGFX.hpp>
 #include <math.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -290,6 +292,30 @@ static void cmdFps(const char *a1, const char *a2) {
   logMsg("fps: usage fps [budget <20-95> | cap <1|2|3> <1-60|off>]");
 }
 
+// Panel screenshot for docs: the canvas (RGB565, sprite byte order) as
+// base64 lines on the CDC console. scripts/panel_shot.py turns it into a PNG.
+static void cmdShot(const char *a1, const char *) {
+  int n = a1 ? atoi(a1) : 0;
+  if (n < 1 || n > N_PANELS || !panels[n - 1].canvas) { logMsg("shot: usage shot <1|2|3>"); return; }
+  const size_t bytes = (size_t)TFT_W * TFT_H * 2;
+  uint8_t *copy = (uint8_t *)heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM);
+  if (!copy) { logMsg("shot: no memory"); return; }
+  memcpy(copy, panels[n - 1].canvas->getBuffer(), bytes);   // snapshot: the canvas keeps changing
+  char line[1100];
+  int len = snprintf(line, sizeof line, "SHOT begin %d %d %d\n", n, TFT_W, TFT_H);
+  usbCdcWrite(line, len);
+  for (size_t off = 0; off < bytes; off += 768) {
+    size_t out = 0;
+    memcpy(line, "SHOT d ", 7);
+    mbedtls_base64_encode((unsigned char *)line + 7, sizeof line - 9, &out, copy + off,
+                          bytes - off < 768 ? bytes - off : 768);
+    line[7 + out] = '\n';
+    usbCdcWrite(line, 8 + out);
+  }
+  usbCdcWrite("SHOT end\n", 9);
+  free(copy);
+}
+
 static void cmdWeather(const char *a1, const char *a2) {
   weatherCommand(a1, a2);
 }
@@ -313,6 +339,7 @@ static const Command COMMANDS[] = {
   {"pcstats", "[text]",                                       cmdPcStats},
   {"fps",     "[budget <20-95> | cap <1|2|3> <1-60|off>]",   cmdFps},
   {"layout",  "<show|reload|default|begin|data <b64>|end>",  cmdLayout},
+  {"shot",    "<1|2|3>  (panel screenshot, base64 on CDC)",   cmdShot},
   {"weather", "<show|demo [rain]|clear>",                     cmdWeather},
 };
 

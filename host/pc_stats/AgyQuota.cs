@@ -3,9 +3,11 @@
 // for consumption by esp32-pcstats.exe via @source.
 //
 // Also keeps the Claude Code OAuth token fresh: shortly before it expires it
-// runs `claude auth status`, which makes the CLI refresh (and rotate) its own
-// token. This helper only reads expiry times; it never reads, logs or writes
-// the tokens themselves.
+// does the same refresh Claude Code does and writes the new token back to
+// ~/.claude/.credentials.json (only the token fields). And it reads the
+// Antigravity Flash quota (5-hour / weekly) from Google with agy's stored
+// login (read-only; an expired access token is renewed in memory only).
+// Tokens are never logged.
 //
 // Target: .NET Framework 4 (C# 5 syntax only).
 using System;
@@ -127,10 +129,8 @@ static class AgyQuota {
     }
   }
 
-  static string ClaudeCli() {
-    string local = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), @".local\bin\claude.exe");
-    return File.Exists(local) ? local : "claude";   // else rely on PATH
-  }
+  const string ClaudeTokenUrl = "https://platform.claude.com/v1/oauth/token";
+  const string ClaudeClientId = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";   // Claude Code's public client
 
   static void ClaudeKeepAlive() {
     DateTime accessUtc, refreshUtc;
@@ -147,30 +147,286 @@ static class AgyQuota {
     lastClaudeAttemptUtc = now;
 
     try {
-      ProcessStartInfo psi = new ProcessStartInfo(ClaudeCli(), "auth status");
-      psi.UseShellExecute = false;
-      psi.CreateNoWindow = true;
-      psi.RedirectStandardOutput = true;   // discarded: it carries the account email
-      psi.RedirectStandardError = true;
-      using (Process p = Process.Start(psi)) {
-        p.StandardOutput.ReadToEndAsync();
-        p.StandardError.ReadToEndAsync();
-        if (!p.WaitForExit(60000)) {
-          try { p.Kill(); } catch { }
-          Log("claude: `claude auth status` timed out");
-          return;
-        }
-      }
+      RefreshClaudeToken();
+    } catch (WebException ex) {
+      HttpWebResponse r = ex.Response as HttpWebResponse;
+      int code = r != null ? (int)r.StatusCode : 0;
+      Log("claude: token refresh failed (" + (code != 0 ? code.ToString(CultureInfo.InvariantCulture) : ex.Status.ToString()) + ")" +
+          (code == 400 || code == 401 ? " -- signed out? run `claude auth login`" : ""));
     } catch (Exception ex) {
-      Log("claude: cannot run the CLI: " + ex.Message);
+      Log("claude: token refresh error: " + ex.GetType().Name);   // never the content
+    }
+  }
+
+  // Same request Claude Code makes. The refresh token rotates, so the new one
+  // is written back at once; if another process refreshed meanwhile, its
+  // token wins and ours is dropped.
+  static void RefreshClaudeToken() {
+    string path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), @".claude\.credentials.json");
+    JavaScriptSerializer js = new JavaScriptSerializer();
+    Dictionary<string, object> oauth = ClaudeOauth(js, path);
+    if (oauth == null || !oauth.ContainsKey("refreshToken")) return;
+    string usedRefresh = Convert.ToString(oauth["refreshToken"], CultureInfo.InvariantCulture);
+
+    List<string> scopes = new List<string>();
+    object sc;
+    if (oauth.TryGetValue("scopes", out sc) && sc is System.Collections.IEnumerable && !(sc is string))
+      foreach (object o in (System.Collections.IEnumerable)sc) scopes.Add(Convert.ToString(o, CultureInfo.InvariantCulture));
+
+    Dictionary<string, object> req = new Dictionary<string, object>();
+    req["grant_type"] = "refresh_token";
+    req["refresh_token"] = usedRefresh;
+    req["client_id"] = ClaudeClientId;
+    if (scopes.Count > 0) req["scope"] = string.Join(" ", scopes.ToArray());
+    Dictionary<string, object> resp = js.DeserializeObject(PostJson(ClaudeTokenUrl, js.Serialize(req), null)) as Dictionary<string, object>;
+    if (resp == null || !resp.ContainsKey("access_token") || !resp.ContainsKey("expires_in")) {
+      Log("claude: token refresh returned no token");
       return;
     }
 
-    DateTime after, unused;
-    if (ReadClaudeExpiry(out after, out unused) && after > accessUtc)
-      Log("claude: token refreshed, valid until " + after.ToLocalTime().ToString("ddd HH:mm", CultureInfo.InvariantCulture));
-    else if (accessUtc <= now)
-      Log("claude: token still expired after `claude auth status` (signed out? run `claude auth login`)");
+    // re-read: write only onto the state we refreshed from
+    Dictionary<string, object> root = js.DeserializeObject(File.ReadAllText(path)) as Dictionary<string, object>;
+    oauth = root != null && root.ContainsKey("claudeAiOauth") ? root["claudeAiOauth"] as Dictionary<string, object> : null;
+    if (oauth == null || Convert.ToString(oauth["refreshToken"], CultureInfo.InvariantCulture) != usedRefresh) {
+      Log("claude: credentials changed during refresh, keeping the other process's token");
+      return;
+    }
+    long nowMs = (long)(DateTime.UtcNow - UnixEpoch).TotalMilliseconds;
+    oauth["accessToken"] = resp["access_token"];
+    if (resp.ContainsKey("refresh_token") && resp["refresh_token"] != null) oauth["refreshToken"] = resp["refresh_token"];
+    long expiresAt = nowMs + (long)(Convert.ToDouble(resp["expires_in"], CultureInfo.InvariantCulture) * 1000);
+    oauth["expiresAt"] = expiresAt;
+    if (resp.ContainsKey("refresh_token_expires_in") && resp["refresh_token_expires_in"] != null)
+      oauth["refreshTokenExpiresAt"] = nowMs + (long)(Convert.ToDouble(resp["refresh_token_expires_in"], CultureInfo.InvariantCulture) * 1000);
+
+    string tmp = path + ".tmp." + Guid.NewGuid().ToString("N");
+    File.WriteAllText(tmp, js.Serialize(root), new UTF8Encoding(false));
+    File.Replace(tmp, path, null);
+    Log("claude: token refreshed, valid until " + UnixEpoch.AddMilliseconds(expiresAt).ToLocalTime().ToString("ddd HH:mm", CultureInfo.InvariantCulture));
+  }
+
+  static Dictionary<string, object> ClaudeOauth(JavaScriptSerializer js, string path) {
+    Dictionary<string, object> root = js.DeserializeObject(File.ReadAllText(path)) as Dictionary<string, object>;
+    return root != null && root.ContainsKey("claudeAiOauth") ? root["claudeAiOauth"] as Dictionary<string, object> : null;
+  }
+
+  static string PostJson(string url, string body, Dictionary<string, string> headers) {
+    ServicePointManager.SecurityProtocol |= (SecurityProtocolType)3072;   // TLS 1.2
+    HttpWebRequest req = (HttpWebRequest)WebRequest.Create(url);
+    req.Method = "POST";
+    req.ContentType = "application/json";
+    req.Timeout = 15000;
+    req.ReadWriteTimeout = 15000;
+    if (headers != null) {
+      foreach (KeyValuePair<string, string> h in headers) {
+        if (h.Key == "User-Agent") req.UserAgent = h.Value;
+        else req.Headers[h.Key] = h.Value;
+      }
+    }
+    byte[] data = Encoding.UTF8.GetBytes(body);
+    req.ContentLength = data.Length;
+    using (Stream rs = req.GetRequestStream()) rs.Write(data, 0, data.Length);
+    using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse())
+    using (StreamReader rd = new StreamReader(resp.GetResponseStream(), Encoding.UTF8)) return rd.ReadToEnd();
+  }
+
+  // ---- Antigravity Flash quota from Google (agy's stored login) ----
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+  struct CREDENTIAL {
+    public uint Flags, Type;
+    public string TargetName, Comment;
+    public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten;
+    public uint CredentialBlobSize;
+    public IntPtr CredentialBlob;
+    public uint Persist, AttributeCount;
+    public IntPtr Attributes;
+    public string TargetAlias, UserName;
+  }
+  [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  static extern bool CredReadW(string target, uint type, uint flags, out IntPtr credential);
+  [DllImport("advapi32.dll")]
+  static extern void CredFree(IntPtr buffer);
+
+  class CloudQuota {
+    public double FivePct = double.NaN, WeekPct = double.NaN;   // remaining %
+    public DateTime? FiveReset, WeekReset;
+  }
+
+  const string CloudBase = "https://cloudcode-pa.googleapis.com/v1internal:";
+  const string CloudUserAgent = "antigravity-cli/1.4.7 windows/amd64";
+  static readonly Dictionary<string, CloudQuota> cloudQuota = new Dictionary<string, CloudQuota>(StringComparer.OrdinalIgnoreCase);
+  static readonly Dictionary<string, string> cloudProject = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+  static DateTime lastCloudPollUtc = DateTime.MinValue;
+  static string memToken, memTokenFor;     // access token renewed here, never written anywhere
+  static DateTime memTokenUntil;
+  static string[] agyClient;               // {id, secret} read from agy.exe, kept out of the repo
+  static bool cloudErrLogged;
+
+  // agy's login blob: {"token":{access_token, refresh_token, expiry, ...}, "id_token_email"}
+  static Dictionary<string, object> ReadAgyLogin() {
+    IntPtr p;
+    if (!CredReadW("gemini:antigravity", 1, 0, out p)) return null;
+    try {
+      CREDENTIAL c = (CREDENTIAL)Marshal.PtrToStructure(p, typeof(CREDENTIAL));
+      byte[] b = new byte[c.CredentialBlobSize];
+      Marshal.Copy(c.CredentialBlob, b, 0, b.Length);
+      return new JavaScriptSerializer().DeserializeObject(Encoding.UTF8.GetString(b)) as Dictionary<string, object>;
+    } finally {
+      CredFree(p);
+    }
+  }
+
+  // agy's installed-app OAuth clients (id + secret pairs) out of agy.exe
+  static List<string[]> AgyClientCandidates() {
+    List<string[]> list = new List<string[]>();
+    string exe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"agy\bin\agy.exe");
+    if (!File.Exists(exe)) return list;
+    string text = Encoding.ASCII.GetString(File.ReadAllBytes(exe));
+    List<string> ids = new List<string>(), secrets = new List<string>();
+    foreach (Match m in Regex.Matches(text, @"[0-9]{6,}-[a-z0-9]{20,}\.apps\.googleusercontent\.com"))
+      if (!ids.Contains(m.Value)) ids.Add(m.Value);
+    foreach (Match m in Regex.Matches(text, @"GOCSPX-[A-Za-z0-9_-]{28}"))
+      if (!secrets.Contains(m.Value)) secrets.Add(m.Value);
+    foreach (string id in ids)
+      foreach (string sec in secrets) list.Add(new string[] { id, sec });
+    return list;
+  }
+
+  // Google does not rotate the refresh token here, so agy's stored login
+  // stays valid and untouched
+  static string RefreshAgyToken(string refreshToken) {
+    List<string[]> tries = agyClient != null ? new List<string[]> { agyClient } : AgyClientCandidates();
+    foreach (string[] c in tries) {
+      try {
+        ServicePointManager.SecurityProtocol |= (SecurityProtocolType)3072;
+        HttpWebRequest req = (HttpWebRequest)WebRequest.Create("https://oauth2.googleapis.com/token");
+        req.Method = "POST";
+        req.ContentType = "application/x-www-form-urlencoded";
+        req.Timeout = 15000;
+        byte[] data = Encoding.ASCII.GetBytes("grant_type=refresh_token&client_id=" + Uri.EscapeDataString(c[0]) +
+            "&client_secret=" + Uri.EscapeDataString(c[1]) + "&refresh_token=" + Uri.EscapeDataString(refreshToken));
+        req.ContentLength = data.Length;
+        using (Stream rs = req.GetRequestStream()) rs.Write(data, 0, data.Length);
+        string body;
+        using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse())
+        using (StreamReader rd = new StreamReader(resp.GetResponseStream(), Encoding.UTF8)) body = rd.ReadToEnd();
+        Dictionary<string, object> r = new JavaScriptSerializer().DeserializeObject(body) as Dictionary<string, object>;
+        if (r == null || !r.ContainsKey("access_token")) continue;
+        agyClient = c;
+        memTokenUntil = DateTime.UtcNow.AddSeconds(Convert.ToDouble(r["expires_in"], CultureInfo.InvariantCulture) - 120);
+        return Convert.ToString(r["access_token"], CultureInfo.InvariantCulture);
+      } catch (WebException) {
+        // wrong pair (invalid_client) or signed out: try the next one
+      }
+    }
+    return null;
+  }
+
+  static void PollCloudQuota() {
+    if (DateTime.UtcNow - lastCloudPollUtc < TimeSpan.FromMinutes(2)) return;
+    lastCloudPollUtc = DateTime.UtcNow;
+    try {
+      Dictionary<string, object> login = ReadAgyLogin();
+      if (login == null || !login.ContainsKey("token")) return;
+      string email = login.ContainsKey("id_token_email") ? Convert.ToString(login["id_token_email"], CultureInfo.InvariantCulture) : "";
+      Dictionary<string, object> tok = login["token"] as Dictionary<string, object>;
+      if (tok == null || string.IsNullOrEmpty(email)) return;
+
+      // agy's own access token while it is valid, else one renewed in memory
+      string token = null;
+      DateTime expiry;
+      if (tok.ContainsKey("expiry") && DateTime.TryParse(Convert.ToString(tok["expiry"], CultureInfo.InvariantCulture), CultureInfo.InvariantCulture,
+              DateTimeStyles.AdjustToUniversal, out expiry) && expiry - DateTime.UtcNow > TimeSpan.FromMinutes(2)) {
+        token = Convert.ToString(tok["access_token"], CultureInfo.InvariantCulture);
+      } else if (memToken != null && memTokenFor == email && DateTime.UtcNow < memTokenUntil) {
+        token = memToken;
+      } else if (tok.ContainsKey("refresh_token")) {
+        token = memToken = RefreshAgyToken(Convert.ToString(tok["refresh_token"], CultureInfo.InvariantCulture));
+        memTokenFor = email;
+      }
+      if (token == null) {
+        if (!cloudErrLogged) { cloudErrLogged = true; Log("agy cloud: no usable token (signed out of agy?)"); }
+        return;
+      }
+
+      Dictionary<string, string> h = new Dictionary<string, string>();
+      h["Authorization"] = "Bearer " + token;
+      h["User-Agent"] = CloudUserAgent;
+      JavaScriptSerializer js = new JavaScriptSerializer();
+
+      string project;
+      if (!cloudProject.TryGetValue(email, out project)) {
+        Dictionary<string, object> lc = js.DeserializeObject(PostJson(CloudBase + "loadCodeAssist",
+            "{\"metadata\":{\"ideType\":\"ANTIGRAVITY\",\"platform\":\"WINDOWS_AMD64\",\"pluginType\":\"GEMINI\"}}", h)) as Dictionary<string, object>;
+        object po = lc != null && lc.ContainsKey("cloudaicompanionProject") ? lc["cloudaicompanionProject"] : null;
+        Dictionary<string, object> pd = po as Dictionary<string, object>;
+        project = pd != null ? GetString(pd, "id") : Convert.ToString(po, CultureInfo.InvariantCulture);
+        if (string.IsNullOrEmpty(project)) return;
+        cloudProject[email] = project;
+      }
+      Dictionary<string, object> pb = new Dictionary<string, object>();
+      pb["project"] = project;
+      string projBody = js.Serialize(pb);
+      CloudQuota q = new CloudQuota();
+
+      // Gemini group of the quota summary, when Google sends one
+      Dictionary<string, object> sum = js.DeserializeObject(PostJson(CloudBase + "retrieveUserQuotaSummary", projBody, h)) as Dictionary<string, object>;
+      if (sum != null && sum.ContainsKey("groups")) {
+        foreach (object go in (System.Collections.IEnumerable)sum["groups"]) {
+          Dictionary<string, object> g = go as Dictionary<string, object>;
+          if (g == null || !g.ContainsKey("buckets")) continue;
+          string gname = (GetString(g, "displayName") ?? "") + " " + (GetString(g, "description") ?? "");
+          if (gname.IndexOf("Gemini", StringComparison.OrdinalIgnoreCase) < 0) continue;
+          foreach (object bo in (System.Collections.IEnumerable)g["buckets"]) {
+            Dictionary<string, object> bk = bo as Dictionary<string, object>;
+            if (bk == null) continue;
+            double frac = GetDouble(bk, "remainingFraction") ?? 1.0;
+            DateTime? reset = ParseUtc(GetString(bk, "resetTime"));
+            string win = GetString(bk, "window") ?? "";
+            if (win == "5h") { q.FivePct = frac * 100; q.FiveReset = reset; }
+            else if (win == "weekly") { q.WeekPct = frac * 100; q.WeekReset = reset; }
+          }
+        }
+      }
+
+      // else the per-model value: Google returns the tighter of the two
+      // windows, and its reset time says which one it is
+      if (double.IsNaN(q.FivePct) && double.IsNaN(q.WeekPct)) {
+        Dictionary<string, object> fm = js.DeserializeObject(PostJson(CloudBase + "fetchAvailableModels", projBody, h)) as Dictionary<string, object>;
+        Dictionary<string, object> models = fm != null && fm.ContainsKey("models") ? fm["models"] as Dictionary<string, object> : null;
+        if (models != null) {
+          foreach (KeyValuePair<string, object> kv in models) {
+            if (kv.Key.IndexOf("flash", StringComparison.OrdinalIgnoreCase) < 0 || kv.Key.IndexOf("lite", StringComparison.OrdinalIgnoreCase) >= 0) continue;
+            Dictionary<string, object> m = kv.Value as Dictionary<string, object>;
+            Dictionary<string, object> qi = m != null && m.ContainsKey("quotaInfo") ? m["quotaInfo"] as Dictionary<string, object> : null;
+            double? frac = GetDouble(qi, "remainingFraction");
+            DateTime? reset = ParseUtc(GetString(qi, "resetTime"));
+            if (frac == null || reset == null) continue;
+            if (reset.Value - DateTime.UtcNow <= TimeSpan.FromHours(5.1)) { q.FivePct = frac.Value * 100; q.FiveReset = reset; }
+            else { q.WeekPct = frac.Value * 100; q.WeekReset = reset; }
+            break;
+          }
+        }
+      }
+      lock (cloudQuota) cloudQuota[email] = q;
+      cloudErrLogged = false;
+    } catch (WebException ex) {
+      HttpWebResponse r = ex.Response as HttpWebResponse;
+      if (r != null && (int)r.StatusCode == 401) memToken = null;
+      if (!cloudErrLogged) {
+        cloudErrLogged = true;
+        Log("agy cloud: quota request failed (" + (r != null ? ((int)r.StatusCode).ToString(CultureInfo.InvariantCulture) : ex.Status.ToString()) + ")");
+      }
+    } catch (Exception ex) {
+      if (!cloudErrLogged) { cloudErrLogged = true; Log("agy cloud: " + ex.GetType().Name); }
+    }
+  }
+
+  static DateTime? ParseUtc(string s) {
+    DateTime dt;
+    if (!string.IsNullOrEmpty(s) && DateTime.TryParse(s, CultureInfo.InvariantCulture,
+            DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out dt)) return dt;
+    return null;
   }
 
   static void Log(string message) {
@@ -763,6 +1019,16 @@ static class AgyQuota {
       long ageS = Math.Max(0, (long)Math.Round((nowUtc - acc.LastFetchedUtc).TotalSeconds));
       lines.Add(pfx + "age_s=" + ageS.ToString(CultureInfo.InvariantCulture));
 
+      CloudQuota cq;
+      bool haveCq;
+      lock (cloudQuota) haveCq = cloudQuota.TryGetValue(acc.Email ?? email, out cq);
+      if (haveCq) {
+        if (!double.IsNaN(cq.FivePct)) lines.Add(pfx + "flash_5h_pct=" + cq.FivePct.ToString("0.0", CultureInfo.InvariantCulture));
+        if (cq.FiveReset.HasValue) lines.Add(pfx + "flash_5h_reset_at=" + cq.FiveReset.Value.ToLocalTime().ToString("HH:mm", CultureInfo.InvariantCulture));
+        if (!double.IsNaN(cq.WeekPct)) lines.Add(pfx + "flash_wk_pct=" + cq.WeekPct.ToString("0.0", CultureInfo.InvariantCulture));
+        if (cq.WeekReset.HasValue) lines.Add(pfx + "flash_wk_reset_at=" + cq.WeekReset.Value.ToLocalTime().ToString("ddd HH:mm", CultureInfo.InvariantCulture));
+      }
+
       for (int f = 0; f < families.Count; f++) {
         ModelFamily fam = families[f];
         FamilyState fs;
@@ -1231,6 +1497,7 @@ static class AgyQuota {
       Log("Poll error: " + ex.Message);
     }
     try { ClaudeKeepAlive(); } catch (Exception ex) { Log("claude: keep-alive error: " + ex.Message); }
+    try { PollCloudQuota(); } catch (Exception ex) { Log("agy cloud: " + ex.GetType().Name); }
 
     List<string> lines = GenerateOutputLines(liveClients, cfg.Families, cfg.Accounts, accountsData);
     try {
@@ -1274,6 +1541,7 @@ static class AgyQuota {
         Log("Poll error: " + ex.Message);
       }
       try { ClaudeKeepAlive(); } catch (Exception ex) { Log("claude: keep-alive error: " + ex.Message); }
+      try { PollCloudQuota(); } catch (Exception ex) { Log("agy cloud: " + ex.GetType().Name); }
 
       try {
         List<string> lines = GenerateOutputLines(liveClients, cfg.Families, cfg.Accounts, accountsData);

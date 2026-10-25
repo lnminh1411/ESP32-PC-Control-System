@@ -942,12 +942,13 @@ static void drawAiUsage(LGFX_Sprite &c) {
   c.setTextDatum(lgfx::textdatum_t::top_left);
   c.drawString(buf, 12, 114);
 
-  // Antigravity card
-  drawCard(c, 4, 140, 232, 110);
+  // Antigravity card: same layout as Claude's. The PC sends remaining
+  // fractions; shown as used % so both cards read the same way.
+  drawCard(c, 4, 138, 232, 130);
   c.setFont(fontSmall());
   c.setTextColor(C_AGY);
   c.setTextDatum(lgfx::textdatum_t::top_left);
-  c.drawString("ANTIGRAVITY", 12, 146);
+  c.drawString("ANTIGRAVITY", 12, 144);
 
   int agyN = 0;
   const char *active = pcText("agy.active");
@@ -966,89 +967,72 @@ static void drawAiUsage(LGFX_Sprite &c) {
   }
   if (agyN == 0) agyN = 1;
 
-  char kPlan[16], kEmail[16], kFlash[16], kReset[20];
-  snprintf(kPlan, sizeof(kPlan), "agy%d.plan", agyN);
-  snprintf(kEmail, sizeof(kEmail), "agy%d.email", agyN);
-  snprintf(kFlash, sizeof(kFlash), "agy%d.flash_pct", agyN);
-  snprintf(kReset, sizeof(kReset), "agy%d.flash_reset_at", agyN);
+  char k[32];
+  snprintf(k, sizeof(k), "agy%d.plan", agyN);
+  const char *aPlan = pcText(k);
+  drawChip(c, 228, 142, aPlan[0] ? aPlan : "Pro", C_AGY, 0x0000, true);
 
-  const char *aPlan = pcText(kPlan);
-  drawChip(c, 228, 144, aPlan[0] ? aPlan : "Pro", C_AGY, 0x0000, true);
-
-  const char *aEmail = pcText(kEmail);
-  char emBuf[80];
-  strncpy(emBuf, aEmail[0] ? aEmail : "--", sizeof(emBuf) - 1);
-  emBuf[sizeof(emBuf) - 1] = '\0';
-  c.setFont(fontSmall());
-  while (strlen(emBuf) > 3 && c.textWidth(emBuf) > 216) {
-    size_t len = strlen(emBuf);
-    emBuf[len - 3] = '.';
-    emBuf[len - 2] = '.';
-    emBuf[len - 1] = '\0';
-  }
-  c.setTextColor(C_TEXT);
-  c.setTextDatum(lgfx::textdatum_t::top_left);
-  c.drawString(emBuf, 12, 168);
-
-  // Flash quota: 5-hour and weekly windows (agy /usage); flash_pct is the
-  // older single value, shown as the 5h row until the split arrives
-  struct QuotaRow { const char *label, *pctKey, *resetKey; int y; };
-  char k5[24], k5r[28], kw[24], kwr[28];
+  // flash_pct / flash_reset_at: the older single value is the 5-hour window
+  char k5[32], k5r[32], kw[32], kwr[32];
   snprintf(k5, sizeof(k5), "agy%d.flash_5h_pct", agyN);
   snprintf(k5r, sizeof(k5r), "agy%d.flash_5h_reset_at", agyN);
+  if (isnan(pcStat(k5))) {
+    snprintf(k5, sizeof(k5), "agy%d.flash_pct", agyN);
+    snprintf(k5r, sizeof(k5r), "agy%d.flash_reset_at", agyN);
+  }
   snprintf(kw, sizeof(kw), "agy%d.flash_wk_pct", agyN);
   snprintf(kwr, sizeof(kwr), "agy%d.flash_wk_reset_at", agyN);
-  bool split = !isnan(pcStat(k5));
-  const QuotaRow rows[2] = {{"5h", split ? k5 : kFlash, split ? k5r : kReset, 188},
-                            {"Week", kw, kwr, 218}};
-  for (const QuotaRow &r : rows) {
-    double pct = pcStat(r.pctKey);
-    uint16_t col = isnan(pct) ? C_DIM : (pct < 10.0 ? C_BAD : (pct < 25.0 ? C_WARN : C_GOOD));
+
+  struct Row { const char *label, *pctKey, *resetKey; double warn, bad; int y; };
+  const Row rows[2] = {{"Session", k5, k5r, 75.0, 90.0, 166}, {"Weekly", kw, kwr, 80.0, 95.0, 218}};
+  for (const Row &r : rows) {
+    double left = pcStat(r.pctKey);
+    double used = isnan(left) ? left : 100.0 - left;
     c.setFont(fontSmall());
     c.setTextColor(C_DIM);
-    c.setTextDatum(lgfx::textdatum_t::baseline_left);
-    c.drawString(r.label, 12, r.y + 11);
+    c.setTextDatum(lgfx::textdatum_t::top_left);
+    c.drawString(r.label, 12, r.y);
 
-    drawBar(c, 50, r.y + 5, 130, 6, isnan(pct) ? 0.0f : (float)(pct / 100.0), C_AGY);
+    if (isnan(used)) snprintf(buf, sizeof(buf), "--");
+    else snprintf(buf, sizeof(buf), "%.0f%%", used);
+    c.setFont(fontBody());
+    c.setTextColor(sev(used, r.warn, r.bad));
+    c.setTextDatum(lgfx::textdatum_t::top_right);
+    c.drawString(buf, 228, r.y - 2);
 
-    if (isnan(pct)) snprintf(buf, sizeof(buf), "--");
-    else snprintf(buf, sizeof(buf), "%.0f%%", pct);
-    c.setTextColor(col);
-    c.setTextDatum(lgfx::textdatum_t::baseline_right);
-    c.drawString(buf, 228, r.y + 11);
+    drawBar(c, 12, r.y + 20, 216, 6, isnan(used) ? 0.0f : (float)(used / 100.0), C_AGY);
 
     const char *rs = pcText(r.resetKey);
     snprintf(buf, sizeof(buf), "resets %s", rs[0] ? rs : "--");
+    c.setFont(fontSmall());
     c.setTextColor(C_FAINT);
     c.setTextDatum(lgfx::textdatum_t::top_left);
-    c.drawString(buf, 50, r.y + 14);
+    c.drawString(buf, 12, r.y + 30);
   }
 
   // Local AI summary card
-  drawCard(c, 4, 256, 232, 60);
+  drawCard(c, 4, 272, 232, 44);
   c.setFont(fontSmall());
   c.setTextColor(C_PURPLE);
   c.setTextDatum(lgfx::textdatum_t::top_left);
-  c.drawString("LOCAL AI", 12, 262);
+  c.drawString("LOCAL AI", 12, 278);
 
   const char *phaseName = pcText("ai.phase_name");
   if (!phaseName[0] || !strcmp(phaseName, "asleep")) phaseName = "Not Active";
-  drawChip(c, 228, 260, phaseName, C_TRACK, C_DIM, true);
+  drawChip(c, 228, 276, phaseName, C_TRACK, C_DIM, true);
 
   const char *mName = pcText("ai.model_name");
-  char mBuf[64];
-  snprintf(mBuf, sizeof(mBuf), "%s", mName[0] ? mName : "Occamy-1.0");
   c.setFont(fontSmall());
   c.setTextColor(C_FAINT);
   c.setTextDatum(lgfx::textdatum_t::top_left);
-  textImgDraw(c, "ai.model_name", mBuf, 12, 284);
+  textImgDraw(c, "ai.model_name", mName[0] ? mName : "Occamy-1.0", 12, 298);
 
   double reqs = pcStat("ai.requests");
   double errs = pcStat("ai.errors");
-  char rBuf[64];
-  snprintf(rBuf, sizeof(rBuf), "%.0f requests today, %.0f errors",
-           isnan(reqs) ? 0.0 : reqs, isnan(errs) ? 0.0 : errs);
-  c.drawString(rBuf, 12, 298);
+  char rBuf[48];
+  snprintf(rBuf, sizeof(rBuf), "%.0f req, %.0f err", isnan(reqs) ? 0.0 : reqs, isnan(errs) ? 0.0 : errs);
+  c.setTextDatum(lgfx::textdatum_t::top_right);
+  c.drawString(rBuf, 228, 298);
 }
 
 // Screen 3: Local AI full-screen working face.
