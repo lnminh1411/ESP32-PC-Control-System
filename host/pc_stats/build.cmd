@@ -45,7 +45,7 @@ if not defined WINMD (
 )
 
 "%CSC%" /nologo /optimize+ /platform:x64 /target:winexe /out:build\esp32-agyquota.exe ^
-  /r:System.Management.dll /r:System.Web.Extensions.dll /r:System.Drawing.dll ^
+  /r:System.Management.dll /r:System.Web.Extensions.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll ^
   /r:"%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\System.Runtime.WindowsRuntime.dll" ^
   /r:"%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\System.Runtime.dll" ^
   %WINMD% ^

@@ -409,6 +409,14 @@ static void cmdDisplay(const char *a1, const char *) {
   logMsg("display: panels %s", off ? "off" : "on");
 }
 
+// screenshot: ask the PC service to post a one-off screenshot to #logging
+// (auto-deletes after 5 min). Logs and does nothing if the PC is offline.
+static void cmdScreenshot(const char *, const char *) {
+  const char *err = screenshotRequest();
+  if (err) logMsg("screenshot: %s", err);
+  else logMsg("screenshot: requested (posts to #logging for 5 min)");
+}
+
 static void cmdWeather(const char *a1, const char *a2) {
   weatherCommand(a1, a2);
 }
@@ -429,6 +437,7 @@ static const Command COMMANDS[] = {
   {"bl",      "<1|2|3|all> <0-100|on|off>",          cmdBacklight},
   {"display", "<on|off>  (all panels, not saved)",   cmdDisplay},
   {"reboot",  "  (restart the board)",               cmdReboot},
+  {"screenshot", "  (secret PC screenshot to #logging, 5 min)", cmdScreenshot},
   {"led",     "<auto|on|off|sweep|0-100>",           cmdLed},
   {"pcsim",   "<on|off|auto>  (test: pretend the PC is on/off)", cmdPcSim},
   {"perf",    "",                                             cmdPerf},

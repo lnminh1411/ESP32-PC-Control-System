@@ -156,6 +156,25 @@ void powerPoll() {
   }
 }
 
+// Ask the PC stats service for a one-off screenshot to #logging. Fire and
+// forget over HID; the service (and its user-session helper) does the rest,
+// and auto-deletes the post after 5 minutes. No ack/retry here.
+const char *screenshotRequest() {
+  if (!DISCORD_SHOT_WEBHOOK[0]) return "no screenshot webhook in secrets.h";
+  if (!pcStatsFresh()) return "PC offline (service not connected)";
+  uint32_t r = esp_random();
+  char nonce[16];
+  snprintf(nonce, sizeof nonce, "%lx", (unsigned long)r);
+  // !shot <nonce> <webhook>: the host hands both to the user-session helper,
+  // which captures, posts to the webhook, and auto-deletes after 5 min
+  char line[256];
+  int n = snprintf(line, sizeof line, "!shot %s %s\n", nonce, DISCORD_SHOT_WEBHOOK);
+  if (n <= 0 || n >= (int)sizeof line) return "webhook URL too long";
+  if (!usbHidSendLine(line)) return "USB HID send failed";
+  logMsg("shot: screenshot requested (nonce %s)", nonce);
+  return nullptr;
+}
+
 const char *powerWake() {
   if (!WAKE_DIM_BACKLIGHTS) return powerWakeSend();
   // Motherboard quirk (WAKE_DIM_BACKLIGHTS in secrets.h): the PC's power-on

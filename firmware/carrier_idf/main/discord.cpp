@@ -448,6 +448,33 @@ static void addFaceSelect(cJSON *comps, int panel) {
   cJSON_AddItemToArray(row, sel);
 }
 
+// Brightness for every panel in 5 % steps (saved, as `bl all` does), plus Off
+static void addBrightnessSelect(cJSON *comps) {
+  cJSON *sel = cJSON_CreateObject();
+  cJSON_AddNumberToObject(sel, "type", 3);
+  cJSON_AddStringToObject(sel, "custom_id", "bright");
+  bool same = true;
+  for (int i = 1; i < N_PANELS; i++) same = same && backlightPct(i) == backlightPct(0);
+  int cur = backlightForcedOff() ? 0 : same ? backlightPct(0) : -1;
+  char ph[40];
+  if (cur < 0) snprintf(ph, sizeof ph, "Brightness: mixed");
+  else snprintf(ph, sizeof ph, "Brightness: %d %%", cur);
+  cJSON_AddStringToObject(sel, "placeholder", ph);
+  cJSON *opts = cJSON_AddArrayToObject(sel, "options");
+  for (int v = 0; v <= 100; v += 5) {
+    cJSON *op = cJSON_CreateObject();
+    char label[24], val[8];
+    if (v) snprintf(label, sizeof label, "Brightness %d %%", v);
+    else snprintf(label, sizeof label, "Displays off");
+    snprintf(val, sizeof val, "%d", v);
+    cJSON_AddStringToObject(op, "label", label);
+    cJSON_AddStringToObject(op, "value", val);
+    if (v == cur) cJSON_AddBoolToObject(op, "default", true);
+    cJSON_AddItemToArray(opts, op);
+  }
+  cJSON_AddItemToArray(addRow(comps), sel);
+}
+
 static void addField(cJSON *fields, const char *name, const char *value) {
   cJSON *f = cJSON_CreateObject();
   cJSON_AddStringToObject(f, "name", name);
@@ -523,22 +550,30 @@ static void buildComponents(cJSON *data, PanelView view, bool standing) {
     case PANEL_NORMAL: break;
   }
 
-  // row 1: the tabs, the open one highlighted, and Refresh
+  // row 1: the category dropdown; the tab's buttons follow, Refresh and
+  // Close (the /actions panel only) at the end
   uint8_t cat = panelCat(standing);
-  cJSON *tabs = addRow(comps);
-  for (int i = 0; i < CAT_COUNT; i++) addButton(tabs, CAT_LABEL[i], CAT_ID[i], i == cat ? 1 : 2);
-  addButton(tabs, "Refresh", "refresh", 2);
+  cJSON *sel = cJSON_CreateObject();
+  cJSON_AddNumberToObject(sel, "type", 3);
+  cJSON_AddStringToObject(sel, "custom_id", "cat");
+  cJSON *opts = cJSON_AddArrayToObject(sel, "options");
+  for (int i = 0; i < CAT_COUNT; i++) {
+    cJSON *op = cJSON_CreateObject();
+    cJSON_AddStringToObject(op, "label", CAT_LABEL[i]);
+    cJSON_AddStringToObject(op, "value", CAT_ID[i]);
+    if (i == cat) cJSON_AddBoolToObject(op, "default", true);
+    cJSON_AddItemToArray(opts, op);
+  }
+  cJSON_AddItemToArray(addRow(comps), sel);
 
-  // Close (the /actions panel only) goes on the tab's last row
+  cJSON *r = addRow(comps);
   if (cat == CAT_DOOR) {
-    cJSON *r = addRow(comps);
     addButton(r, "Door 1", "door_1", 1);
     addButton(r, "Door 2", "door_2", 1);
     addButton(r, "Door 3", "door_3", 1);
     addButton(r, "Door 4", "door_4", 1);
-    if (!standing) addButton(r, "Close", "close", 2);
+    r = addRow(comps);
   } else if (cat == CAT_PC) {
-    cJSON *r = addRow(comps);
     addButton(r, "Wake PC", "wake", 3);
     addButton(r, "Lock", "lock", 1);
     addButton(r, "Sleep", "sleep", 2);
@@ -547,23 +582,26 @@ static void buildComponents(cJSON *data, PanelView view, bool standing) {
     addButton(r, "Restart", "restart", 4);
     addButton(r, "Shut down", "shutdown", 4);
     addButton(r, "PC reset", "reset", 4);
-    if (!standing) addButton(r, "Close", "close", 2);
+    r = addRow(comps);
+    addButton(r, "Screenshot", "shot", 2);   // Refresh/Close share this row
   } else if (cat == CAT_BOARD) {
-    cJSON *r = addRow(comps);
     addButton(r, "Restart board", "reboot", 4);
     addButton(r, "Refresh weather", "wx_refresh", 2);
     addButton(r, "Reconnect Discord", "dc_reconnect", 2);
-    if (!standing) addButton(r, "Close", "close", 2);
   } else {
+    // 5 rows max, all dropdowns: tabs, 3 screen pickers, brightness. Refresh
+    // sits in the tab dropdown instead; the /actions panel closes by itself
+    cJSON_DeleteItemFromArray(comps, cJSON_GetArraySize(comps) - 1);
+    cJSON *op = cJSON_CreateObject();
+    cJSON_AddStringToObject(op, "label", "Refresh");
+    cJSON_AddStringToObject(op, "value", "refresh");
+    cJSON_AddItemToArray(opts, op);
     for (int i = 0; i < N_PANELS; i++) addFaceSelect(comps, i);
-    cJSON *r = addRow(comps);
-    addButton(r, "Dimmer", "bl_down", 2);
-    addButton(r, "Brighter", "bl_up", 2);
-    if (backlightForcedOff()) addButton(r, "Displays on", "disp_on", 3);
-    else addButton(r, "Displays off", "disp_off", 4);
-    addButton(r, "All auto", "face_auto", 2);
-    if (!standing) addButton(r, "Close", "close", 2);
+    addBrightnessSelect(comps);
+    return;
   }
+  addButton(r, "Refresh", "refresh", 2);
+  if (!standing) addButton(r, "Close", "close", 2);
 }
 
 // 4 = reply with a new (ephemeral) panel; 7 = update the panel the button is
@@ -780,8 +818,28 @@ static void onInteraction(cJSON *d) {
       sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
       return;
     }
-    for (int i = 0; i < CAT_COUNT; i++) {
-      if (!strcmp(cid, CAT_ID[i])) {
+    if (jVal && cJSON_IsString(jVal) && !strcmp(cid, "bright")) {
+      int v = atoi(jVal->valuestring);
+      char ignore[64];
+      if (v <= 0) {
+        runAndGetFirstLine("display off", lastPanelResult, sizeof lastPanelResult);
+      } else {
+        char cmd[24];
+        snprintf(cmd, sizeof cmd, "bl all %d", v);
+        runAndGetFirstLine("display on", ignore, sizeof ignore);
+        runAndGetFirstLine(cmd, ignore, sizeof ignore);
+        snprintf(lastPanelResult, sizeof lastPanelResult, "Brightness %d %% on every panel", v);
+      }
+      sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
+      return;
+    }
+    if (jVal && cJSON_IsString(jVal) && !strcmp(cid, "cat") && !strcmp(jVal->valuestring, "refresh")) {
+      snprintf(lastPanelResult, sizeof lastPanelResult, "Refreshed");
+      sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, "Refreshed");
+      return;
+    }
+    for (int i = 0; jVal && cJSON_IsString(jVal) && !strcmp(cid, "cat") && i < CAT_COUNT; i++) {
+      if (!strcmp(jVal->valuestring, CAT_ID[i])) {
         panelCat(standing) = (uint8_t)i;
         lastPanelResult[0] = 0;
         sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, nullptr);
@@ -795,6 +853,9 @@ static void onInteraction(cJSON *d) {
     } else if (!strcmp(cid, "lock")) {
       runAndGetFirstLine("power lock", lastPanelResult, sizeof lastPanelResult);
       if (!lastPanelResult[0]) snprintf(lastPanelResult, sizeof lastPanelResult, "Lock sent to the PC");
+      sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
+    } else if (!strcmp(cid, "shot")) {
+      runAndGetFirstLine("screenshot", lastPanelResult, sizeof lastPanelResult);
       sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
     } else if (!strcmp(cid, "reboot")) {
       sendPanelResponse(id, token, 7, standing, PANEL_CONFIRM_REBOOT, "Restart the board? (the PC is not touched)");
@@ -810,31 +871,6 @@ static void onInteraction(cJSON *d) {
       snprintf(lastPanelResult, sizeof lastPanelResult, "Reconnecting to Discord");
       sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
       requestReconnect = true;
-    } else if (!strcmp(cid, "bl_down") || !strcmp(cid, "bl_up")) {
-      // 20 % steps on every panel, kept between 10 and 100 (saved, as `bl` does)
-      bool up = cid[3] == 'u';
-      for (int i = 0; i < N_PANELS; i++) {
-        int v = backlightPct(i) + (up ? 20 : -20);
-        v = v < 10 ? 10 : v > 100 ? 100 : v;
-        char cmd[24], ignore[64];
-        snprintf(cmd, sizeof cmd, "bl %d %d", i + 1, v);
-        runAndGetFirstLine(cmd, ignore, sizeof ignore);
-      }
-      snprintf(lastPanelResult, sizeof lastPanelResult, "Backlights %u / %u / %u %%", backlightPct(0), backlightPct(1),
-               backlightPct(2));
-      sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
-    } else if (!strcmp(cid, "disp_on") || !strcmp(cid, "disp_off")) {
-      runAndGetFirstLine(cid[5] == 'n' ? "display on" : "display off", lastPanelResult, sizeof lastPanelResult);
-      sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
-    } else if (!strcmp(cid, "face_auto")) {
-      char ignore[64];
-      for (int i = 0; i < N_PANELS; i++) {
-        char cmd[16];
-        snprintf(cmd, sizeof cmd, "face %d auto", i + 1);
-        runAndGetFirstLine(cmd, ignore, sizeof ignore);
-      }
-      snprintf(lastPanelResult, sizeof lastPanelResult, "All panels back to auto");
-      sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
     } else if (!strcmp(cid, "reset")) {
       sendPanelResponse(id, token, 7, standing, PANEL_CONFIRM_RESET, "Reset the PC?");
     } else if (!strcmp(cid, "reset_confirm")) {

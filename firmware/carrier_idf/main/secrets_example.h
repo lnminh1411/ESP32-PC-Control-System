@@ -19,6 +19,10 @@
 #define DISCORD_CH_WEATHER ""   // #weather-announcement: rain alerts, morning forecast
 #define DISCORD_CH_LOG     ""   // #logging: the board's log, posted in batches
 #define DISCORD_CH_CONTROL ""   // #control: a standing control panel with buttons
+// Discord webhook for the Screenshot button: a screenshot of the PC desktop
+// is posted here, then auto-deleted after 5 min. Make one at #logging ->
+// Edit Channel -> Integrations -> Webhooks. Empty = the button is disabled.
+#define DISCORD_SHOT_WEBHOOK ""
 
 // Password for over-the-air firmware updates (arduino-cli / Arduino IDE
 // network port). Empty = OTA disabled.

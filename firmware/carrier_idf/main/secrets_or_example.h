@@ -19,6 +19,9 @@
 #ifndef DISCORD_CH_CONTROL
 #define DISCORD_CH_CONTROL ""
 #endif
+#ifndef DISCORD_SHOT_WEBHOOK
+#define DISCORD_SHOT_WEBHOOK ""
+#endif
 #ifndef MQTT_URI
 #define MQTT_URI ""
 #endif

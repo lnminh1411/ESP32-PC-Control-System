@@ -237,6 +237,7 @@ One per line on the USB CDC console or the CH343 UART:
 | `shot <1\|2\|3>` | Screenshot of a panel, streamed as base64 on the CDC port |
 | `pcsim <on\|off\|auto>` | Pretend the PC is on or off (LED, faces, backlights), for testing |
 | `door <1-4> [ms]`, `reset`, `reboot` | Press a door button; pulse the motherboard reset; restart the board itself |
+| `screenshot` | Post the PC's desktop to #logging for 5 min, then auto-delete (needs the service + a #logging webhook) |
 | `wake [force \| mac <AA:BB:..>]`, `power <sleep\|hibernate\|restart\|shutdown\|lock>` | Wake-on-LAN; power commands over USB (`lock` locks the signed-in session) |
 | `going <restart\|shutdown\|update_restart\|update_shutdown\|sleep\|clear>` | Tell the board what the PC is about to do |
 | `bl <1\|2\|3\|all> <0-100\|on\|off>`, `display <on\|off>`, `led <auto\|on\|off\|sweep\|0-100>` | Backlights (saved); all panels dark until `display on` (not saved); status LED |
@@ -265,21 +266,47 @@ The Discord bot uses up to four channels, each set by its channel id in
 | `DISCORD_CH_WEATHER` | #weather-announcement | Rain and typhoon warnings, "cleared" posts, phone rain alerts, a weather update every 2 h from 06:00 to 20:00 |
 | `DISCORD_CH_LOG` | #logging | The board's log, timestamped, in batches every 10 s |
 | `DISCORD_CH_CONTROL` | #control | One control panel message with the `/actions` buttons, kept up to date |
+| `DISCORD_SHOT_WEBHOOK` | webhook URL | Where the Screenshot button posts (auto-deleted after 5 min); empty disables it |
 
 PC and weather posts fall back to `DISCORD_CHANNEL_ID` when their own key is
 empty. Only `DISCORD_OWNER_ID` can use the buttons.
 
-The panel (#control, or `/actions` for one that only you see) has four tabs:
+The panel (#control, or `/actions` for one that only you see) opens with a
+category dropdown; picking one swaps the controls below it:
 
-| Tab | Shows | Buttons |
+| Tab | Shows | Controls |
 |---|---|---|
 | Door | Door remote state | Door 1-4 |
-| PC Control | PC state, board Wi-Fi | Wake PC, Lock, Sleep, Hibernate; Restart, Shut down, PC reset (these ask first) |
+| PC Control | PC state, board Wi-Fi | Wake PC, Lock, Sleep, Hibernate; Restart, Shut down, PC reset (these ask first); Screenshot |
 | Board | Uptime, Wi-Fi, internal RAM, PSRAM, last restart reason | Restart board (asks first), Refresh weather, Reconnect Discord |
-| Display | Each panel's screen and backlight | A screen picker per panel (not saved, like `face`), Dimmer / Brighter (20 % steps, saved), Displays off / on (not saved), All auto |
+| Display | Each panel's screen and backlight | A screen dropdown per panel (each with an Auto option; not saved, like `face`); a brightness dropdown for all panels (5 % steps + Off, saved) |
+
+Every tab has a Refresh and, on an `/actions` panel, a Close. The Display tab
+fills all five of Discord's action rows with dropdowns, so Refresh there is an
+entry inside the category dropdown instead of a button.
 
 Lock needs the PC stats service: the board has no keyboard to send Win+L, so
 the service starts `LockWorkStation` in the signed-in session.
+
+**Screenshot** (PC Control) captures the whole desktop (every monitor in one
+image) and posts it to a Discord webhook for 5 minutes, then deletes the post;
+the local file in `%temp%` is removed as soon as it is uploaded. The board only
+asks (`!shot` over HID, with the webhook from secrets.h); the capture, overlay
+and upload run in the signed-in session, because the SYSTEM service cannot see
+the desktop. Right after the capture, a red border and "Screenshot Captured" in
+red show on every monitor for 5 s - these are drawn *after* the capture, so they
+are never in the image. If nobody is logged in (locked / login screen) it just
+logs and does nothing; two presses close together are coalesced (the second is
+dropped while the first is in flight).
+
+Set it up with one line in secrets.h (keeps the config in one place):
+
+1. In Discord: #logging -> Edit Channel -> Integrations -> Webhooks -> New
+   Webhook -> Copy Webhook URL.
+2. `#define DISCORD_SHOT_WEBHOOK "https://discord.com/api/webhooks/..."` in secrets.h.
+
+Empty (the default) disables the button: it answers "no screenshot webhook in
+secrets.h".
 
 `WAKE_DIM_BACKLIGHTS` (secrets.h, default false) is for motherboards that drag
 the USB 5 V rail down while the PC powers on from shutdown: the board browns

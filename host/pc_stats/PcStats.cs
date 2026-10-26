@@ -507,8 +507,41 @@ class PcStats : ServiceBase {
       HandleTxtLine(line);
     } else if (line.StartsWith("!power", StringComparison.OrdinalIgnoreCase)) {
       HandlePowerLine(line);
+    } else if (line.StartsWith("!shot", StringComparison.OrdinalIgnoreCase)) {
+      HandleShotLine(line);
     } else {
       Log("board: unrecognized line '" + line + "'");
+    }
+  }
+
+  static readonly Regex ShotCmdRegex = new Regex(@"^!shot\s+([0-9a-fA-F]{1,16})\s+(\S+)$");
+
+  // The board asked for a screenshot and handed us the webhook from its
+  // secrets.h. The service runs as SYSTEM in session 0 and cannot see the
+  // user's desktop, so we pass the request (nonce + webhook) to the
+  // user-session helper (esp32-agyquota.exe) via a trigger file; it captures,
+  // posts to the webhook, and auto-deletes after 5 min. If nobody is logged in
+  // there is nothing to capture, so just log and move on (never throw).
+  static void HandleShotLine(string line) {
+    if (line == null) return;
+    Match m = ShotCmdRegex.Match(line.Trim());
+    if (!m.Success) { Log("shot: unrecognized command"); return; }
+    string nonce = m.Groups[1].Value.ToLowerInvariant();
+    string webhook = m.Groups[2].Value;
+
+    uint session = WTSGetActiveConsoleSessionId();
+    if (session == 0xFFFFFFFF) {
+      Log("shot: no console session (PC at lock/login screen), screenshot skipped");
+      return;
+    }
+    try {
+      string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ESP32PcStats");
+      Directory.CreateDirectory(dir);
+      // nonce \n utc-ticks \n webhook (webhook last: it is the only field that can contain odd chars)
+      File.WriteAllText(Path.Combine(dir, "shot_request.txt"), nonce + "\n" + DateTime.UtcNow.Ticks + "\n" + webhook);
+      Log("shot: request from board handed to the user-session helper, nonce " + nonce);
+    } catch (Exception ex) {
+      Log("shot: could not write request file: " + ex.Message);
     }
   }
 
