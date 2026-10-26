@@ -531,13 +531,13 @@ static int drawPcWarnBox(LGFX_Sprite &c, int y, const PcWarn *w, int n) {
     float secs = pcWarnAvgMs() / 1000.0f;
     if (a.temp) {
       snprintf(t1, sizeof t1, "%s HOT %.0f\u00B0" "C", a.label, a.value);
-      snprintf(sub[0], sizeof sub[0], "%g s average over the %g\u00B0" "C limit", secs, a.limit);
+      snprintf(sub[0], sizeof sub[0], "%gs average over the %g\u00B0" "C limit", secs, a.limit);
     } else {
       if (!strcmp(a.label, "RAM"))
         snprintf(t1, sizeof t1, "%s RAM %.0f%%", a.level == PCWARN_CRITICAL ? "CRITICAL" : "HIGH", a.value);
       else
         snprintf(t1, sizeof t1, "HIGH %s %s %.0f%%", a.label, strcmp(a.label, "VRAM") ? "LOAD" : "USE", a.value);
-      snprintf(sub[0], sizeof sub[0], "%g s average over the %g%% limit", secs, a.limit);
+      snprintf(sub[0], sizeof sub[0], "%gs average over the %g%% limit", secs, a.limit);
     }
     snprintf(t2, sizeof t2, "%s %.0f%s", a.label, a.value, a.temp ? "\u00B0" "C" : "%");
   } else {

@@ -25,8 +25,19 @@ def shot(port, n):
         s.close()
 
 
-def shot_on(s, n):
-    """shot() on a port the caller already holds open."""
+def shot_on(s, n, tries=3):
+    """shot() on a port the caller already holds open. A log line printed in
+    the middle of the dump can cost a data line, so a short one is retried."""
+    for attempt in range(tries):
+        try:
+            return _shot_once(s, n)
+        except SystemExit as e:
+            if attempt == tries - 1:
+                raise
+            print(f"{e}, retrying")
+
+
+def _shot_once(s, n):
     s.reset_input_buffer()
     s.write(f"shot {n}\n".encode())
     data, w, h = bytearray(), 0, 0

@@ -57,6 +57,12 @@ Notes on what is shown:
   faces (Light Rain / Heavy Shower / Storm, the ETA counting down each minute,
   how long it lasts); yellow until 20 min out, then red. Typhoons tracked from
   GDACS get a red box in their last 6 h and while they are here.
+- **PC usage warnings** take that box's place on the media face while the PC
+  is on: RAM above 80% (yellow) or 90% (red), CPU, GPU load or RX 6600 VRAM
+  above 90% (yellow), and CPU, GPU, RAM or VRM temperature too high (red),
+  each a 2 s average. The matching PC-face cards turn yellow or red too.
+  Limits and the window are set with the `pcwarn` console command and kept in
+  NVS.
 
 ## What it does
 
@@ -181,6 +187,7 @@ sprite; the transport underneath is esp_lcd with RGB444 on the wire.
 | `screens` | The faces in the image above and which one each view picks |
 | `layout` | JSON dashboard pages from `/ffat/layout.json` ([docs/layouts.md](docs/layouts.md)) |
 | `pcstats`, `textimg`, `art` | Stats the PC sends; PC-rendered text bitmaps; cover art |
+| `pcwarn` | PC usage warnings: 2 s averages against limits saved in NVS |
 | `pc_state`, `pc_going` | PC power state from USB events; restart/update detection; status LED |
 | `optos`, `power` | Door presses and the reset pulse; Wake-on-LAN and USB power commands |
 | `weather`, `nowcast`, `cyclone`, `owntracks`, `pushover` | Open-Meteo forecast and AQI, rain nowcast and warnings, GDACS typhoon tracking, phone location over MQTT, rain alerts ([docs/weather.md](docs/weather.md)) |
