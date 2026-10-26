@@ -1,5 +1,5 @@
 // ESP32-Helper: Windows service that reads configured hardware sensors
-// through LibreHardwareMonitor (lhwm-wrapper.dll, OpenRGB build) and streams
+// through LibreHardwareMonitorLib (PawnIO driver) and streams
 // them to the carrier board over a vendor HID interface (report ID 6) with
 // native USB CDC fallback (Espressif VID 303A).
 //
@@ -48,9 +48,7 @@ using System.ServiceProcess;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
-using System.Web.Script.Serialization;
 using LibreHardwareMonitor.Hardware;
-using LHWMWrapperNameSpace;
 using Microsoft.Win32;
 using Microsoft.Win32.SafeHandles;
 
@@ -690,7 +688,7 @@ class PcStats : ServiceBase {
     var toChild = new AnonymousPipeServerStream(PipeDirection.Out, HandleInheritability.Inheritable);
     var fromChild = new AnonymousPipeServerStream(PipeDirection.In, HandleInheritability.Inheritable);
     try {
-      string exe = System.Reflection.Assembly.GetExecutingAssembly().Location;
+      string exe = Environment.ProcessPath;   // single-file: Assembly.Location is empty
       string cmd = "\"" + exe + "\" --user " + toChild.GetClientHandleAsString() + " " + fromChild.GetClientHandleAsString();
       STARTUPINFO si = new STARTUPINFO();
       si.cb = Marshal.SizeOf(typeof(STARTUPINFO));
@@ -1344,7 +1342,7 @@ class PcStats : ServiceBase {
     public Dictionary<string, double> Numbers = new Dictionary<string, double>();
     public Dictionary<string, string> Texts = new Dictionary<string, string>();
     public DateTime LastSuccessUtc = DateTime.MinValue;
-    WebRequest currentRequest;
+    CancellationTokenSource currentCancel;
 
     public void Start() {
       Worker = new Thread(Run) { IsBackground = true, Name = "source_" + Name };
@@ -1354,8 +1352,8 @@ class PcStats : ServiceBase {
     public void StopWorker() {
       Stop = true;
       lock (Lock) {
-        if (currentRequest != null) {
-          try { currentRequest.Abort(); } catch (Exception) { }
+        if (currentCancel != null) {
+          try { currentCancel.Cancel(); } catch (Exception) { }
         }
       }
       if (Worker != null) Worker.Join(1000);
@@ -1369,24 +1367,23 @@ class PcStats : ServiceBase {
           string[] feed = GetHelperFeed(Url.Substring(7));
           if (feed != null) Apply(new StringReader(string.Join("\n", feed)));
         } else try {
-          WebRequest req = WebRequest.Create(Url);
-          HttpWebRequest httpReq = req as HttpWebRequest;
-          if (httpReq != null) {
-            httpReq.Timeout = 5000;
-            httpReq.ReadWriteTimeout = 5000;
-            httpReq.Proxy = null;
-          }
-          lock (Lock) { currentRequest = req; }
-
-          using (WebResponse resp = req.GetResponse())
-          using (Stream stream = resp.GetResponseStream())
-          using (StreamReader reader = new StreamReader(stream, Encoding.UTF8)) {
-            Apply(reader);
+          if (new Uri(Url).IsFile) {
+            string text;
+            using (var fs = new FileStream(new Uri(Url).LocalPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            using (var reader = new StreamReader(fs, Encoding.UTF8)) {
+              text = reader.ReadToEnd();
+            }
+            Apply(new StringReader(text));
+          } else {
+            CancellationTokenSource cts = new CancellationTokenSource();
+            lock (Lock) { currentCancel = cts; }
+            string body = Http.Get(Url, null, 5000, cts.Token);
+            Apply(new StringReader(body));
           }
         } catch (Exception) {
           // Hub might be sleeping or unreachable, keep going
         } finally {
-          lock (Lock) { currentRequest = null; }
+          lock (Lock) { currentCancel = null; }
         }
 
         int elapsed = (int)(DateTime.UtcNow - t0).TotalMilliseconds;
@@ -1564,7 +1561,7 @@ class PcStats : ServiceBase {
     Thread scanWorker;
     volatile bool stop;
     readonly object syncLock = new object();
-    HttpWebRequest currentLiveReq;
+    CancellationTokenSource currentLiveCancel;
 
     ClaudeLiveSnapshot lastGoodData;
     DateTime lastGoodFetchUtc = DateTime.MinValue;
@@ -1594,8 +1591,8 @@ class PcStats : ServiceBase {
     public void Stop() {
       stop = true;
       lock (syncLock) {
-        if (currentLiveReq != null) {
-          try { currentLiveReq.Abort(); } catch (Exception) { }
+        if (currentLiveCancel != null) {
+          try { currentLiveCancel.Cancel(); } catch (Exception) { }
         }
       }
       if (liveWorker != null) liveWorker.Join(1000);
@@ -1640,8 +1637,7 @@ class PcStats : ServiceBase {
         using (var reader = new StreamReader(fs, Encoding.UTF8)) {
           json = reader.ReadToEnd();
         }
-        var serializer = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
-        var dict = serializer.Deserialize<Dictionary<string, object>>(json);
+        var dict = Json.ParseObject(json);
         if (dict != null && dict.ContainsKey("claudeAiOauth") && dict["claudeAiOauth"] is Dictionary<string, object>) {
           var oauth = (Dictionary<string, object>)dict["claudeAiOauth"];
           if (oauth.ContainsKey("accessToken") && oauth["accessToken"] != null) {
@@ -1675,44 +1671,32 @@ class PcStats : ServiceBase {
         return LiveMs;
       }
 
-      HttpWebRequest req = (HttpWebRequest)WebRequest.Create("https://api.anthropic.com/api/oauth/usage");
-      req.Method = "GET";
-      req.Timeout = 10000;
-      req.ReadWriteTimeout = 10000;
-      req.ContentType = "application/json";
-      req.Headers["Authorization"] = "Bearer " + token;
-      req.Headers["anthropic-beta"] = "oauth-2025-04-20";
-
-      lock (syncLock) { currentLiveReq = req; }
+      CancellationTokenSource cts = new CancellationTokenSource();
+      lock (syncLock) { currentLiveCancel = cts; }
 
       try {
-        using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse())
-        using (Stream s = resp.GetResponseStream())
-        using (StreamReader reader = new StreamReader(s, Encoding.UTF8)) {
-          string respJson = reader.ReadToEnd();
-          var serializer = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
-          var respDict = serializer.Deserialize<Dictionary<string, object>>(respJson);
-          if (respDict != null) {
-            ClaudeLiveSnapshot snap = ParseLiveSnapshot(respDict);
-            lock (syncLock) {
-              lastGoodData = snap;
-              lastGoodFetchUtc = DateTime.UtcNow;
-              hasLastGood = true;
-              currentError = "";
-              if (!string.IsNullOrEmpty(planText)) currentPlan = planText;
-            }
+        Dictionary<string, string> headers = new Dictionary<string, string>();
+        headers["Authorization"] = "Bearer " + token;
+        headers["anthropic-beta"] = "oauth-2025-04-20";
+        string respJson = Http.Get("https://api.anthropic.com/api/oauth/usage", headers, 10000, cts.Token);
+        var respDict = Json.ParseObject(respJson);
+        if (respDict != null) {
+          ClaudeLiveSnapshot snap = ParseLiveSnapshot(respDict);
+          lock (syncLock) {
+            lastGoodData = snap;
+            lastGoodFetchUtc = DateTime.UtcNow;
+            hasLastGood = true;
+            currentError = "";
+            if (!string.IsNullOrEmpty(planText)) currentPlan = planText;
           }
         }
         return LiveMs;
-      } catch (WebException we) {
+      } catch (HttpFailure ex) {
         string err = "request_failed";
-        int status = 0;
-        if (we.Response is HttpWebResponse) {
-          status = (int)((HttpWebResponse)we.Response).StatusCode;
-          if (status == 401 || status == 403) err = "not_logged_in";
-          else if (status == 429) err = "rate_limited";
-          else err = "request_failed";
-        }
+        int status = ex.Status;
+        if (status == 401 || status == 403) err = "not_logged_in";
+        else if (status == 429) err = "rate_limited";
+        else err = "request_failed";
         lock (syncLock) {
           currentError = err;
           if (!string.IsNullOrEmpty(planText)) currentPlan = planText;
@@ -1728,7 +1712,7 @@ class PcStats : ServiceBase {
         }
         return LiveMs;
       } finally {
-        lock (syncLock) { currentLiveReq = null; }
+        lock (syncLock) { currentLiveCancel = null; }
       }
     }
 
@@ -1885,7 +1869,6 @@ class PcStats : ServiceBase {
       }
 
       var currentFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-      var serializer = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
 
       for (int i = 0; i < files.Length; i++) {
         if (stop) return;
@@ -1948,7 +1931,7 @@ class PcStats : ServiceBase {
             cache.BytesParsed += (lastNl + 1);
             cache.LastModifiedUtc = fi.LastWriteTimeUtc;
 
-            ParseLinesIntoCache(chunk, cache, cutoff31d, serializer);
+            ParseLinesIntoCache(chunk, cache, cutoff31d);
           }
         } catch (Exception) { }
       }
@@ -2000,7 +1983,7 @@ class PcStats : ServiceBase {
       }
     }
 
-    static void ParseLinesIntoCache(string text, ClaudeFileCache cache, DateTime cutoff, JavaScriptSerializer serializer) {
+    static void ParseLinesIntoCache(string text, ClaudeFileCache cache, DateTime cutoff) {
       int start = 0;
       while (start < text.Length) {
         int nl = text.IndexOf('\n', start);
@@ -2011,7 +1994,7 @@ class PcStats : ServiceBase {
               line.IndexOf("\"assistant\"", StringComparison.Ordinal) >= 0 &&
               line.IndexOf("\"usage\"", StringComparison.Ordinal) >= 0) {
             try {
-              var root = serializer.Deserialize<Dictionary<string, object>>(line);
+              var root = Json.ParseObject(line);
               if (root != null &&
                   root.ContainsKey("type") && "assistant".Equals(root["type"]) &&
                   root.ContainsKey("timestamp") && root["timestamp"] != null &&
@@ -2172,9 +2155,6 @@ class PcStats : ServiceBase {
   }
 
   static void ClaudeTest(string dir) {
-    try {
-      ServicePointManager.SecurityProtocol |= (SecurityProtocolType)3072;
-    } catch (Exception) { }
     var src = new ClaudeSource(dir, 120000);
     src.FetchLiveOnce();
     src.ScanLocalLogsOnce();
@@ -2206,7 +2186,6 @@ class PcStats : ServiceBase {
   }
 
   static void Main(string[] args) {
-    try { ServicePointManager.SecurityProtocol |= (SecurityProtocolType)3072; } catch (Exception) { }
     // the user-session half and its test modes (AgyQuota.cs) want an STA thread
     if (args.Length == 3 && args[0] == "--user") { RunSta(delegate() { AgyQuota.RunUser(args[1], args[2]); }); return; }
     if (args.Length == 1 && args[0] == "--agy-once") { RunSta(AgyQuota.RunOnceTest); return; }
@@ -2327,6 +2306,17 @@ class PcStats : ServiceBase {
       }
       File.AppendAllText(logPath, line + Environment.NewLine);
     } catch (IOException) { }
+  }
+
+  // Updates every hardware and its sub-hardware (lhwm-wrapper.dll used to ship this)
+  class UpdateVisitor : IVisitor {
+    public void VisitComputer(IComputer computer) { computer.Traverse(this); }
+    public void VisitHardware(IHardware hardware) {
+      hardware.Update();
+      foreach (IHardware sub in hardware.SubHardware) sub.Accept(this);
+    }
+    public void VisitSensor(ISensor sensor) { }
+    public void VisitParameter(IParameter parameter) { }
   }
 
   static Computer OpenComputer() {

@@ -16,3 +16,5 @@ firmware/**/secrets.h
 host/pc_stats/vendor/
 host/pc_stats/build/
 
+host/pc_stats/bin/
+host/pc_stats/obj/

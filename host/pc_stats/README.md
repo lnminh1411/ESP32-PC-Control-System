@@ -1,6 +1,6 @@
 # ESP32-Helper
 
-Windows service that reads hardware sensors via LibreHardwareMonitor (`lhwm-wrapper.dll`, OpenRGB build) and streams configured stats to the ESP32-S3 carrier board over a vendor-defined USB HID interface (with CDC serial fallback).
+Windows service that reads hardware sensors via LibreHardwareMonitorLib and streams configured stats to the ESP32-S3 carrier board over a vendor-defined USB HID interface (with CDC serial fallback).
 
 ## Two processes, one exe
 
@@ -31,7 +31,9 @@ Run `build.cmd` from Command Prompt:
 ```cmd
 host\pc_stats\build.cmd
 ```
-Builds `build\ESP32-Helper.exe` using Microsoft .NET Framework 4 `csc.exe` (ships with Windows). On the first run, it automatically downloads `lhwm-wrapper.dll` into `vendor\`.
+Runs `dotnet publish` on `ESP32-Helper.csproj` and leaves one self-contained, single-file `build\ESP32-Helper.exe` (~58 MB, .NET 10 runtime included, nothing to install on the PC that runs it). Building needs the .NET 10 SDK; packages come from nuget.org through the repo's `nuget.config`.
+
+Sensors come from the `LibreHardwareMonitorLib` package, which reads low-level hardware (Super I/O, CPU MSRs) through the **PawnIO** driver. Install PawnIO once (`winget install namazso.PawnIO`); without it those sensors read empty. `--list` shows what is available.
 
 ## Installation & Removal
 

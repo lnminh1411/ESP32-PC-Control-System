@@ -12,7 +12,7 @@
 // window from agy's own /usage panel (AgyUsage.cs).
 // Tokens are never logged.
 //
-// Target: .NET Framework 4 (C# 5 syntax only).
+// Target: .NET 10 (ESP32-Helper.csproj); JSON and HTTP go through Net.cs.
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -25,7 +25,6 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
-using System.Web.Script.Serialization;
 using Microsoft.Win32.SafeHandles;
 using System.Drawing;
 using System.Drawing.Drawing2D;
@@ -130,7 +129,7 @@ static class AgyQuota {
     string path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), @".claude\.credentials.json");
     if (!File.Exists(path)) return false;
     try {
-      Dictionary<string, object> root = new JavaScriptSerializer().DeserializeObject(File.ReadAllText(path)) as Dictionary<string, object>;
+      Dictionary<string, object> root = Json.ParseObject(File.ReadAllText(path));
       object o;
       if (root == null || !root.TryGetValue("claudeAiOauth", out o)) return false;
       Dictionary<string, object> oauth = o as Dictionary<string, object>;
@@ -164,10 +163,9 @@ static class AgyQuota {
 
     try {
       RefreshClaudeToken();
-    } catch (WebException ex) {
-      HttpWebResponse r = ex.Response as HttpWebResponse;
-      int code = r != null ? (int)r.StatusCode : 0;
-      Log("claude: token refresh failed (" + (code != 0 ? code.ToString(CultureInfo.InvariantCulture) : ex.Status.ToString()) + ")" +
+    } catch (HttpFailure ex) {
+      int code = ex.Status;
+      Log("claude: token refresh failed (" + (code != 0 ? code.ToString(CultureInfo.InvariantCulture) : ex.Reason) + ")" +
           (code == 400 || code == 401 ? " -- signed out? run `claude auth login`" : ""));
     } catch (Exception ex) {
       Log("claude: token refresh error: " + ex.GetType().Name);   // never the content
@@ -179,8 +177,7 @@ static class AgyQuota {
   // token wins and ours is dropped.
   static void RefreshClaudeToken() {
     string path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), @".claude\.credentials.json");
-    JavaScriptSerializer js = new JavaScriptSerializer();
-    Dictionary<string, object> oauth = ClaudeOauth(js, path);
+    Dictionary<string, object> oauth = ClaudeOauth(path);
     if (oauth == null || !oauth.ContainsKey("refreshToken")) return;
     string usedRefresh = Convert.ToString(oauth["refreshToken"], CultureInfo.InvariantCulture);
 
@@ -194,14 +191,14 @@ static class AgyQuota {
     req["refresh_token"] = usedRefresh;
     req["client_id"] = ClaudeClientId;
     if (scopes.Count > 0) req["scope"] = string.Join(" ", scopes.ToArray());
-    Dictionary<string, object> resp = js.DeserializeObject(PostJson(ClaudeTokenUrl, js.Serialize(req), null)) as Dictionary<string, object>;
+    Dictionary<string, object> resp = Json.ParseObject(PostJson(ClaudeTokenUrl, Json.Write(req), null));
     if (resp == null || !resp.ContainsKey("access_token") || !resp.ContainsKey("expires_in")) {
       Log("claude: token refresh returned no token");
       return;
     }
 
     // re-read: write only onto the state we refreshed from
-    Dictionary<string, object> root = js.DeserializeObject(File.ReadAllText(path)) as Dictionary<string, object>;
+    Dictionary<string, object> root = Json.ParseObject(File.ReadAllText(path));
     oauth = root != null && root.ContainsKey("claudeAiOauth") ? root["claudeAiOauth"] as Dictionary<string, object> : null;
     if (oauth == null || Convert.ToString(oauth["refreshToken"], CultureInfo.InvariantCulture) != usedRefresh) {
       Log("claude: credentials changed during refresh, keeping the other process's token");
@@ -216,34 +213,18 @@ static class AgyQuota {
       oauth["refreshTokenExpiresAt"] = nowMs + (long)(Convert.ToDouble(resp["refresh_token_expires_in"], CultureInfo.InvariantCulture) * 1000);
 
     string tmp = path + ".tmp." + Guid.NewGuid().ToString("N");
-    File.WriteAllText(tmp, js.Serialize(root), new UTF8Encoding(false));
+    File.WriteAllText(tmp, Json.Write(root), new UTF8Encoding(false));
     File.Replace(tmp, path, null);
     Log("claude: token refreshed, valid until " + UnixEpoch.AddMilliseconds(expiresAt).ToLocalTime().ToString("ddd HH:mm", CultureInfo.InvariantCulture));
   }
 
-  static Dictionary<string, object> ClaudeOauth(JavaScriptSerializer js, string path) {
-    Dictionary<string, object> root = js.DeserializeObject(File.ReadAllText(path)) as Dictionary<string, object>;
+  static Dictionary<string, object> ClaudeOauth(string path) {
+    Dictionary<string, object> root = Json.ParseObject(File.ReadAllText(path));
     return root != null && root.ContainsKey("claudeAiOauth") ? root["claudeAiOauth"] as Dictionary<string, object> : null;
   }
 
   static string PostJson(string url, string body, Dictionary<string, string> headers) {
-    ServicePointManager.SecurityProtocol |= (SecurityProtocolType)3072;   // TLS 1.2
-    HttpWebRequest req = (HttpWebRequest)WebRequest.Create(url);
-    req.Method = "POST";
-    req.ContentType = "application/json";
-    req.Timeout = 15000;
-    req.ReadWriteTimeout = 15000;
-    if (headers != null) {
-      foreach (KeyValuePair<string, string> h in headers) {
-        if (h.Key == "User-Agent") req.UserAgent = h.Value;
-        else req.Headers[h.Key] = h.Value;
-      }
-    }
-    byte[] data = Encoding.UTF8.GetBytes(body);
-    req.ContentLength = data.Length;
-    using (Stream rs = req.GetRequestStream()) rs.Write(data, 0, data.Length);
-    using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse())
-    using (StreamReader rd = new StreamReader(resp.GetResponseStream(), Encoding.UTF8)) return rd.ReadToEnd();
+    return Http.PostJson(url, body, headers, 15000);
   }
 
   // ---- Antigravity Flash quota from Google (agy's stored login) ----
@@ -290,7 +271,7 @@ static class AgyQuota {
       CREDENTIAL c = (CREDENTIAL)Marshal.PtrToStructure(p, typeof(CREDENTIAL));
       byte[] b = new byte[c.CredentialBlobSize];
       Marshal.Copy(c.CredentialBlob, b, 0, b.Length);
-      return new JavaScriptSerializer().DeserializeObject(Encoding.UTF8.GetString(b)) as Dictionary<string, object>;
+      return Json.ParseObject(Encoding.UTF8.GetString(b));
     } finally {
       CredFree(p);
     }
@@ -338,28 +319,18 @@ static class AgyQuota {
     string lastErr = "no OAuth client found in agy.exe";
     foreach (string[] c in tries) {
       try {
-        ServicePointManager.SecurityProtocol |= (SecurityProtocolType)3072;
-        HttpWebRequest req = (HttpWebRequest)WebRequest.Create("https://oauth2.googleapis.com/token");
-        req.Method = "POST";
-        req.ContentType = "application/x-www-form-urlencoded";
-        req.Timeout = 15000;
-        byte[] data = Encoding.ASCII.GetBytes("grant_type=refresh_token&client_id=" + Uri.EscapeDataString(c[0]) +
-            "&client_secret=" + Uri.EscapeDataString(c[1]) + "&refresh_token=" + Uri.EscapeDataString(refreshToken));
-        req.ContentLength = data.Length;
-        using (Stream rs = req.GetRequestStream()) rs.Write(data, 0, data.Length);
-        string body;
-        using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse())
-        using (StreamReader rd = new StreamReader(resp.GetResponseStream(), Encoding.UTF8)) body = rd.ReadToEnd();
-        Dictionary<string, object> r = new JavaScriptSerializer().DeserializeObject(body) as Dictionary<string, object>;
+        string form = "grant_type=refresh_token&client_id=" + Uri.EscapeDataString(c[0]) +
+            "&client_secret=" + Uri.EscapeDataString(c[1]) + "&refresh_token=" + Uri.EscapeDataString(refreshToken);
+        string body = Http.PostForm("https://oauth2.googleapis.com/token", form, null, 15000);
+        Dictionary<string, object> r = Json.ParseObject(body);
         if (r == null || !r.ContainsKey("access_token")) continue;
         agyClient = c;
         refreshErrLogged = null;
         memTokenUntil = DateTime.UtcNow.AddSeconds(Convert.ToDouble(r["expires_in"], CultureInfo.InvariantCulture) - 120);
         return Convert.ToString(r["access_token"], CultureInfo.InvariantCulture);
-      } catch (WebException ex) {
+      } catch (HttpFailure ex) {
         // wrong pair (invalid_client) or signed out: try the next one
-        HttpWebResponse r = ex.Response as HttpWebResponse;
-        lastErr = r != null ? "HTTP " + ((int)r.StatusCode).ToString(CultureInfo.InvariantCulture) : ex.Status.ToString();
+        lastErr = ex.Status != 0 ? "HTTP " + ex.Status.ToString(CultureInfo.InvariantCulture) : ex.Reason;
       }
     }
     if (refreshErrLogged != lastErr) {
@@ -409,12 +380,11 @@ static class AgyQuota {
       Dictionary<string, string> h = new Dictionary<string, string>();
       h["Authorization"] = "Bearer " + token;
       h["User-Agent"] = CloudUserAgent;
-      JavaScriptSerializer js = new JavaScriptSerializer();
 
       string project;
       if (!cloudProject.TryGetValue(email, out project)) {
-        Dictionary<string, object> lc = js.DeserializeObject(PostJson(CloudBase + "loadCodeAssist",
-            "{\"metadata\":{\"ideType\":\"ANTIGRAVITY\",\"platform\":\"WINDOWS_AMD64\",\"pluginType\":\"GEMINI\"}}", h)) as Dictionary<string, object>;
+        Dictionary<string, object> lc = Json.ParseObject(PostJson(CloudBase + "loadCodeAssist",
+            "{\"metadata\":{\"ideType\":\"ANTIGRAVITY\",\"platform\":\"WINDOWS_AMD64\",\"pluginType\":\"GEMINI\"}}", h));
         object po = lc != null && lc.ContainsKey("cloudaicompanionProject") ? lc["cloudaicompanionProject"] : null;
         Dictionary<string, object> pd = po as Dictionary<string, object>;
         project = pd != null ? GetString(pd, "id") : Convert.ToString(po, CultureInfo.InvariantCulture);
@@ -423,11 +393,11 @@ static class AgyQuota {
       }
       Dictionary<string, object> pb = new Dictionary<string, object>();
       pb["project"] = project;
-      string projBody = js.Serialize(pb);
+      string projBody = Json.Write(pb);
       CloudQuota q = new CloudQuota();
 
       // Gemini group of the quota summary, when Google sends one
-      Dictionary<string, object> sum = js.DeserializeObject(PostJson(CloudBase + "retrieveUserQuotaSummary", projBody, h)) as Dictionary<string, object>;
+      Dictionary<string, object> sum = Json.ParseObject(PostJson(CloudBase + "retrieveUserQuotaSummary", projBody, h));
       if (sum != null && sum.ContainsKey("groups")) {
         foreach (object go in (System.Collections.IEnumerable)sum["groups"]) {
           Dictionary<string, object> g = go as Dictionary<string, object>;
@@ -449,7 +419,7 @@ static class AgyQuota {
       // else the per-model value: Google returns the tighter of the two
       // windows, and its reset time says which one it is
       if (double.IsNaN(q.FivePct) && double.IsNaN(q.WeekPct)) {
-        Dictionary<string, object> fm = js.DeserializeObject(PostJson(CloudBase + "fetchAvailableModels", projBody, h)) as Dictionary<string, object>;
+        Dictionary<string, object> fm = Json.ParseObject(PostJson(CloudBase + "fetchAvailableModels", projBody, h));
         Dictionary<string, object> models = fm != null && fm.ContainsKey("models") ? fm["models"] as Dictionary<string, object> : null;
         if (models != null) {
           foreach (KeyValuePair<string, object> kv in models) {
@@ -480,12 +450,11 @@ static class AgyQuota {
       if (double.IsNaN(q.FivePct) && usageFive != null) { q.FivePct = usageFive.Pct; q.FiveReset = usageFive.ResetUtc; }
       lock (cloudQuota) cloudQuota[email] = q;
       cloudErrLogged = false;
-    } catch (WebException ex) {
-      HttpWebResponse r = ex.Response as HttpWebResponse;
-      if (r != null && (int)r.StatusCode == 401) memToken = null;
+    } catch (HttpFailure ex) {
+      if (ex.Status == 401) memToken = null;
       if (!cloudErrLogged) {
         cloudErrLogged = true;
-        Log("agy cloud: quota request failed (" + (r != null ? ((int)r.StatusCode).ToString(CultureInfo.InvariantCulture) : ex.Status.ToString()) + ")");
+        Log("agy cloud: quota request failed (" + (ex.Status != 0 ? ex.Status.ToString(CultureInfo.InvariantCulture) : ex.Reason) + ")");
       }
     } catch (Exception ex) {
       if (!cloudErrLogged) { cloudErrLogged = true; Log("agy cloud: " + ex.GetType().Name); }
@@ -499,18 +468,14 @@ static class AgyQuota {
   // The account an access token belongs to (Google userinfo), or null
   static string UserInfoEmail(string token) {
     try {
-      HttpWebRequest req = (HttpWebRequest)WebRequest.Create("https://www.googleapis.com/oauth2/v3/userinfo");
-      req.Headers["Authorization"] = "Bearer " + token;
-      req.Timeout = 15000;
-      req.KeepAlive = false;
-      req.UserAgent = CloudUserAgent;
-      using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse())
-      using (StreamReader rd = new StreamReader(resp.GetResponseStream(), Encoding.UTF8)) {
-        Dictionary<string, object> r = new JavaScriptSerializer().DeserializeObject(rd.ReadToEnd()) as Dictionary<string, object>;
-        return r != null && r.ContainsKey("email") ? Convert.ToString(r["email"], CultureInfo.InvariantCulture) : null;
-      }
-    } catch (WebException ex) {
-      CloudSkip("userinfo failed (" + ex.Status + (ex.Response is HttpWebResponse ? " " + (int)((HttpWebResponse)ex.Response).StatusCode : "") + ")");
+      Dictionary<string, string> headers = new Dictionary<string, string>();
+      headers["Authorization"] = "Bearer " + token;
+      headers["User-Agent"] = CloudUserAgent;
+      string body = Http.Get("https://www.googleapis.com/oauth2/v3/userinfo", headers, 15000);
+      Dictionary<string, object> r = Json.ParseObject(body);
+      return r != null && r.ContainsKey("email") ? Convert.ToString(r["email"], CultureInfo.InvariantCulture) : null;
+    } catch (HttpFailure ex) {
+      CloudSkip("userinfo failed (" + ex.Reason + (ex.Status != 0 ? " " + ex.Status : "") + ")");
       return null;
     }
   }
@@ -520,8 +485,8 @@ static class AgyQuota {
       string[] parts = jwt.Split('.');
       string b64 = parts[1].Replace('-', '+').Replace('_', '/');
       b64 = b64.PadRight(b64.Length + (4 - b64.Length % 4) % 4, '=');
-      Dictionary<string, object> pl = new JavaScriptSerializer().DeserializeObject(
-          Encoding.UTF8.GetString(Convert.FromBase64String(b64))) as Dictionary<string, object>;
+      Dictionary<string, object> pl = Json.ParseObject(
+          Encoding.UTF8.GetString(Convert.FromBase64String(b64)));
       return pl != null ? GetString(pl, "email") ?? "" : "";
     } catch (Exception) {
       return "";
@@ -847,28 +812,12 @@ static class AgyQuota {
   static string QueryLanguageServer(int port, string csrf) {
     string url = string.Format(CultureInfo.InvariantCulture, "http://127.0.0.1:{0}/exa.language_server_pb.LanguageServerService/GetUserStatus", port);
     byte[] body = Encoding.UTF8.GetBytes("{\"metadata\":{\"ideName\":\"antigravity\",\"extensionName\":\"antigravity\",\"locale\":\"en\"}}");
-
-    HttpWebRequest req = (HttpWebRequest)WebRequest.Create(url);
-    req.Method = "POST";
-    req.ContentType = "application/json";
-    req.Headers["Connect-Protocol-Version"] = "1";
+    Dictionary<string, string> headers = new Dictionary<string, string>();
+    headers["Connect-Protocol-Version"] = "1";
     if (!string.IsNullOrEmpty(csrf)) {
-      req.Headers["X-Codeium-Csrf-Token"] = csrf;
+      headers["X-Codeium-Csrf-Token"] = csrf;
     }
-    req.Timeout = 3000;
-    req.ReadWriteTimeout = 3000;
-    req.Proxy = null;
-    req.ContentLength = body.Length;
-
-    using (Stream reqStream = req.GetRequestStream()) {
-      reqStream.Write(body, 0, body.Length);
-    }
-
-    using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse())
-    using (Stream respStream = resp.GetResponseStream())
-    using (StreamReader reader = new StreamReader(respStream, Encoding.UTF8)) {
-      return reader.ReadToEnd();
-    }
+    return Http.Post(url, body, "application/json", headers, 3000);
   }
 
   static string GetString(Dictionary<string, object> dict, string key) {
@@ -911,8 +860,7 @@ static class AgyQuota {
   }
 
   static ParsedUserStatus ParseUserStatus(string json, List<ModelFamily> families, Regex excludeRegex) {
-    var serializer = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
-    Dictionary<string, object> root = serializer.Deserialize<Dictionary<string, object>>(json);
+    Dictionary<string, object> root = Json.ParseObject(json);
     if (root == null) return null;
 
     object usObj;
@@ -1667,7 +1615,6 @@ static class AgyQuota {
   // multipart POST to the webhook with ?wait=true so Discord returns the
   // created message, whose id we need to delete it later
   static string UploadToWebhook(string webhook, string pngPath) {
-    ServicePointManager.SecurityProtocol |= (SecurityProtocolType)3072;   // TLS 1.2; Discord refuses older
     string url = webhook + (webhook.Contains("?") ? "&" : "?") + "wait=true";
     byte[] png = File.ReadAllBytes(pngPath);
     string boundary = "----esp32shot" + Guid.NewGuid().ToString("N");
@@ -1681,22 +1628,15 @@ static class AgyQuota {
     byte[] headBytes = Encoding.UTF8.GetBytes(head.ToString());
     byte[] tailBytes = Encoding.UTF8.GetBytes("\r\n--" + boundary + "--\r\n");
 
-    HttpWebRequest req = (HttpWebRequest)WebRequest.Create(url);
-    req.Method = "POST";
-    req.ContentType = "multipart/form-data; boundary=" + boundary;
-    req.Timeout = 30000;
-    req.ContentLength = headBytes.Length + png.Length + tailBytes.Length;
-    using (var rs = req.GetRequestStream()) {
-      rs.Write(headBytes, 0, headBytes.Length);
-      rs.Write(png, 0, png.Length);
-      rs.Write(tailBytes, 0, tailBytes.Length);
-    }
-    using (var resp = (HttpWebResponse)req.GetResponse())
-    using (var sr = new StreamReader(resp.GetResponseStream())) {
-      var o = new JavaScriptSerializer().DeserializeObject(sr.ReadToEnd()) as Dictionary<string, object>;
-      object id;
-      if (o != null && o.TryGetValue("id", out id) && id != null) return id.ToString();
-    }
+    byte[] all = new byte[headBytes.Length + png.Length + tailBytes.Length];
+    System.Buffer.BlockCopy(headBytes, 0, all, 0, headBytes.Length);
+    System.Buffer.BlockCopy(png, 0, all, headBytes.Length, png.Length);
+    System.Buffer.BlockCopy(tailBytes, 0, all, headBytes.Length + png.Length, tailBytes.Length);
+
+    string resp = Http.Post(url, all, "multipart/form-data; boundary=" + boundary, null, 30000);
+    var o = Json.ParseObject(resp);
+    object id;
+    if (o != null && o.TryGetValue("id", out id) && id != null) return id.ToString();
     return null;
   }
 
@@ -1716,11 +1656,7 @@ static class AgyQuota {
       if (DateTime.UtcNow.Ticks < t) { keep.Add(ln); continue; }   // not due yet
       changed = true;
       try {
-        ServicePointManager.SecurityProtocol |= (SecurityProtocolType)3072;   // TLS 1.2
-        HttpWebRequest req = (HttpWebRequest)WebRequest.Create(p[1] + "/messages/" + p[2]);
-        req.Method = "DELETE";
-        req.Timeout = 15000;
-        using (var resp = (HttpWebResponse)req.GetResponse()) { }
+        Http.Delete(p[1] + "/messages/" + p[2], null, 15000);
         Log("shot: deleted #logging message " + p[2]);
       } catch (Exception ex) {
         Log("shot: delete failed for " + p[2] + ": " + ex.Message);   // drop anyway, don't retry forever

@@ -55,7 +55,8 @@ if ($existingTask) {
 $procs = Get-Process -Name "esp32-agyquota", "esp32-pcstats", "ESP32-Helper" -ErrorAction SilentlyContinue
 $procs | Stop-Process -Force -ErrorAction SilentlyContinue
 $procs | Wait-Process -Timeout 10 -ErrorAction SilentlyContinue   # the exe stays locked until the process is gone
-foreach ($old in "esp32-pcstats.exe", "esp32-agyquota.exe") {
+# lhwm-wrapper.dll: the .NET Framework build's sensor library, now inside the exe
+foreach ($old in "esp32-pcstats.exe", "esp32-agyquota.exe", "lhwm-wrapper.dll") {
   $oldPath = Join-Path -Path $installDir -ChildPath $old
   if (Test-Path -LiteralPath $oldPath) { Remove-Item -LiteralPath $oldPath -Force }
 }

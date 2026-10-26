@@ -7,7 +7,7 @@
 // the /usage and /exit lines it appends to its prompt history for that
 // folder are removed again afterwards.
 //
-// Target: .NET Framework 4 (C# 5 syntax only).
+// Target: .NET 10 (ESP32-Helper.csproj).
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -244,7 +244,7 @@ static class AgyUsage {
   static void DropHistory() {
     string path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), @".gemini\antigravity-cli\history.jsonl");
     if (!File.Exists(path)) return;
-    string ws = "\"workspace\":" + new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(Workspace);
+    string ws = "\"workspace\":" + Json.Write(Workspace);
     string[] lines = File.ReadAllLines(path, new UTF8Encoding(false));
     List<string> keep = new List<string>(lines.Length);
     foreach (string l in lines) if (l.IndexOf(ws, StringComparison.Ordinal) < 0) keep.Add(l);

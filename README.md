@@ -344,8 +344,10 @@ elevated shell).
 
 ## PC side
 
-`host/pc_stats` builds one program, `ESP32-Helper.exe`, with the .NET
-Framework 4 compiler that ships with Windows. It runs as two processes:
+`host/pc_stats` builds one program, `ESP32-Helper.exe`, a self-contained
+single-file .NET 10 exe (needs the .NET 10 SDK to build, nothing to run;
+sensors come from LibreHardwareMonitorLib through the PawnIO driver). It runs
+as two processes:
 
 - **The Windows service** (SYSTEM, session 0): reads sensors through
   LibreHardwareMonitor and Windows performance counters, polls the local AI
