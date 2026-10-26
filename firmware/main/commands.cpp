@@ -26,6 +26,7 @@
 #include "pc_going.h"
 #include "pc_state.h"
 #include "pcstats.h"
+#include "pcwarn.h"
 #include "screens.h"
 #include "power.h"
 #include "aictl.h"
@@ -431,6 +432,7 @@ static void cmdLayout(const char *a1, const char *a2) {
 // before strtok splits it, so these only run for help's sake
 static void cmdHw(const char *, const char *) { hwConsole(""); }
 static void cmdAi(const char *, const char *) { aiConsole(""); }
+static void cmdPcWarn(const char *, const char *) { pcWarnCommand(""); }
 
 static const Command COMMANDS[] = {
   {"help",    "",                                    cmdHelp},
@@ -453,6 +455,7 @@ static const Command COMMANDS[] = {
   {"socks",   "",                                             cmdSocks},
   {"bench",   "[all|usage|cpu|mem|flash|spi|usb <KB>]",             benchCommand},
   {"pcstats", "[text]",                                       cmdPcStats},
+  {"pcwarn",  "[set <metric> <high|crit> <v|off|default> | avg <ms> | reset | demo [one] | off]", cmdPcWarn},
   {"fps",     "[budget <20-95> | cap <1|2|3> <1-60|off>]",   cmdFps},
   {"layout",  "<show|reload|default|begin|data <b64>|end>",  cmdLayout},
   {"face",    "<1|2|3> <auto|pc|gif|restart|update|media|weather|ai|localai|clock>", cmdFace},
@@ -472,6 +475,7 @@ void commandRun(char *line) {
   while (*line == ' ' || *line == '\t') line++;
   if (!strncmp(line, "hw", 2) && (!line[2] || line[2] == ' ' || line[2] == '\t')) { hwConsole(line + 2); return; }
   if (!strncmp(line, "ai", 2) && (!line[2] || line[2] == ' ' || line[2] == '\t')) { aiConsole(line + 2); return; }
+  if (!strncmp(line, "pcwarn", 6) && (!line[6] || line[6] == ' ' || line[6] == '\t')) { pcWarnCommand(line + 6); return; }
   char *cmd = strtok(line, " \t");
   if (!cmd) return;
   char *a1 = strtok(nullptr, " \t"), *a2 = strtok(nullptr, " \t");

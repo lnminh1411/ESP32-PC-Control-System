@@ -18,6 +18,7 @@
 #include "pc_going.h"
 #include "pc_state.h"
 #include "pcstats.h"
+#include "pcwarn.h"
 #include "sys.h"
 #include "textimg.h"
 #include "weather.h"
@@ -70,6 +71,22 @@ static inline uint16_t sev(double v, double w, double b) {
 // Rounded card background container.
 static inline void drawCard(LGFX_Sprite &c, int x, int y, int w, int h) {
   c.fillRoundRect(x, y, w, h, 6, C_CARD);
+}
+
+// PC face cards under a usage warning (pcwarn.h): the card turns dark amber
+// (high) or dark red (critical) and its temperature takes the warning colour
+constexpr uint16_t C_CARD_WARN = 0x3982;     // #3d3210
+constexpr uint16_t C_CARD_BAD = 0x40C3;      // #401818
+
+static PcWarnLevel worst(PcWarnLevel a, PcWarnLevel b) { return a > b ? a : b; }
+
+static void drawWarnCard(LGFX_Sprite &c, int x, int y, int w, int h, PcWarnLevel level) {
+  c.fillRoundRect(x, y, w, h, 6, level == PCWARN_CRITICAL ? C_CARD_BAD : level == PCWARN_HIGH ? C_CARD_WARN : C_CARD);
+}
+
+static uint16_t warnTempColor(double temp, PcWarnLevel level) {
+  if (isnan(temp)) return C_DIM;
+  return level == PCWARN_CRITICAL ? C_BAD : level == PCWARN_HIGH ? C_WARN : C_GOOD;
 }
 
 // Rounded horizontal progress bar with track and thumb.
@@ -463,10 +480,105 @@ static void drawWarnBox(LGFX_Sprite &c, int y) {
   c.drawString(fitText(c, 206, sub1, sub2), 18, y + 25);
 }
 
+// Joins the warnings of one kind into "RAM 93%, CPU 96%, GPU 97/95%" (style
+// 0), "RAM 93 CPU 96 GPU 97/95%" (1) or "RAM93 CPU96 GPU97/95%" (2); both
+// GPUs share one entry. Temperatures end in a degree sign instead of %.
+static void joinWarns(char *out, size_t cap, const PcWarn *w, int n, bool temp, int style) {
+  const char *unit = temp ? "\u00B0" "C" : "%";
+  const char *sep = style == 0 ? ", " : " ";
+  const char *gap = style == 2 ? "" : " ";
+  int g1 = -1, g2 = -1;
+  for (int i = 0; i < n; i++) {
+    if (w[i].temp != temp) continue;
+    if (!strcmp(w[i].label, "GPU1")) g1 = i;
+    if (!strcmp(w[i].label, "GPU2")) g2 = i;
+  }
+  size_t len = 0;
+  out[0] = 0;
+  for (int i = 0; i < n && len < cap; i++) {
+    if (w[i].temp != temp || (i == g2 && g1 >= 0)) continue;
+    bool last = true;   // the unit only after the last value in compact styles
+    for (int j = i + 1; j < n; j++)
+      if (w[j].temp == temp && !(j == g2 && g1 >= 0)) last = false;
+    const char *u = style == 0 || last ? unit : "";
+    if (i == g1 && g2 >= 0)
+      len += snprintf(out + len, cap - len, "%s%s%s%.0f/%.0f%s", len ? sep : "", "GPU", gap, w[g1].value, w[g2].value, u);
+    else
+      len += snprintf(out + len, cap - len, "%s%s%s%.0f%s", len ? sep : "", w[i].label, gap, w[i].value, u);
+  }
+}
+
+// PC usage warnings in place of the weather box: one line for a single
+// warning, else a count over a load line and a heat line. Red when any is
+// critical (RAM over 90 %, anything over 75 C), else yellow. Returns the
+// box height.
+static int drawPcWarnBox(LGFX_Sprite &c, int y, const PcWarn *w, int n) {
+  bool critical = false, anyLoad = false, anyHeat = false, ramCritical = false;
+  for (int i = 0; i < n; i++) {
+    critical |= w[i].level == PCWARN_CRITICAL;
+    ramCritical |= !w[i].temp && w[i].level == PCWARN_CRITICAL;
+    (w[i].temp ? anyHeat : anyLoad) = true;
+  }
+  int lines = n == 1 ? 1 : (int)anyLoad + (int)anyHeat;
+  int h = lines == 2 ? 58 : 44;
+  uint16_t col = critical ? C_BAD : C_WARN;
+  c.fillRoundRect(8, y, 224, h, 6, col);
+  c.fillRoundRect(10, y + 2, 220, h - 4, 5, C_BG);
+
+  char t1[48], t2[48], sub[3][72];
+  if (n == 1) {
+    const PcWarn &a = w[0];
+    float secs = pcWarnAvgMs() / 1000.0f;
+    if (a.temp) {
+      snprintf(t1, sizeof t1, "%s HOT %.0f\u00B0" "C", a.label, a.value);
+      snprintf(sub[0], sizeof sub[0], "%g s average over the %g\u00B0" "C limit", secs, a.limit);
+    } else {
+      if (!strcmp(a.label, "RAM"))
+        snprintf(t1, sizeof t1, "%s RAM %.0f%%", a.level == PCWARN_CRITICAL ? "CRITICAL" : "HIGH", a.value);
+      else
+        snprintf(t1, sizeof t1, "HIGH %s %s %.0f%%", a.label, strcmp(a.label, "VRAM") ? "LOAD" : "USE", a.value);
+      snprintf(sub[0], sizeof sub[0], "%g s average over the %g%% limit", secs, a.limit);
+    }
+    snprintf(t2, sizeof t2, "%s %.0f%s", a.label, a.value, a.temp ? "\u00B0" "C" : "%");
+  } else {
+    snprintf(t1, sizeof t1, "%d PC WARNINGS", n);
+    snprintf(t2, sizeof t2, "%d WARNINGS", n);
+  }
+  c.setFont(fontBody());
+  c.setTextColor(col);
+  c.setTextDatum(lgfx::textdatum_t::top_left);
+  c.drawString(fitText(c, 206, t1, t2), 18, y + 6);
+
+  c.setFont(fontSmall());
+  if (n == 1) {
+    c.setTextColor(C_DIM);
+    c.drawString(sub[0], 18, y + 25);
+    return h;
+  }
+  int ly = y + 25;
+  for (int kind = 0; kind < 2; kind++) {   // loads, then heat
+    bool temp = kind == 1;
+    if (temp ? !anyHeat : !anyLoad) continue;
+    for (int style = 0; style < 3; style++) joinWarns(sub[style], sizeof sub[style], w, n, temp, style);
+    char hot[3][80];
+    const char *a = sub[0], *b = sub[1], *d = sub[2];
+    if (temp) {   // "Hot: CPU 82..." so the heat line reads on its own
+      snprintf(hot[0], sizeof hot[0], "Hot: %s", sub[0]);
+      snprintf(hot[1], sizeof hot[1], "Hot %s", sub[1]);
+      snprintf(hot[2], sizeof hot[2], "%s", sub[2]);
+      a = hot[0], b = hot[1], d = hot[2];
+    }
+    c.setTextColor(temp || ramCritical ? C_BAD : C_WARN);
+    c.drawString(fitText(c, 206, a, b, d), 18, ly);
+    ly += 14;
+  }
+  return h;
+}
+
 // GPU stat card (RX 6600 or RTX 3050).
 static void drawGpuCard(LGFX_Sprite &c, int x, int y, const char *name, uint16_t acc,
-                        double temp, double load, double mhz, double vram, double vramT) {
-  drawCard(c, x, y, 114, 98);
+                        double temp, double load, double mhz, double vram, double vramT, PcWarnLevel level) {
+  drawWarnCard(c, x, y, 114, 98, level);
   c.setFont(fontSmall());
   c.setTextColor(acc);
   c.setTextDatum(lgfx::textdatum_t::top_left);
@@ -478,7 +590,7 @@ static void drawGpuCard(LGFX_Sprite &c, int x, int y, const char *name, uint16_t
   } else {
     snprintf(buf, sizeof(buf), "%.0f\u00B0" "C", temp);
   }
-  c.setTextColor(sev(temp, 75.0, 85.0));
+  c.setTextColor(warnTempColor(temp, level));
   c.setTextDatum(lgfx::textdatum_t::top_right);
   c.drawString(buf, x + 106, y + 6);
 
@@ -529,8 +641,14 @@ static void drawGpuCard(LGFX_Sprite &c, int x, int y, const char *name, uint16_t
 static void drawPcStats(LGFX_Sprite &c) {
   c.fillScreen(C_BG);
 
+  // Cards tint with their 2 s usage/temperature warnings (RAM: usage only)
+  PcWarnLevel cpuLevel = worst(pcWarnLevel("cpu_load"), pcWarnLevel("cpu_temp"));
+  PcWarnLevel ramLevel = pcWarnLevel("ram_load");
+  PcWarnLevel rxLevel = worst(worst(pcWarnLevel("gpu1_load"), pcWarnLevel("gpu1_vram_pct")), pcWarnLevel("gpu1_temp"));
+  PcWarnLevel rtxLevel = worst(pcWarnLevel("gpu2_load"), pcWarnLevel("gpu2_temp"));
+
   // CPU card
-  drawCard(c, 4, 4, 232, 66);
+  drawWarnCard(c, 4, 4, 232, 66, cpuLevel);
   c.setFont(fontSmall());
   c.setTextColor(C_CPU);
   c.setTextDatum(lgfx::textdatum_t::top_left);
@@ -556,14 +674,14 @@ static void drawPcStats(LGFX_Sprite &c) {
   double cpuTemp = pcStat("cpu_temp");
   if (isnan(cpuTemp)) snprintf(buf, sizeof(buf), "--");
   else snprintf(buf, sizeof(buf), "%.1f\u00B0" "C", cpuTemp);
-  c.setTextColor(sev(cpuTemp, 70.0, 85.0));
+  c.setTextColor(warnTempColor(cpuTemp, cpuLevel));
   c.setTextDatum(lgfx::textdatum_t::top_right);
   c.drawString(buf, 228, 44);
 
   drawBar(c, 12, 61, 216, 4, isnan(cpuLoad) ? 0.0f : (float)(cpuLoad / 100.0), C_CPU);
 
   // RAM card
-  drawCard(c, 4, 76, 232, 52);
+  drawWarnCard(c, 4, 76, 232, 52, ramLevel);
   c.setFont(fontSmall());
   c.setTextColor(C_RAM);
   c.setTextDatum(lgfx::textdatum_t::top_left);
@@ -595,13 +713,13 @@ static void drawPcStats(LGFX_Sprite &c) {
   double rxVramT = pcStat("gpu1_vramt");
   drawGpuCard(c, 4, 134, "RX 6600", C_AMD,
               pcStat("gpu1_temp"), smoothedStat(0, "gpu1_load"), pcStat("gpu1_clock"),
-              isnan(rxVram) ? NAN : rxVram / 1024.0, isnan(rxVramT) ? NAN : rxVramT / 1024.0);
+              isnan(rxVram) ? NAN : rxVram / 1024.0, isnan(rxVramT) ? NAN : rxVramT / 1024.0, rxLevel);
 
   double rtxVram = pcStat("gpu2_vram");
   double rtxVramT = pcStat("gpu2_vramt");
   drawGpuCard(c, 122, 134, "RTX 3050", C_NV,
               pcStat("gpu2_temp"), smoothedStat(1, "gpu2_load"), pcStat("gpu2_clock"),
-              isnan(rtxVram) ? NAN : rtxVram / 1024.0, isnan(rtxVramT) ? NAN : rtxVramT / 1024.0);
+              isnan(rtxVram) ? NAN : rtxVram / 1024.0, isnan(rtxVramT) ? NAN : rtxVramT / 1024.0, rtxLevel);
 
   // Fans card
   drawCard(c, 4, 238, 114, 78);
@@ -668,17 +786,24 @@ static void drawPcStats(LGFX_Sprite &c) {
 static void drawMedia(LGFX_Sprite &c) {
   c.fillScreen(C_BG);
 
-  bool hasRain = warnBoxShown();
-  int top = hasRain ? 54 : 0;
-  if (hasRain) {
+  // PC usage warnings take the weather box's place
+  PcWarn pcw[PCWARN_MAX];
+  int nPcw = pcWarnList(pcw);
+  int boxH = 0;
+  if (nPcw) {
+    boxH = drawPcWarnBox(c, 4, pcw, nPcw);
+  } else if (warnBoxShown()) {
     drawWarnBox(c, 4);
+    boxH = 44;
   }
+  bool hasRain = boxH > 0;
+  int top = hasRain ? boxH + 10 : 0;
 
   // media.ok from the service only says the helper file is fresh; a session has a title
   bool mediaOk = (pcStat("media.ok") == 1.0) && pcText("media.title")[0];
 
   if (mediaOk) {
-    int s = hasRain ? 104 : 144;
+    int s = hasRain ? 104 - (boxH - 44) : 144;   // a taller box takes it from the art
     int artX = 120 - s / 2;
     int artY = 8 + top;
 
@@ -691,7 +816,7 @@ static void drawMedia(LGFX_Sprite &c) {
         c.pushImage(artX, artY, 144, 144, (const lgfx::swap565_t *)artPixels);
       } else {
         c.pushImageRotateZoom((float)artX, (float)artY, 0.0f, 0.0f, 0.0f,
-                              104.0f / 144.0f, 104.0f / 144.0f, 144, 144,
+                              s / 144.0f, s / 144.0f, 144, 144,
                               (const lgfx::swap565_t *)artPixels);
       }
     } else {
