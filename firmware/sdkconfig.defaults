@@ -13,7 +13,10 @@ CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_SPIRAM_USE_MALLOC=y
 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
-CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+# Wi-Fi and lwIP stay in internal RAM: their linked lists (lwIP timers, heap
+# blocks) crashed the board when corrupted in PSRAM (2026-10-25/26 coredumps:
+# CacheError on a one-bit-off pointer in sys_timeout_abs, bad free() in tiT)
+# CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP is not set
 
 # Console: UART0 = the CH343 USB-C port, at the GIF upload rate. The native
 # USB port belongs to TinyUSB (CDC + vendor HID), so no USB-JTAG console.
