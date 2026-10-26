@@ -103,7 +103,7 @@ void pcStatsLine(const char *line) {
 
     if (*p == ' ') p++; // skip delimiter space between key and text
     const char *tstart = p;
-    char tbuf[81];
+    char tbuf[sizeof(TextEntry::val)];   // the whole 120 bytes: a cut title no longer matches the PC's CRC
     size_t tlen = strlen(tstart);
     if (tlen >= sizeof(tbuf)) tlen = sizeof(tbuf) - 1;
     memcpy(tbuf, tstart, tlen);
