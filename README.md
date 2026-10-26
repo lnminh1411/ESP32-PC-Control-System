@@ -158,7 +158,8 @@ still works afterwards:
 - flashing over the USB-Serial-JTAG port (a 1200-baud touch on the app's COM
   port reboots into the ROM, which shows up as a new COM port;
   `scripts/idf_flash.py` does this);
-- the application's own USB-OTG device (CDC console + vendor HID stats link).
+- the application's own USB-OTG device (CDC console, a WinUSB bulk stats
+  link, and vendor HID as the stats link's fallback and for the power button).
 
 Only USB-OTG *download* is gone, which this board never used. A later PCB
 revision could move the door rows off GPIO38-42 instead.
@@ -194,7 +195,7 @@ sprite; the transport underneath is esp_lcd with RGB444 on the wire.
 | `board_time` | Wall clock: SNTP over Wi-Fi, else the time the PC sends |
 | `net`, `discord` | Wi-Fi, mDNS, HTTP OTA and layout upload; Discord bot with an `/actions` panel |
 | `gif_store` | GIF frames pre-packed as RGB444 with per-frame dirty rects, saved to FAT |
-| `commands`, `console` | The text command set; USB CDC, UART and vendor-HID transports |
+| `commands`, `console` | The text command set; USB CDC, UART, WinUSB bulk and vendor-HID transports |
 
 How the display pipeline works:
 - **Dirty rectangles:** the flush task compares each canvas with what is
@@ -359,7 +360,8 @@ as two processes:
 - **The Windows service** (SYSTEM, session 0): reads sensors through
   LibreHardwareMonitor and Windows performance counters, polls the local AI
   status hub and Claude's usage, and streams everything to the board over a
-  vendor HID interface (no driver; the COM port stays free). It also renders
+  WinUSB bulk pipe (no driver install; vendor HID as the fallback; the COM
+  port stays free either way). It also renders
   non-Latin text for the board and sends cover art.
 - **The user-session half** (`--user`, started and restarted by the service
   in the signed-in user's session, as that user): media info from Windows'

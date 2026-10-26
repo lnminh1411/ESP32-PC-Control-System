@@ -25,7 +25,7 @@ const char *aiSend(const char *command, uint32_t *id) {
   uint32_t n = ++s_nextId;
   char line[128];
   snprintf(line, sizeof line, "!ai %lx %s\n", (unsigned long)n, command);
-  if (!usbHidSendLine(line)) return "USB HID send failed";
+  if (!usbPcSendLine(line)) return "USB send failed";
   if (id) *id = n;
   return nullptr;
 }

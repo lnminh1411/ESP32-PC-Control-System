@@ -1,6 +1,6 @@
 # ESP32-Helper
 
-Windows service that reads hardware sensors via LibreHardwareMonitorLib and streams configured stats to the ESP32-S3 carrier board over a vendor-defined USB HID interface (with CDC serial fallback).
+Windows service that reads hardware sensors via LibreHardwareMonitorLib and streams configured stats to the ESP32-S3 carrier board over a WinUSB bulk pipe (with vendor HID and CDC serial fallbacks).
 
 ## Two processes, one exe
 
@@ -21,9 +21,13 @@ The user half exits as soon as the pipes break, so it never outlives the service
 
 ## Transport
 
-The service streams stats over a custom USB HID vendor interface (UsagePage `0xFF00`, Usage `0x01`, report length 64 bytes) on the ESP32-S3 (Espressif VID `303A`).
-- **Why HID:** Windows automatically binds its built-in in-box HID driver without prompting for a driver install. The board's native USB CDC COM port remains completely free for firmware flashing and serial monitor consoles.
-- **Serial Fallback:** If no matching HID vendor interface is detected, or if `--transport serial` is requested, the service falls back to streaming over the USB CDC COM port (`@s`, `@t`, `@e` lines).
+`auto` (the default) tries three links in order, on the ESP32-S3 (Espressif VID `303A`):
+
+1. **WinUSB bulk pipe** (interface 3, endpoints `0x04` OUT / `0x84` IN, device interface GUID `{39531AD1-55E5-4933-869D-123B4E7D172C}`). The board's MS OS 2.0 descriptors make Windows bind WinUSB by itself, with no INF and no driver install. Full-speed bulk moves about 1 MB/s against HID's 63 bytes per 1 ms frame: a cover (41 KB of base64) arrives in 115 ms instead of 690 ms. The board's parser is now the limit, not the wire. The board sends its lines (`!txt`, `!art`, `!power`, `!hw`, `!ai`, `!shot`) back on this pipe while the service has sent on it within 3 s, else over HID. The service ignores what it reads in the first 500 ms after opening the pipe: an old request left in the board's buffer is never acted on.
+2. **Vendor HID** (UsagePage `0xFF00`, Usage `0x01`, report length 64 bytes): Windows' in-box HID driver.
+3. **Serial**: the USB CDC COM port (`@s`, `@t`, `@e` lines), or `--transport serial`.
+
+`--transport winusb` or `--transport hid` uses only that link. With either of the first two, the CDC COM port stays free for flashing and consoles.
 
 ## Build
 
@@ -51,7 +55,7 @@ ESP32-Helper.exe --console           # Run interactively, printing stats each ti
 ESP32-Helper.exe --console --no-user # Same, without the user half
 ESP32-Helper.exe --list              # Print all available hardware sensors and exit
 ESP32-Helper.exe --bench             # Benchmark sensor update latencies
-ESP32-Helper.exe --transport auto    # Transport mode: auto (default), hid, or serial
+ESP32-Helper.exe --transport auto    # Transport mode: auto (default), winusb, hid, or serial
 ESP32-Helper.exe --port COM4         # Manually specify COM port instead of VID_303A auto-detect
 ESP32-Helper.exe --claude <dir>      # Test Claude live fetch & local token totals and exit
 ESP32-Helper.exe --going             # Test restart/update detection and exit
@@ -190,7 +194,7 @@ When `media.art_id` transitions to a non-zero value and the latest art from the 
    - Data lines: `@a d <base64>` in lines of at most 160 base64 chars
    - Terminator: `@a end <id> <crc32 as 8 hex digits>`
 3. Pushes at most 4,000 base64 chars per tick appended after the `@e` line so regular sensor streaming never stalls.
-4. If the ESP32 carrier board requests art retransmission via `!art <id>` (received over HID input report or serial), the service immediately restarts streaming that art from the beginning.
+4. If the ESP32 carrier board requests art retransmission via `!art <id>` (received over whichever link is active), the service immediately restarts streaming that art from the beginning.
 
 ### Console Testing
 Run `ESP32-Helper.exe --media` to sample media sessions for 5 seconds, print the keys to the console, and save the current cover art decoded back from the RGB565 buffer to `K:\scratch\media_art.png`.
@@ -215,7 +219,7 @@ Each packet is chunked into 63-byte pieces; each report starts with Report ID `0
 When the ESP32 carrier board needs to display a text value containing non-ASCII characters (e.g. Japanese, CJK, Thai, accented characters, emoji) that its built-in ASCII font cannot display, it requests a rendered grayscale bitmap from the host.
 
 #### 1. Inbound Board Request (`!txt`)
-Sent from the carrier board over HID INPUT report 6 (or serial fallback):
+Sent from the carrier board over the active link (WinUSB bulk IN, HID INPUT report 6, or serial):
 ```
 !txt <id> <px> <bold> <key>
 ```
@@ -263,7 +267,7 @@ Renders the text using the identical GDI pipeline, exports a 4x nearest-neighbor
 The service supports bidirectional power management with the carrier board:
 
 ### Protocol
-- **Device -> Host (Power Requests)**: Sent as HID INPUT reports on report ID 6 (63-byte ASCII payload, zero-padded, `\n`-terminated; also accepted over serial CDC fallback). Format:
+- **Device -> Host (Power Requests)**: Sent on the WinUSB bulk IN pipe, or as HID INPUT reports on report ID 6 (63-byte ASCII payload, zero-padded, `\n`-terminated; also accepted over serial CDC fallback). Format:
   ```
   !power <action> <nonce>
   ```
@@ -324,7 +328,7 @@ Prints the last 15 event 1074 entries (`time | process | type | code | reason ->
 
 ## USB COM Port Notice
 
-When connected over the vendor HID interface (default in `auto` mode), the ESP32-S3's USB CDC COM port is completely unused by the service. Firmware can be flashed and serial consoles opened without stopping the service.
+When connected over the WinUSB pipe or the vendor HID interface (`auto` uses one of them), the ESP32-S3's USB CDC COM port is completely unused by the service. Firmware can be flashed and serial consoles opened without stopping the service.
 
 If the serial fallback is in use (or forced with `--transport serial` or `--port`), the service holds an open handle on the CDC COM port. In that case, stop the service before flashing:
 ```cmd

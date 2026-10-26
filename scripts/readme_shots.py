@@ -109,7 +109,6 @@ class Feeder:
         self.send(f"@{kind} begin {begin}")
         for i in range(0, len(b64), 160):
             self.send(f"@{kind} d {b64[i:i + 160]}")
-            time.sleep(0.005)   # the board's 4 KB CDC receive buffer drops bytes at full speed
         self.send(f"@{kind} end {end_id} {zlib.crc32(data):08x}")
 
     def send_media(self):

@@ -105,6 +105,25 @@ Face draw time per frame, measured with a temporary profiler (30 frames each):
 Text is about 1 ms per string. The time is spent on pixel writes to PSRAM, so
 further cuts need partial redraws (only the fields that changed).
 
+## WinUSB bulk pipe and USB receive backpressure (2026-10-26, later)
+
+1. The board gets a vendor interface with two bulk endpoints. Its MS OS 2.0
+   descriptors make Windows bind WinUSB with no driver install, and the
+   service uses it before HID.
+2. USB serial (CDC) and the new pipe stop dropping bytes when the board's
+   receive buffer is full: the bytes wait in TinyUSB's FIFO and the PC is
+   told to wait (NAK). Before, a 41 KB burst over COM12 lost lines every time.
+
+| | Before | After |
+|---|---|---|
+| Cover art (41 KB of base64) from the service, board's own timing | 688 ms (HID) | 115 ms (WinUSB) |
+| 43 KB burst to COM12 with no pacing | lines lost (`art: bad chunk`) | intact, 0.4 MB/s |
+| Internal RAM free | 162.4 KB | 158 KB |
+| Largest internal block | 88 KB | 80 KB |
+
+The pipe is no longer the limit: 115 ms is the board parsing the base64 text
+lines one byte at a time, the same as for the burst over COM12 (117 ms).
+
 ## Speed
 
 | Area | Test | Result |
@@ -122,6 +141,8 @@ further cuts need partial redraws (only the fields that changed).
 | Flash | FAT file read (gif.bin, 4.5 MB) | 5.7 MB/s |
 | Display SPI | full 240x320 RGB444 frame (115 200 B) | 27.8-28.9 ms, 4.0-4.1 MB/s, 80-83% of the 40 MHz wire (29.6-30.6 ms with 32-byte lines) |
 | USB CDC | board to PC | 0.93 MB/s sent, 0.78 MB/s received by the PC (2026-10-25) |
+| USB CDC | PC to board, text lines parsed | 0.4 MB/s (43 KB in 105 ms) |
+| USB | cover art, PC service to board | 115 ms on WinUSB bulk, 688 ms on HID |
 | Wi-Fi | HTTP download to the PC (4 MB, 9 runs) | 0.62-0.92 MB/s |
 | Wi-Fi | ping | 2-15 ms, 6 ms average |
 

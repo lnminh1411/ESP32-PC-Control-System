@@ -54,10 +54,10 @@ const char *powerRequest(const char *action) {
 
     char line[64];
     snprintf(line, sizeof(line), "!power %s %s\n", action, s_nonce);
-    if (!usbHidSendLine(line)) {
+    if (!usbPcSendLine(line)) {
       s_pending = false;
       s_nonce[0] = '\0';
-      return "USB HID send failed";
+      return "USB send failed";
     }
 
     s_pending = true;
@@ -170,7 +170,7 @@ const char *screenshotRequest() {
   char line[256];
   int n = snprintf(line, sizeof line, "!shot %s %s\n", nonce, DISCORD_SHOT_WEBHOOK);
   if (n <= 0 || n >= (int)sizeof line) return "webhook URL too long";
-  if (!usbHidSendLine(line)) return "USB HID send failed";
+  if (!usbPcSendLine(line)) return "USB send failed";
   logMsg("shot: screenshot requested (nonce %s)", nonce);
   return nullptr;
 }

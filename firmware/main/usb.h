@@ -19,7 +19,11 @@ void usbInit();
 
 int usbHidAvailable();
 int usbHidRead();
-bool usbHidSendLine(const char *line);
+// A line to the PC service: on the vendor bulk pipe while the service uses
+// it, else on HID
+bool usbPcSendLine(const char *line);
+int usbVendorAvailable();
+int usbVendorRead();
 bool usbSystemControl(uint8_t usage);
 bool usbSuspended();
 bool usbRemoteWakeup();

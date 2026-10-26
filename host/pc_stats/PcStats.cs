@@ -1,7 +1,7 @@
 // ESP32-Helper: Windows service that reads configured hardware sensors
 // through LibreHardwareMonitorLib (PawnIO driver) and streams
-// them to the carrier board over a vendor HID interface (report ID 6) with
-// native USB CDC fallback (Espressif VID 303A).
+// them to the carrier board over its WinUSB bulk interface, else a vendor
+// HID interface (report ID 6), else native USB CDC (Espressif VID 303A).
 //
 // The same exe is also the user-session half (AgyQuota.cs): the service starts
 // it with --user in the signed-in user's session and talks to it over two
@@ -27,7 +27,7 @@
 //        ESP32-Helper.exe --bench     time one Update() of each hardware
 //        ESP32-Helper.exe --agy-once  poll Antigravity quota once, print it
 //        ESP32-Helper.exe --media     sample media sessions for 5 s
-//        --transport auto|hid|serial  transport mode (default: auto)
+//        --transport auto|winusb|hid|serial  transport mode (default: auto)
 //        --port COMn                  skip VID auto-detect, force serial COMn
 //        --no-user                    with --console: don't start the user half
 using System;
@@ -131,6 +131,35 @@ class PcStats : ServiceBase {
 
   [DllImport("hid.dll", SetLastError = true)]
   static extern void HidD_GetHidGuid(out Guid hidGuid);
+
+  // WinUSB: the board's vendor bulk interface, bound by its MS OS 2.0
+  // descriptors and published under this GUID (firmware/main/usb.cpp)
+  static readonly Guid WinUsbInterfaceGuid = new Guid("39531AD1-55E5-4933-869D-123B4E7D172C");
+  const byte WinUsbPipeOut = 0x04;
+  const byte WinUsbPipeIn = 0x84;
+  const uint PIPE_TRANSFER_TIMEOUT = 0x03;
+  const uint FILE_ATTRIBUTE_NORMAL = 0x80;
+
+  [DllImport("winusb.dll", SetLastError = true)]
+  static extern bool WinUsb_Initialize(SafeFileHandle deviceHandle, out IntPtr interfaceHandle);
+
+  [DllImport("winusb.dll", SetLastError = true)]
+  static extern bool WinUsb_Free(IntPtr interfaceHandle);
+
+  [DllImport("winusb.dll", SetLastError = true)]
+  static extern bool WinUsb_WritePipe(IntPtr interfaceHandle, byte pipeId, byte[] buffer, uint length, out uint transferred, IntPtr overlapped);
+
+  [DllImport("winusb.dll", SetLastError = true)]
+  static extern bool WinUsb_ReadPipe(IntPtr interfaceHandle, byte pipeId, byte[] buffer, uint length, out uint transferred, IntPtr overlapped);
+
+  [DllImport("winusb.dll", SetLastError = true)]
+  static extern bool WinUsb_SetPipePolicy(IntPtr interfaceHandle, byte pipeId, uint policyType, uint valueLength, ref uint value);
+
+  [DllImport("winusb.dll", SetLastError = true)]
+  static extern bool WinUsb_FlushPipe(IntPtr interfaceHandle, byte pipeId);
+
+  [DllImport("winusb.dll", SetLastError = true)]
+  static extern bool WinUsb_AbortPipe(IntPtr interfaceHandle, byte pipeId);
 
   [DllImport("setupapi.dll", SetLastError = true)]
   static extern IntPtr SetupDiGetClassDevs(ref Guid classGuid, IntPtr enumerator, IntPtr hwndParent, uint flags);
@@ -500,6 +529,108 @@ class PcStats : ServiceBase {
       if (ov != IntPtr.Zero) { Marshal.FreeHGlobal(ov); ov = IntPtr.Zero; }
       if (readReport != IntPtr.Zero) { Marshal.FreeHGlobal(readReport); readReport = IntPtr.Zero; }
       if (readOv != IntPtr.Zero) { Marshal.FreeHGlobal(readOv); readOv = IntPtr.Zero; }
+    }
+
+    public void Dispose() {
+      Close();
+    }
+  }
+
+  // Bulk pipe: ~1 MB/s against HID's 63 bytes per 1 ms frame. Same text
+  // lines as the other links. Synchronous WinUSB calls: the reader blocks in
+  // ReadPipe until Close aborts it.
+  class WinUsbLink : ILink {
+    SafeFileHandle device;
+    IntPtr usb;
+    Thread readerThread;
+    volatile bool readerStop;
+    volatile bool isFaulted;
+    readonly DateTime openedUtc = DateTime.UtcNow;
+
+    public bool IsFaulted {
+      get { return isFaulted; }
+    }
+
+    public WinUsbLink(SafeFileHandle h) {
+      device = h;
+      if (!WinUsb_Initialize(device, out usb)) {
+        throw new IOException("WinUsb_Initialize failed: " + Marshal.GetLastWin32Error());
+      }
+      // the board makes the PC wait while its buffers are full; 3 s means it hung
+      uint timeout = 3000;
+      WinUsb_SetPipePolicy(usb, WinUsbPipeOut, PIPE_TRANSFER_TIMEOUT, 4, ref timeout);
+      WinUsb_FlushPipe(usb, WinUsbPipeIn);
+      readerThread = new Thread(ReadLoop) { IsBackground = true, Name = "winusb_reader" };
+      readerThread.Start();
+    }
+
+    void ReadLoop() {
+      var lineBuf = new StringBuilder();
+      bool dropping = false;
+      byte[] buf = new byte[512];
+      while (!readerStop) {
+        uint n;
+        if (!WinUsb_ReadPipe(usb, WinUsbPipeIn, buf, (uint)buf.Length, out n, IntPtr.Zero)) {
+          int err = Marshal.GetLastWin32Error();
+          if (!readerStop && err != 995 /* ERROR_OPERATION_ABORTED */) {
+            Log("WinUSB read failed: " + err);
+            isFaulted = true;
+          }
+          break;
+        }
+        // a line still in the board's FIFO from before this link opened may
+        // be an old request (a power action): drop the first 500 ms
+        bool stale = (DateTime.UtcNow - openedUtc).TotalMilliseconds < 500;
+        for (int i = 0; i < n; i++) {
+          char c = (char)buf[i];
+          if (c == '\0') continue;
+          if (c == '\n') {
+            if (!dropping && !stale) {
+              string line = lineBuf.ToString().TrimEnd('\r');
+              if (line.Length > 0) HandleBoardLine(line);
+            }
+            dropping = false;
+            lineBuf.Length = 0;
+          } else if (!dropping) {
+            lineBuf.Append(c);
+            if (lineBuf.Length > 256) {
+              dropping = true;
+              lineBuf.Length = 0;
+            }
+          }
+        }
+      }
+    }
+
+    public void Poll() { }
+
+    public void Write(string text) {
+      if (isFaulted) throw new IOException("WinUSB link is faulted");
+      byte[] bytes = Utf8NoBom.GetBytes(text);
+      uint sent;
+      if (!WinUsb_WritePipe(usb, WinUsbPipeOut, bytes, (uint)bytes.Length, out sent, IntPtr.Zero) || sent != bytes.Length) {
+        int err = Marshal.GetLastWin32Error();
+        isFaulted = true;
+        throw new IOException("WinUSB write failed: " + err + " (" + sent + " of " + bytes.Length + " bytes)");
+      }
+    }
+
+    public void Close() {
+      readerStop = true;
+      if (usb != IntPtr.Zero) {
+        try { WinUsb_AbortPipe(usb, WinUsbPipeIn); } catch (Exception) { }
+      }
+      if (readerThread != null) {
+        try { readerThread.Join(1000); } catch (Exception) { }
+        readerThread = null;
+      }
+      if (usb != IntPtr.Zero) {
+        try { WinUsb_Free(usb); } catch (Exception) { }
+        usb = IntPtr.Zero;
+      }
+      if (device != null && !device.IsClosed) {
+        try { device.Close(); } catch (Exception) { }
+      }
     }
 
     public void Dispose() {
@@ -2639,6 +2770,73 @@ class PcStats : ServiceBase {
     return null;
   }
 
+  static string FindWinUsb(out SafeFileHandle matchedHandle) {
+    matchedHandle = null;
+    Guid guid = WinUsbInterfaceGuid;
+    IntPtr hDevInfo = SetupDiGetClassDevs(ref guid, IntPtr.Zero, IntPtr.Zero, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
+    if (hDevInfo == IntPtr.Zero || hDevInfo.ToInt64() == -1) return null;
+
+    try {
+      SP_DEVICE_INTERFACE_DATA ifData = new SP_DEVICE_INTERFACE_DATA();
+      ifData.cbSize = (uint)Marshal.SizeOf(typeof(SP_DEVICE_INTERFACE_DATA));
+
+      for (uint i = 0; SetupDiEnumDeviceInterfaces(hDevInfo, IntPtr.Zero, ref guid, i, ref ifData); i++) {
+        uint reqSize = 0;
+        SetupDiGetDeviceInterfaceDetail(hDevInfo, ref ifData, IntPtr.Zero, 0, out reqSize, IntPtr.Zero);
+        if (reqSize == 0) continue;
+
+        IntPtr pDetail = Marshal.AllocHGlobal((int)reqSize);
+        try {
+          Marshal.WriteInt32(pDetail, IntPtr.Size == 8 ? 8 : 6);
+          if (!SetupDiGetDeviceInterfaceDetail(hDevInfo, ref ifData, pDetail, reqSize, out reqSize, IntPtr.Zero)) continue;
+          string path = Marshal.PtrToStringUni(new IntPtr(pDetail.ToInt64() + 4));
+          if (path == null || path.IndexOf("vid_303a", StringComparison.OrdinalIgnoreCase) < 0) continue;
+          SafeFileHandle hFile = CreateFile(path, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                            IntPtr.Zero, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, IntPtr.Zero);
+          if (hFile != null && !hFile.IsInvalid) {
+            matchedHandle = hFile;
+            return path;
+          }
+        } finally {
+          Marshal.FreeHGlobal(pDetail);
+        }
+      }
+    } finally {
+      SetupDiDestroyDeviceInfoList(hDevInfo);
+    }
+    return null;
+  }
+
+  static ILink TryWinUsb() {
+    SafeFileHandle h;
+    string path = FindWinUsb(out h);
+    if (path == null || h == null) return null;
+    try {
+      ILink l = new WinUsbLink(h);
+      Log("connected winusb " + path);
+      return l;
+    } catch (Exception e) {
+      Log("open winusb " + path + ": " + e.Message);
+      if (!h.IsClosed) h.Close();
+      return null;
+    }
+  }
+
+  static ILink TryHid() {
+    SafeFileHandle hHid;
+    string hidPath = FindHid(out hHid);
+    if (hidPath == null || hHid == null) return null;
+    try {
+      ILink l = new HidLink(hHid);
+      Log("connected hid " + hidPath);
+      return l;
+    } catch (Exception e) {
+      Log("open hid " + hidPath + ": " + e.Message);
+      if (!hHid.IsClosed) hHid.Close();
+      return null;
+    }
+  }
+
   static string FindPort() {
     if (fixedPort != null) return fixedPort;
     using (var q = new ManagementObjectSearcher("SELECT Name, PNPDeviceID FROM Win32_PnPEntity WHERE PNPDeviceID LIKE 'USB\\\\" + Vid + "%'")) {
@@ -3788,29 +3986,11 @@ class PcStats : ServiceBase {
               }
             }
           } else if (transportMode == "hid") {
-            SafeFileHandle hHid;
-            string hidPath = FindHid(out hHid);
-            if (hidPath != null && hHid != null) {
-              try {
-                link = new HidLink(hHid);
-                Log("connected hid " + hidPath);
-              } catch (Exception e) {
-                Log("open hid " + hidPath + ": " + e.Message);
-                if (hHid != null && !hHid.IsClosed) hHid.Close();
-              }
-            }
-          } else { // auto: HID first, serial fallback
-            SafeFileHandle hHid;
-            string hidPath = FindHid(out hHid);
-            if (hidPath != null && hHid != null) {
-              try {
-                link = new HidLink(hHid);
-                Log("connected hid " + hidPath);
-              } catch (Exception e) {
-                Log("open hid " + hidPath + ": " + e.Message);
-                if (hHid != null && !hHid.IsClosed) hHid.Close();
-              }
-            }
+            link = TryHid();
+          } else if (transportMode == "winusb") {
+            link = TryWinUsb();
+          } else { // auto: WinUSB, else HID, else serial
+            link = TryWinUsb() ?? TryHid();
             if (link == null) {
               string name = FindPort();
               if (name != null) {

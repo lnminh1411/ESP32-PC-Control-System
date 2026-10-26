@@ -160,7 +160,7 @@ static void request(const char *key, const char *str, uint32_t id, uint8_t px, u
     n += out;
   }
   snprintf(req + n, sizeof req - n, "\n");
-  usbHidSendLine(req);
+  usbPcSendLine(req);
   asked[slot] = {id, px, bold, now};
   lastAskMs = now;
 }

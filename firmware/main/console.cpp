@@ -17,7 +17,7 @@ struct LineBuf { char buf[400]; uint16_t n; };   // PC stats dictionary lines ru
 
 // Line assembly per port. On the UART an upper-case 'G' at the start of a
 // line starts a GIF upload instead (commands are all lower-case).
-static LineBuf uartLine, usbLine, hidLine;
+static LineBuf uartLine, usbLine, hidLine, vendorLine;
 
 static bool feed(LineBuf &lb, int c) {        // true = a full line is in lb.buf
   if (c == '\r' || c == '\n') {
@@ -59,6 +59,12 @@ void consolePoll() {
     int c = usbCdcRead();
     if (c >= 0) {
       if (feed(usbLine, c)) dispatch(usbLine.buf);
+    }
+  }
+  while (usbVendorAvailable() > 0) {
+    int c = usbVendorRead();
+    if (c > 0) {
+      if (feed(vendorLine, c)) dispatch(vendorLine.buf);
     }
   }
   while (usbHidAvailable() > 0) {
