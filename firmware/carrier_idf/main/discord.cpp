@@ -240,7 +240,13 @@ static int rest(const char *method, const char *path, const char *body, char *ou
     esp_http_client_set_post_field(client, nullptr, 0);
   }
 
+  // Discord drops idle keep-alive connections after a few minutes; writing to
+  // one fails with "connection reset" (3 error lines in #logging) before the
+  // retry below. Start fresh when the last request is older than 60 s.
+  static uint32_t lastUseMs[2];
+  if (lastUseMs[slot] && nowMs() - lastUseMs[slot] > 60000) esp_http_client_close(client);
   esp_err_t err = esp_http_client_perform(client);
+  lastUseMs[slot] = nowMs();
   if (err != ESP_OK) {
     esp_http_client_close(client);
     respBuf.len = 0;
