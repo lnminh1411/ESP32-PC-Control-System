@@ -261,7 +261,7 @@ static class AgyQuota {
   static string refreshErrLogged;         // last refresh failure logged (once per kind)
   static bool cloudErrLogged;
   static AgyUsage.Window usageWeek, usageFive;   // from agy's /usage panel
-  static DateTime lastUsageUtc = DateTime.MinValue;
+  static DateTime nextUsageUtc = DateTime.MinValue;
 
   // agy's login blob: {"token":{access_token, refresh_token, expiry, ...}, "id_token" or "id_token_email"}
   static Dictionary<string, object> ReadAgyLogin() {
@@ -435,16 +435,20 @@ static class AgyQuota {
           }
         }
       }
-      // the weekly Gemini window only shows in agy's /usage panel
-      if (DateTime.UtcNow - lastUsageUtc >= TimeSpan.FromMinutes(10)) {
-        lastUsageUtc = DateTime.UtcNow;
+      // the weekly Gemini window only shows in agy's /usage panel: every 10
+      // minutes, or after 1 minute when the last try failed (a cold agy start
+      // can miss the timeouts, and until a read works the weekly row is empty)
+      if (DateTime.UtcNow >= nextUsageUtc) {
         AgyUsage.Window w, f;
+        bool read = false;
         try {
-          if (AgyUsage.Read(out w, out f)) { usageWeek = w; usageFive = f; }
-          else Log("agy usage: /usage panel not read");
+          read = AgyUsage.Read(out w, out f);
+          if (read) { usageWeek = w; usageFive = f; }
+          else Log("agy usage: /usage panel not read, retrying in 1 min");
         } catch (Exception ex) {
           Log("agy usage: " + ex.GetType().Name + ": " + ex.Message);
         }
+        nextUsageUtc = DateTime.UtcNow + TimeSpan.FromMinutes(read ? 10 : 1);
       }
       if (usageWeek != null && !double.IsNaN(usageWeek.Pct)) { q.WeekPct = usageWeek.Pct; q.WeekReset = usageWeek.ResetUtc; }
       if (double.IsNaN(q.FivePct) && usageFive != null) { q.FivePct = usageFive.Pct; q.FiveReset = usageFive.ResetUtc; }

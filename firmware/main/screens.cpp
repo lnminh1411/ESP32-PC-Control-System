@@ -1149,16 +1149,17 @@ static void drawLocalAi(LGFX_Sprite &c) {
   c.setTextDatum(lgfx::textdatum_t::top_right);
   c.drawString(elBuf, 228, 51);
 
-  // ai.gen_tok_s is live only while generating (phase 4); otherwise it is the
-  // last request's speed, shown dimmed. While the prompt is processed (phase 3)
-  // there is no live speed at all (llama-server does not report one).
+  // ai.gen_tok_s is live only while generating (phase 4); otherwise it holds
+  // the last request's speed, so the face shows 0.0 (dimmed) until the next
+  // generation starts. While the prompt is processed (phase 3) there is no
+  // live speed at all (llama-server does not report one).
   double phaseN = pcStat("ai.phase");
   bool generating = !isnan(phaseN) && phaseN == 4.0;
   bool prompting = !isnan(phaseN) && phaseN == 3.0;
   double tps = pcStat("ai.gen_tok_s");
+  if (!generating || isnan(tps)) tps = 0.0;
   char tpsBuf[16];
-  if (isnan(tps) || prompting) snprintf(tpsBuf, sizeof(tpsBuf), "--");
-  else snprintf(tpsBuf, sizeof(tpsBuf), "%.1f", tps);
+  snprintf(tpsBuf, sizeof(tpsBuf), "%.1f", tps);
   c.setFont(fontDigits());
   c.setTextColor(generating ? C_TEXT : C_DIM);
   c.setTextDatum(lgfx::textdatum_t::top_left);
@@ -1167,7 +1168,7 @@ static void drawLocalAi(LGFX_Sprite &c) {
   c.setFont(fontBody());
   c.setTextColor(C_DIM);
   c.setTextDatum(lgfx::textdatum_t::top_right);
-  c.drawString(prompting ? "reading prompt" : generating ? "tok/s" : "tok/s, last", 228, 110);
+  c.drawString(prompting ? "reading prompt" : "tok/s", 228, 110);
 
   // Step n / max: the local agent harness (Bridge job) step counter; plain
   // chat requests have no steps, the hub then reports 0 / 0

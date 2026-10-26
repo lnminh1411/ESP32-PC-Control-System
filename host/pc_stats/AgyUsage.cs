@@ -87,6 +87,8 @@ static class AgyUsage {
 
   static readonly Regex Ansi = new Regex(@"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|\x1b[()][0-9A-B]|\x1b[=>]");
 
+  public static string LastText;   // flattened panel text of the last run, for --agy-usage
+
   public static string Workspace {
     get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"ESP32PcStats\agy-usage"); }
   }
@@ -105,6 +107,7 @@ static class AgyUsage {
     } finally {
       try { DropHistory(); } catch (Exception) { }
     }
+    LastText = text;
     if (text == null) return false;
 
     int g = text.IndexOf("GEMINI MODELS", StringComparison.Ordinal);
@@ -176,12 +179,14 @@ static class AgyUsage {
 
       using (FileStream input = new FileStream(inWrite, FileAccess.Write)) {
         // banner first, then a quiet moment so the prompt takes keys
-        if (!WaitFor(seen, seenLock, 0, "Antigravity CLI", 20000)) return null;
+        // generous timeouts: a cold start (after boot, or agy updating
+        // itself) and "Loading quota summary..." both can take a while
+        if (!WaitFor(seen, seenLock, 0, "Antigravity CLI", 45000)) return null;
         WaitQuiet(seen, seenLock, 700, 5000);
         int mark;
         lock (seenLock) mark = seen.Length;
         Send(input, "/usage\r");
-        bool ok = WaitFor(seen, seenLock, mark, "CLAUDE AND GPT MODELS", 15000) || WaitFor(seen, seenLock, mark, "Five Hour", 1000);
+        bool ok = WaitFor(seen, seenLock, mark, "CLAUDE AND GPT MODELS", 30000) || WaitFor(seen, seenLock, mark, "Five Hour", 1000);
         Thread.Sleep(300);
         string raw;
         lock (seenLock) raw = seen.ToString(mark, seen.Length - mark);
