@@ -3,6 +3,7 @@
 
 #include <esp_check.h>
 #include <esp_err.h>
+#include <esp_heap_caps.h>
 #include <esp_mac.h>
 #include <esp_rom_gpio.h>
 #include <esp_system.h>
@@ -297,8 +298,18 @@ void usbInit() {
 
   s_cdc_tx_lock = xSemaphoreCreateMutex();
   s_hid_tx_lock = xSemaphoreCreateMutex();
-  s_hid_stream = xStreamBufferCreate(24576, 1);   // the PC bursts up to ~14 KB per tick (cover art); overflow drops bytes
-  s_cdc_stream = xStreamBufferCreate(4096, 1);
+  // Byte storage in PSRAM (28 KB of internal RAM back), control blocks internal:
+  // a corrupted byte costs one line, a corrupted pointer would cost the board.
+  // A static stream buffer holds size - 1 bytes, hence the + 1.
+  static StaticStreamBuffer_t hidCtl, cdcCtl;
+  const size_t hidSize = 24576;   // the PC bursts up to ~14 KB per tick (cover art); overflow drops bytes
+  const size_t cdcSize = 4096;
+  uint8_t *hidMem = (uint8_t *)heap_caps_malloc(hidSize + 1, MALLOC_CAP_SPIRAM);
+  uint8_t *cdcMem = (uint8_t *)heap_caps_malloc(cdcSize + 1, MALLOC_CAP_SPIRAM);
+  if (hidMem) s_hid_stream = xStreamBufferCreateStatic(hidSize + 1, 1, hidMem, &hidCtl);
+  else s_hid_stream = xStreamBufferCreate(hidSize, 1);
+  if (cdcMem) s_cdc_stream = xStreamBufferCreateStatic(cdcSize + 1, 1, cdcMem, &cdcCtl);
+  else s_cdc_stream = xStreamBufferCreate(cdcSize, 1);
 
   const tinyusb_config_t tusb_cfg = {
     .port = TINYUSB_PORT_FULL_SPEED_0,

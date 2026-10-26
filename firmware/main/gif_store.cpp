@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <esp_heap_caps.h>
+#include <esp_task_wdt.h>
 #include <esp_vfs_fat.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -266,6 +267,7 @@ bool gifReceive(void (*onFrame)(int idx)) {
     packFrame(gif.packed[i], temp, sw, sh);
     if (onFrame) onFrame(i);
     hostUartPrintf("K%u\n", i);
+    esp_task_wdt_reset();   // a long upload is still progress
     i++;
   }
   if (f) fclose(f);

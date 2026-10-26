@@ -26,6 +26,7 @@
 
 #include <esp_event.h>
 #include <esp_system.h>
+#include <esp_task_wdt.h>
 #include <nvs_flash.h>
 
 // Why the board last restarted: in the log, and in #pc-announcement when it
@@ -108,7 +109,9 @@ extern "C" void app_main() {
   hostUartPrintln("PLAY");
   statusLedReady();
 
+  esp_task_wdt_add(nullptr);           // a stalled main loop panics after 20 s (core dump + reboot)
   for (;;) {
+    esp_task_wdt_reset();
     consolePoll();
     wolPoll();
     powerPoll();

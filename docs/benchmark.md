@@ -9,14 +9,16 @@ and time Wi-Fi from the PC with
 
 ## Usage
 
-From `bench usage` (part of `bench all`), after three bench rounds (see below), PC on:
+From `bench usage` (part of `bench all`), after three bench rounds (see below), PC on.
+Taken before the USB stream buffers moved to PSRAM: see "USB buffers, cache
+lines, one draw per pass" below for the ~29 KB that came back since.
 
 | Memory | Used | Notes |
 |---|---|---|
 | SRAM (512 KB) | 442 KB (86%) | 165 KB static (code in IRAM, data/bss, ROM, cache); heap 346 KB with 276 KB in use, 71 KB free, largest block 31 KB; lowest free ever: 34 KB |
 | PSRAM (8 MB) | 5041 KB (62%) | lowest free ever 1097 KB (bench buffers), largest free block 3136 KB |
 | Flash (16 MB) | fully partitioned | app slots 2 x 3 MB (OTA), FAT 9.8 MB, NVS 20 KB, core dump 64 KB |
-| App image | 1558 KB of 3072 KB (51%) | code 1006 KB, data 467 KB |
+| App image | 1559 KB of 3072 KB (51%) | code 1006 KB, data 467 KB |
 | FAT /ffat | 4508 KB of 9996 KB (45%) | gif.bin 4501 KB, layout.json, saved text images |
 | NVS | 199 of 630 entries | 8 namespaces |
 
@@ -61,6 +63,48 @@ Step by step, 90 s after boot: 40 KB free / 7.5 KB largest -> 54.5 / 22.5
 38 KB) -> 72.6 / 31.7 (boot stagger, kept as a guard). The Wi-Fi difference is
 within the radio's run-to-run swing.
 
+## USB buffers, cache lines, one draw per pass (2026-10-26, later)
+
+Three changes:
+
+1. USB receive stream buffers (HID 24 KB, CDC 4 KB) store their bytes in
+   PSRAM. FreeRTOS allocates them from internal RAM by default. The control
+   blocks stay internal.
+2. Data cache lines 32 -> 64 bytes (`CONFIG_ESP32S3_DATA_CACHE_LINE_64B`). The
+   faces draw into PSRAM canvases, so most of their time is PSRAM traffic.
+3. `viewsService` draws at most one canvas per pass. With three static faces
+   due at once it drew all three back to back (20 + 19 + 30 ms), and the
+   console waited up to 74 ms. Now the console waits for one face at most.
+   GIF frames need no draw, so they still go in the same pass.
+
+The task watchdog came back too: the main loop is subscribed, and a stall
+panics after 20 s (core dump, reboot).
+
+Wi-Fi was down on both runs (the 2.4 GHz network was off the air), so the
+internal RAM numbers below are lower in use than with Discord and weather
+running. Compare the difference, not the totals, with the tables above.
+
+| | Before (HEAD 4112843) | After |
+|---|---|---|
+| Internal free | 133.1 KB | 162.6 KB |
+| Largest internal block | 58 KB | 88 KB |
+| Internal free, lowest ever since boot | 93 KB | 120 KB |
+| PSRAM free | 3249 KB | 3220 KB |
+| Main task CPU (core 1, faces pc/media/ai at 2 fps) | 24.2% | 20.9% |
+| Worst main loop pass | 72-75 ms | one face, 27 ms at most |
+
+Face draw time per frame, measured with a temporary profiler (30 frames each):
+
+| Face | 32-byte lines | 64-byte lines |
+|---|---|---|
+| PC stats | 20.6 ms | 18.4 ms |
+| Media | 19.3 ms | 14.8 ms |
+| AI usage | 29.7 ms | 25.1 ms |
+
+`fillScreen` alone takes 3-7 ms per face, and each card fills its area again.
+Text is about 1 ms per string. The time is spent on pixel writes to PSRAM, so
+further cuts need partial redraws (only the fields that changed).
+
 ## Speed
 
 | Area | Test | Result |
@@ -70,20 +114,20 @@ within the radio's run-to-run swing.
 | CPU | double multiply-add (software) | 3 MFLOPS |
 | SRAM | copy / write / read | 239-377 / 238-738 / 119 MB/s (varies run to run with alignment) |
 | SRAM | random read | 13 ns |
-| PSRAM | copy / write / read (1 MB buffers) | 22 / 35 / 53 MB/s |
-| PSRAM | random read (1 MB span) | 506 ns |
-| PSRAM to SRAM | copy in 4 KB pieces | 62 MB/s |
+| PSRAM | copy / write / read (1 MB buffers) | 31 / 48 / 72 MB/s (22 / 35 / 53 with 32-byte cache lines) |
+| PSRAM | random read (1 MB span) | 697 ns (503 with 32-byte cache lines: each miss now fetches 64 bytes) |
+| PSRAM to SRAM | copy in 4 KB pieces | 86 MB/s (58-62 with 32-byte lines) |
 | Flash | raw partition read (4 KB) | 11.5 MB/s |
-| Flash | memory-mapped read (cache) | 26.7 MB/s |
-| Flash | FAT file read (gif.bin, 4.5 MB) | 5.1 MB/s |
-| Display SPI | full 240x320 RGB444 frame (115 200 B) | 29.6-29.8 ms, 3.9 MB/s, 77-78% of the 40 MHz wire |
+| Flash | memory-mapped read (cache) | 32 MB/s (26.5 with 32-byte lines) |
+| Flash | FAT file read (gif.bin, 4.5 MB) | 5.7 MB/s |
+| Display SPI | full 240x320 RGB444 frame (115 200 B) | 27.8-28.9 ms, 4.0-4.1 MB/s, 80-83% of the 40 MHz wire (29.6-30.6 ms with 32-byte lines) |
 | USB CDC | board to PC | 0.93 MB/s sent, 0.78 MB/s received by the PC (2026-10-25) |
 | Wi-Fi | HTTP download to the PC (4 MB, 9 runs) | 0.62-0.92 MB/s |
 | Wi-Fi | ping | 2-15 ms, 6 ms average |
 
 Notes:
-- A full frame takes ~30 ms per panel, so all three panels repainting at once
-  cap out near 11 fps; the dirty-rect diff is what keeps normal faces at their
+- A full frame takes ~28 ms per panel, so all three panels repainting at once
+  cap out near 12 fps; the dirty-rect diff is what keeps normal faces at their
   frame rates. SPI runs at 40 MHz because 80 MHz gave blank panels.
 - Wi-Fi throughput is low on purpose: 8 static RX and 8 static TX buffers and
   a BA window of 8 free internal RAM for TLS (see `sdkconfig.defaults`).

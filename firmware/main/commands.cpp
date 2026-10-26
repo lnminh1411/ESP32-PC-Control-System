@@ -372,7 +372,7 @@ static void cmdShot(const char *a1, const char *) {
     mbedtls_base64_encode((unsigned char *)line + 7, sizeof line - 9, &out, copy + off,
                           bytes - off < 768 ? bytes - off : 768);
     line[7 + out] = '\n';
-    usbCdcWriteAll(line, 8 + out);
+    if (!usbCdcWriteAll(line, 8 + out)) break;   // PC stopped reading
   }
   usbCdcWriteAll("SHOT end\n", 9);
   free(copy);

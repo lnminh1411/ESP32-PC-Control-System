@@ -28,6 +28,13 @@ CONFIG_LOG_DEFAULT_LEVEL_WARN=y
 CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y
 CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
 CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
+# A hung board in the case needs a PSU power cycle, so a stall must reboot it
+# instead (with a core dump): the main loop feeds the task watchdog
+CONFIG_ESP_TASK_WDT_PANIC=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=20
+# 64-byte data cache lines: faces draw into PSRAM canvases, 15-25% faster
+# than with 32-byte lines (no internal RAM cost)
+CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
 
 CONFIG_FREERTOS_HZ=1000
 CONFIG_FREERTOS_USE_TRACE_FACILITY=y

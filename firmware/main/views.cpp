@@ -650,7 +650,9 @@ void viewsService() {
     }
   }
 
-  // Schedule due panels
+  // Schedule due panels. One canvas draw per call (a face takes 15-25 ms): the
+  // loop gets back to the console between panels; GIF frames cost no draw.
+  bool drewCanvas = false;
   for (;;) {
     int best = -1;
     PanelPriority bestPrio = PRIO_LOW;
@@ -658,7 +660,7 @@ void viewsService() {
 
     for (int i = 0; i < N_PANELS; i++) {
       Panel &p = panels[i];
-      if (p.busy) continue;
+      if (p.busy || (drewCanvas && !p.gifMode)) continue;
 
       uint32_t minMs = getMinFrameMs(i);
       bool isDue = false;
@@ -733,6 +735,7 @@ void viewsService() {
 
       panelFirstFrame[best] = false;
       panelDirty[best] = false;
+      drewCanvas = true;
       displaySubmit(best);
       p.dueMs = now + getMinFrameMs(best);
     }
