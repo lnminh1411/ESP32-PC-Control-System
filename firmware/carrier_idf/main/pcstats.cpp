@@ -1,5 +1,6 @@
 #include "pcstats.h"
 
+#include <esp_heap_caps.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -21,10 +22,12 @@ struct TextEntry {
   char val[121];   // UTF-8, the PC cuts values at 120 bytes
 };
 
-static StatEntry table[PCSTATS_MAX];
+// Both tables live in PSRAM (14 KB internal RAM saved), allocated with the
+// first line; until then count = textCount = 0 and nothing reads them.
+static StatEntry *table;
 static int count;
 
-static TextEntry textTable[PCSTATS_TEXT_MAX];
+static TextEntry *textTable;
 static int textCount;
 
 static uint32_t lastSampleMs;
@@ -32,6 +35,17 @@ static uint32_t sampleSeq;
 
 void pcStatsLine(const char *line) {
   if (!line || line[0] != '@') return;
+  if (!table) {
+    table = (StatEntry *)heap_caps_calloc(PCSTATS_MAX, sizeof(StatEntry), MALLOC_CAP_SPIRAM);
+    textTable = (TextEntry *)heap_caps_calloc(PCSTATS_TEXT_MAX, sizeof(TextEntry), MALLOC_CAP_SPIRAM);
+    if (!table || !textTable) {
+      heap_caps_free(table);
+      heap_caps_free(textTable);
+      table = nullptr;
+      textTable = nullptr;
+      return;
+    }
+  }
   if (line[1] == 'a' && line[2] == ' ') { artLine(line); return; }
   if (line[1] == 'x' && line[2] == ' ') { textImgLine(line); return; }
   if (line[1] == 's' && (line[2] == ' ' || line[2] == '\0')) {

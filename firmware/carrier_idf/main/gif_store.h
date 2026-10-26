@@ -26,13 +26,15 @@ struct GifRect {
   uint16_t x, y, w, h;
 };
 
+// The per-frame tables point into one PSRAM block (gifFsInit allocates it at
+// boot, before anything reads them); n stays 0 without it.
 struct Gif {
   uint16_t w, h, n;               // scaled size (what is pushed), frame count
   uint16_t pw;                    // packed width = w rounded UP to even (pad pixel black)
-  uint16_t durMs[MAX_FRAMES];
-  uint8_t *packed[MAX_FRAMES];    // pw*h*3/2 bytes each, PSRAM, exact push444 byte layout
-  uint8_t nRects[MAX_FRAMES];     // up to 8 dirty rects vs previous frame
-  GifRect rects[MAX_FRAMES][MAX_DIRTY_RECTS];
+  uint16_t *durMs;                // [MAX_FRAMES]
+  uint8_t **packed;               // [MAX_FRAMES] pw*h*3/2 bytes each, PSRAM, exact push444 byte layout
+  uint8_t *nRects;                // [MAX_FRAMES] up to 8 dirty rects vs previous frame
+  GifRect (*rects)[MAX_DIRTY_RECTS];   // [MAX_FRAMES]
 };
 
 extern Gif gif;

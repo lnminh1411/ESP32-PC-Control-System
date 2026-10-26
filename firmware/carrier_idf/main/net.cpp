@@ -262,7 +262,7 @@ void netPoll() {
     }
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.stack_size = 8192;
+    config.stack_size = 6144;
     config.lru_purge_enable = true;
     config.max_open_sockets = 3;   // OTA and layout uploads, one at a time: leave sockets for TLS clients
     if (httpd_start(&otaServer, &config) == ESP_OK) {

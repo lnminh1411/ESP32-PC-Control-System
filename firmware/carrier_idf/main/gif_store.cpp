@@ -17,7 +17,28 @@ Gif gif;
 static bool fatOk;
 static wl_handle_t s_wl_handle = WL_INVALID_HANDLE;
 
+// Frame tables in PSRAM: 6 KB of internal RAM back; the player reads a few
+// rects per frame, nothing it would notice
+struct GifTables {
+  uint16_t durMs[MAX_FRAMES];
+  uint8_t *packed[MAX_FRAMES];
+  uint8_t nRects[MAX_FRAMES];
+  GifRect rects[MAX_FRAMES][MAX_DIRTY_RECTS];
+};
+
+static bool gifTablesAlloc() {
+  if (gif.packed) return true;
+  GifTables *t = (GifTables *)heap_caps_calloc(1, sizeof(GifTables), MALLOC_CAP_SPIRAM);
+  if (!t) return false;
+  gif.durMs = t->durMs;
+  gif.nRects = t->nRects;
+  gif.rects = t->rects;
+  gif.packed = t->packed;   // last: gifTablesAlloc() tests this one
+  return true;
+}
+
 bool gifFsInit() {
+  gifTablesAlloc();
   const esp_vfs_fat_mount_config_t mount_config = {
     .format_if_mount_failed = true,
     .max_files = 4,
@@ -205,6 +226,7 @@ static bool allocFrames(uint16_t sw, uint16_t sh) {
 }
 
 bool gifReceive(void (*onFrame)(int idx)) {
+  if (!gifTablesAlloc()) { hostUartPrintln("ERR psram alloc tables"); return false; }
   displayWaitAll();
   uint16_t hdr[3];
   if (!readExact(hdr, sizeof hdr)) { hostUartPrintln("ERR header timeout"); return false; }
@@ -254,7 +276,7 @@ bool gifReceive(void (*onFrame)(int idx)) {
 }
 
 bool gifLoad() {
-  if (!fatOk) return false;
+  if (!fatOk || !gifTablesAlloc()) return false;
   FILE *f = fopen(GIF_FILE, "rb");
   if (!f) return false;
   char magic[4];
