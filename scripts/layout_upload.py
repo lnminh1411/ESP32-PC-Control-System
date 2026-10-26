@@ -15,8 +15,7 @@ import serial
 
 def find_ota_pass(repo_root):
     candidates = [
-        os.path.join(repo_root, "firmware", "carrier_idf", "main", "secrets.h"),
-        os.path.join(repo_root, "firmware", "carrier_main", "secrets.h"),
+        os.path.join(repo_root, "firmware", "main", "secrets.h"),
     ]
     for path in candidates:
         if os.path.isfile(path):

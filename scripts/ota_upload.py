@@ -12,8 +12,7 @@ import urllib.parse
 
 def find_ota_pass(repo_root):
     candidates = [
-        os.path.join(repo_root, "firmware", "carrier_idf", "main", "secrets.h"),
-        os.path.join(repo_root, "firmware", "carrier_main", "secrets.h"),
+        os.path.join(repo_root, "firmware", "main", "secrets.h"),
     ]
     for path in candidates:
         if os.path.isfile(path):
@@ -31,7 +30,7 @@ def find_ota_pass(repo_root):
 def parse_args():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     repo_root = os.path.dirname(script_dir)
-    default_bin = os.path.join(repo_root, "firmware", "carrier_idf", "build", "carrier.bin")
+    default_bin = os.path.join(repo_root, "firmware", "build", "carrier.bin")
 
     parser = argparse.ArgumentParser(description="Upload firmware over HTTP OTA.")
     parser.add_argument(

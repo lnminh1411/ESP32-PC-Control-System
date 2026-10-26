@@ -13,7 +13,7 @@ physical screen could do the same.
   at all. Not checked yet.
 - The ESP32 can't run those CLIs, so a companion program on the PC would
   poll them and send the numbers over the existing USB serial link (the
-  same command channel `carrier_main` already listens on).
+  same command channel the firmware already listens on).
 - It needs a watchdog: the data isn't pushed, something has to poll it.
 
 Open questions: do the CLIs expose quota data? Does the companion run as a

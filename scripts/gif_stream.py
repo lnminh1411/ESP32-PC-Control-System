@@ -1,5 +1,5 @@
 """
-Uploads a GIF to the carrier firmware (firmware/carrier_main) over the
+Uploads a GIF to the carrier firmware (firmware/main) over the
 CH343 USB-UART port as raw RGB565: every frame of the original GIF, scaled
 to fit 240x320 with the aspect ratio kept. Protocol: gif_store.h.
 

@@ -106,9 +106,7 @@ boots. (That turned out not to hold in ROM download mode; see
 [the eFuse note](#keyfob-presses-during-flashing-efuse-fix).) The netlist
 ([pcb/main.ato](pcb/main.ato)) is the source of truth;
 `python scripts/check_pins.py` checks it against
-[firmware/carrier_main/config.h](firmware/carrier_main/config.h).
-[firmware/carrier_idf/main/config.h](firmware/carrier_idf/main/config.h)
-carries the same map.
+[firmware/main/config.h](firmware/main/config.h).
 
 ## Assembly notes
 
@@ -163,8 +161,7 @@ revision could move the door rows off GPIO38-42 instead.
 
 | Path | Contents |
 |---|---|
-| [`firmware/carrier_idf/`](firmware/carrier_idf/) | The board's firmware, ESP-IDF 5.5 (below) |
-| [`firmware/carrier_main/`](firmware/carrier_main/) | The earlier Arduino firmware, kept for reference; CI still builds it |
+| [`firmware/`](firmware/) | The board's firmware, ESP-IDF 5.5 (below) |
 | [`host/pc_stats/`](host/pc_stats/) | Windows service and per-user helper that feed the board: PC stats, media, local-AI status, Claude and Antigravity usage ([host/pc_stats/README.md](host/pc_stats/README.md)) |
 | [`pcb/`](pcb/) | atopile netlist ([`main.ato`](pcb/main.ato)), KiCad board, custom footprints, design notes ([pcb/README.md](pcb/README.md)) |
 | [`scripts/`](scripts/) | PCB build chain (netlist -> placement -> routes -> checks -> renders -> Gerbers), flashing, GIF/layout/OTA upload, screenshots ([scripts/README.md](scripts/README.md)) |
@@ -172,7 +169,7 @@ revision could move the door rows off GPIO38-42 instead.
 
 ## Firmware
 
-`firmware/carrier_idf` is plain ESP-IDF 5.5 with LovyanGFX (a git submodule
+`firmware/` is plain ESP-IDF 5.5 with LovyanGFX (a git submodule
 behind a wrapper component) for drawing. Each panel draws into a PSRAM
 sprite; the transport underneath is esp_lcd with RGB444 on the wire.
 
@@ -213,8 +210,7 @@ Other behaviour:
   never at boot. All opto pins are driven LOW first thing at boot.
 - **PC power state** from the module's own USB link, with a 30 s guard
   against the brief USB dropout at power-on. The backlights are meant to
-  turn off when the PC sleeps or shuts down (not yet tested on
-  `carrier_idf`).
+  turn off when the PC sleeps or shuts down.
 - **Status LED** (GPIO2, PWM). `led <0-100>` is perceptual brightness,
   capped at 35% duty.
 
@@ -247,7 +243,7 @@ One per line on the USB CDC console or the CH343 UART:
 ### Build and flash
 
 ```bash
-firmware/carrier_idf/idf.cmd build
+firmware/idf.cmd build
 python scripts/idf_flash.py --no-build
 ```
 
@@ -424,12 +420,12 @@ land in `pcb/build/renders/` (not tracked); the image above is a copy.
 ## Checks
 
 CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs
-`scripts/check_pins.py`, lints the scripts and builds `carrier_main` on
-every push. It does not build `carrier_idf` yet.
+`scripts/check_pins.py` and lints the scripts on every push. The ESP-IDF
+firmware is not built in CI yet.
 
 ## Status
 
-Rev 3.1 is fabricated and assembled, and `carrier_idf` runs on it:
+Rev 3.1 is fabricated and assembled, and the firmware runs on it:
 - all three panels and every face shown above;
 - PC power detection over the module's own USB link, the motherboard RST
   output (checked with an LED on J6) and the door/reset commands;
@@ -442,4 +438,4 @@ Still to do:
   Discord bot, OTA and live weather (`weather home <lat>,<lon>`);
 - test the USB power commands and door buttons B1-B4 on the real PC and
   keyfob;
-- build `carrier_idf` in CI and retire `carrier_main`.
+- build the ESP-IDF firmware in CI.

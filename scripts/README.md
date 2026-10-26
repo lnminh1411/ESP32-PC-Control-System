@@ -158,7 +158,7 @@ changing `BOOST_H`.
 
 ### check_pins.py
 
-Checks the firmware pin map (`firmware/carrier_main/config.h`) against
+Checks the firmware pin map (`firmware/main/config.h`) against
 `pcb/main.ato`: every `PIN_*` must be the GPIO wired to its part pin,
 directly or through one series resistor. Run after changing either file;
 CI runs it on every push.
@@ -169,7 +169,7 @@ python scripts/check_pins.py
 
 ### gif_stream.py
 
-Uploads a GIF to `carrier_main` over the CH343 USB-UART (3 Mbaud): every
+Uploads a GIF to `firmware/main` over the CH343 USB-UART (3 Mbaud): every
 frame scaled to fit 240x320, raw big-endian RGB565, with a checksum per frame
 and a resend on mismatch. The device saves it to its FAT partition and
 replays it on every boot. Needs pyserial, numpy and Pillow.

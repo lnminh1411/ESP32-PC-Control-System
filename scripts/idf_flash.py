@@ -1,5 +1,5 @@
 """
-Flash firmware/carrier_idf over the native USB port, hands-off.
+Flash the firmware in firmware/ over the native USB port, hands-off.
 
 The running firmware reboots into the ROM downloader on a 1200-baud touch;
 the ROM then shows up as a USB-Serial-JTAG COM port (a different COM number).
@@ -21,7 +21,7 @@ import serial
 import serial.tools.list_ports as list_ports
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PROJECT = os.path.join(ROOT, "firmware", "carrier_idf")
+PROJECT = os.path.join(ROOT, "firmware")
 IDF_CMD = os.path.join(PROJECT, "idf.cmd")
 SERVICE = "ESP32PcStats"
 ESPRESSIF_VID = 0x303A

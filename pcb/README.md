@@ -133,7 +133,7 @@ reasons behind it:
 ### Opto GPIO rules (firmware)
 
 All five opto pins are initialised the same way, implemented in
-[`../firmware/carrier_main/optos.cpp`](../firmware/carrier_main/optos.cpp):
+[`../firmware/main/optos.cpp`](../firmware/main/optos.cpp):
 pre-stage the output latch LOW with `gpio_set_level(pin, 0)` while the pin
 is still Hi-Z, then `pinMode(pin, OUTPUT)`. The pin goes Hi-Z (held low by
 the 10k) -> driven LOW, with no window where it can drive HIGH. Use

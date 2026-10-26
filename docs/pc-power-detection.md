@@ -36,7 +36,7 @@ noise, not to shutdown or sleep.
 
 ## Implementation
 
-[`firmware/carrier_main/pc_state.cpp`](../firmware/carrier_main/pc_state.cpp).
+[`firmware/main/pc_state.cpp`](../firmware/main/pc_state.cpp).
 The `status` command shows the state and `(guard)` while the guard runs;
 the status view shows a countdown.
 

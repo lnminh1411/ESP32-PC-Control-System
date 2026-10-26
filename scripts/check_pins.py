@@ -1,5 +1,5 @@
 """
-Checks that the firmware pin map (firmware/carrier_main/config.h) matches the
+Checks that the firmware pin map (firmware/main/config.h) matches the
 netlist (pcb/main.ato): for every PIN_* the GPIO the firmware drives must be
 the one wired to that signal's part pin, directly or through one series
 resistor (the 33R on SCK/MOSI, the 270R in front of each opto and the LED).
@@ -16,7 +16,7 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ATO = os.path.join(ROOT, "pcb", "main.ato")
-CONFIG = os.path.join(ROOT, "firmware", "carrier_main", "config.h")
+CONFIG = os.path.join(ROOT, "firmware", "main", "config.h")
 
 # firmware pin -> the part pin it has to reach on the board
 EXPECTED = {
@@ -97,7 +97,7 @@ def main():
     for name in sorted(set(fw) - set(EXPECTED)):
         errors.append(f"{name}: in config.h but not checked here -- add it to EXPECTED")
     if errors:
-        print("pin map mismatch (firmware/carrier_main/config.h vs pcb/main.ato):")
+        print("pin map mismatch (firmware/main/config.h vs pcb/main.ato):")
         for e in errors:
             print("  " + e)
         sys.exit(1)
