@@ -3,6 +3,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <math.h>
+#include <nvs.h>
 #include <stdint.h>
 
 #include "config.h"
@@ -19,6 +20,7 @@ static volatile uint32_t guardStartMs;
 static volatile bool guardActive;
 static volatile LedMode mode = LED_AUTO;
 static volatile uint8_t ledPct = 100;
+static volatile uint8_t ledCapPct = 100;   // night mode
 static volatile uint32_t readyMs;   // 0 = still booting
 static volatile int simState = -1;  // `pcsim`: -1 = follow USB
 
@@ -76,7 +78,7 @@ static uint32_t ledDuty(float level) {
 static void ledTask(void *) {
   for (;;) {
     uint32_t t = nowMs();
-    float lvl = ledPct / 100.0f;
+    float lvl = (ledPct < ledCapPct ? ledPct : ledCapPct) / 100.0f;
     if (mode == LED_SWEEP) {                              // test ramp: 2 s down, 1 s up
       uint32_t p = t % 3000;
       pwmWrite(PWM_CH_LED, ledDuty(lvl * (p < 2000 ? 1.0f - p / 2000.0f : (p - 2000) / 1000.0f)));
@@ -113,3 +115,23 @@ LedMode ledMode() { return mode; }
 void ledBrightnessSet(uint8_t pct) { ledPct = pct > 100 ? 100 : pct; }
 
 uint8_t ledBrightness() { return ledPct; }
+
+void ledSettingsLoad() {
+  nvs_handle_t h;
+  if (nvs_open("led", NVS_READONLY, &h) != ESP_OK) return;
+  uint8_t v;
+  if (nvs_get_u8(h, "pct", &v) == ESP_OK) ledBrightnessSet(v);
+  if (nvs_get_u8(h, "off", &v) == ESP_OK && v) mode = LED_OFF;
+  nvs_close(h);
+}
+
+void ledSettingsSave() {
+  nvs_handle_t h;
+  if (nvs_open("led", NVS_READWRITE, &h) != ESP_OK) return;
+  nvs_set_u8(h, "pct", ledPct);
+  nvs_set_u8(h, "off", mode == LED_OFF ? 1 : 0);
+  nvs_commit(h);
+  nvs_close(h);
+}
+
+void ledCapSet(uint8_t pct) { ledCapPct = pct > 100 ? 100 : pct; }

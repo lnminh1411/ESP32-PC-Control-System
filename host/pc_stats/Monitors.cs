@@ -1,6 +1,7 @@
-// PC Monitor Control, user-session half: DDC/CI on every physical monitor
-// (session 0 sees no monitors). VCP 0x10 is brightness, 0xD6 the power mode
-// (1 on, 4 off: the monitor's own standby, so DDC can wake it again).
+// PC Monitor Control, user-session half: DDC/CI brightness on every physical
+// monitor (session 0 sees no monitors), VCP 0x10. Power is Windows' own
+// display off (SC_MONITORPOWER, every display at once, any input wakes them);
+// "on" nudges the mouse a pixel and back.
 //
 // Monitors are numbered from the left. Feed "mon" (@source mon helper:mon),
 // sent every 5 s and right after each change:
@@ -8,10 +9,14 @@
 //   mon.<n>.name         model from DDC, e.g. "DELL E1715S" (text)
 //   mon.<n>.main         1 on the Windows main display
 //   mon.<n>.bright       brightness % (-1: no DDC answer)
-//   mon.<n>.power        1 on, 0 off/standby, -1 no DDC answer
+//   mon.<n>.power        1 on, 0 off/standby (DDC VCP 0xD6), -1 no DDC answer
 // Commands from the service ("M <id> <command>", answered "R <id> ok|err <why>"):
 //   bright <n|all> <0-100>
-//   power <n|all> on|off
+//   power <n|all> on|off   (n is accepted, Windows turns every display off)
+//
+// Feed "idle" (@source idle helper:idle), every second, for the board's night
+// mode: pc.idle_s = seconds since the last keyboard/mouse input in this
+// session (GetLastInputInfo).
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -60,6 +65,21 @@ static partial class AgyQuota {
   [DllImport("dxva2.dll", SetLastError = true)]
   static extern bool SetVCPFeature(IntPtr monitor, byte code, uint value);
 
+  [StructLayout(LayoutKind.Sequential)]
+  struct LASTINPUTINFO { public uint cbSize, dwTime; }
+
+  [DllImport("user32.dll")]
+  static extern bool GetLastInputInfo(ref LASTINPUTINFO info);
+
+  [DllImport("user32.dll")]
+  static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+  [DllImport("user32.dll")]
+  static extern void mouse_event(uint flags, int dx, int dy, uint data, UIntPtr extra);
+
+  const uint WM_SYSCOMMAND = 0x0112, MOUSEEVENTF_MOVE = 0x0001;
+  static readonly IntPtr HWND_BROADCAST = (IntPtr)0xFFFF, SC_MONITORPOWER = (IntPtr)0xF170;
+
   const byte VCP_BRIGHTNESS = 0x10;
   const byte VCP_POWER = 0xD6;
 
@@ -73,6 +93,18 @@ static partial class AgyQuota {
   }
 
   static readonly object ddcLock = new object();   // one DDC conversation at a time (I2C is slow)
+  // Monitors answer DDC reads with the old value for seconds after a set, so
+  // the feed reports what was just set until then (index -> value, expiry)
+  const int SetHoldMs = 15000;
+  static readonly Dictionary<int, KeyValuePair<int, DateTime>> setBright = new Dictionary<int, KeyValuePair<int, DateTime>>();
+
+  static int Held(Dictionary<int, KeyValuePair<int, DateTime>> held, int i, int read) {
+    KeyValuePair<int, DateTime> v;
+    if (!held.TryGetValue(i, out v)) return read;
+    if (DateTime.UtcNow < v.Value && read != v.Key) return v.Key;
+    held.Remove(i);   // expired, or the monitor caught up
+    return read;
+  }
   static readonly Regex MonCmdRegex = new Regex(@"^(bright|power)\s+(all|\d{1,2})\s+(\S+)$", RegexOptions.IgnoreCase);
 
   // Every physical monitor, left to right. The handles stay valid until
@@ -141,7 +173,7 @@ static partial class AgyQuota {
           string k = "mon." + (i + 1) + ".";
           lines.Add(k + "name=" + mons[i].Name);
           lines.Add(k + "main=" + (mons[i].Main ? 1 : 0));
-          lines.Add(k + "bright=" + mons[i].Bright);
+          lines.Add(k + "bright=" + Held(setBright, i, mons[i].Bright));
           lines.Add(k + "power=" + mons[i].Power);
         }
       } finally {
@@ -158,26 +190,44 @@ static partial class AgyQuota {
     }
   }
 
+  // Seconds since the last input in this session, for the board's night mode
+  static void IdleLoop() {
+    while (true) {
+      var lii = new LASTINPUTINFO { cbSize = (uint)Marshal.SizeOf(typeof(LASTINPUTINFO)) };
+      if (GetLastInputInfo(ref lii)) {
+        uint ms = (uint)Environment.TickCount - lii.dwTime;   // both wrap at 49.7 days together
+        SendFeed("idle", new List<string> { "pc.idle_s=" + (ms / 1000).ToString(CultureInfo.InvariantCulture) });
+      }
+      Thread.Sleep(1000);
+    }
+  }
+
   // "bright 2 50", "power all off": "ok" or "err <why>"
   static string MonitorCommand(string command) {
     Match m = MonCmdRegex.Match(command.Trim());
     if (!m.Success) return "err usage: bright <n|all> <0-100> | power <n|all> on|off";
     string verb = m.Groups[1].Value.ToLowerInvariant(), target = m.Groups[2].Value.ToLowerInvariant(), arg = m.Groups[3].Value.ToLowerInvariant();
     int pct = 0;
-    uint power = 0;
     if (verb == "bright") {
       if (!int.TryParse(arg, NumberStyles.Integer, CultureInfo.InvariantCulture, out pct) || pct < 0 || pct > 100) return "err brightness is 0-100";
-    } else if (arg == "on") {
-      power = 1;
-    } else if (arg == "off") {
-      power = 4;
+    } else if (arg == "on" || arg == "off") {
+      // Windows' display off rather than the monitors' DDC standby: a
+      // DisplayPort monitor in DDC standby drops out of Windows and can't be
+      // reached to wake it again
+      if (arg == "off") {
+        if (!PostMessage(HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, (IntPtr)2)) return "err display off not sent";
+      } else {
+        mouse_event(MOUSEEVENTF_MOVE, 0, 1, 0, UIntPtr.Zero);
+        mouse_event(MOUSEEVENTF_MOVE, 0, -1, 0, UIntPtr.Zero);
+      }
+      return "ok";
     } else {
       return "err power is on or off";
     }
     lock (ddcLock) {
       var owned = new List<PHYSICAL_MONITOR[]>();
       try {
-        List<Mon> mons = ScanMonitors(verb == "bright", owned);   // brightness needs each monitor's maximum
+        List<Mon> mons = ScanMonitors(true, owned);   // brightness needs each monitor's maximum
         if (mons.Count == 0) return "err no monitors";
         int first = 0, last = mons.Count - 1;
         if (target != "all") {
@@ -187,10 +237,9 @@ static partial class AgyQuota {
         }
         var failed = new List<string>();
         for (int i = first; i <= last; i++) {
-          bool ok = verb == "bright"
-              ? WriteVcp(mons[i].Handle, VCP_BRIGHTNESS, (uint)Math.Round(pct * mons[i].BrightMax / 100.0))
-              : WriteVcp(mons[i].Handle, VCP_POWER, power);
-          if (!ok) failed.Add((i + 1).ToString(CultureInfo.InvariantCulture));
+          if (!WriteVcp(mons[i].Handle, VCP_BRIGHTNESS, (uint)Math.Round(pct * mons[i].BrightMax / 100.0)))
+            failed.Add((i + 1).ToString(CultureInfo.InvariantCulture));
+          else setBright[i] = new KeyValuePair<int, DateTime>(pct, DateTime.UtcNow.AddMilliseconds(SetHoldMs));
         }
         if (failed.Count > 0) return "err no DDC answer from monitor " + string.Join(", ", failed);
         return "ok";
@@ -208,9 +257,9 @@ static partial class AgyQuota {
     ThreadPool.QueueUserWorkItem(delegate(object o) {
       string reply;
       try { reply = MonitorCommand(command); } catch (Exception ex) { reply = "err " + ex.GetType().Name; }
+      try { SendMonitorFeed(); } catch (Exception) { }   // the new state before the reply: the panel redraws on it
       SendToService("R " + id + " " + reply + "\n");
       Log("mon: " + command + " -> " + reply);
-      try { SendMonitorFeed(); } catch (Exception) { }   // the new state, not 5 s later
     });
   }
 

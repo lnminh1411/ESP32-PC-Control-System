@@ -328,7 +328,9 @@ Prints the last 15 event 1074 entries (`time | process | type | code | reason ->
 
 ## PC Monitor Control (DDC/CI)
 
-The user-session half (`Monitors.cs`) talks DDC/CI to every physical monitor through `dxva2.dll`, since session 0 sees no monitors. Monitors are numbered from the left. Every 5 s, and right after each change, it sends the `mon` feed (`@source mon helper:mon 1000` in stats.ini): `mon.count`, then `mon.<n>.name`, `.main`, `.bright` (%, -1 = no answer) and `.power` (1 on, 0 off, -1 no answer). The board's `!mon <id> bright <n|all> <0-100>` or `!mon <id> power <n|all> on|off` goes to the user half over its pipe (`M <id> <command>`, answered `R <id> ok|err ...`). The answer reaches the board as `monctl.reply`. Off is VCP 0xD6 = 4, the monitor's own standby, so DDC can wake it again.
+The user-session half (`Monitors.cs`) talks DDC/CI to every physical monitor through `dxva2.dll`, since session 0 sees no monitors. Monitors are numbered from the left. Every 5 s, and right after each change, it sends the `mon` feed (`@source mon helper:mon 1000` in stats.ini): `mon.count`, then `mon.<n>.name`, `.main`, `.bright` (%, -1 = no answer) and `.power` (1 on, 0 off, -1 no answer). The board's `!mon <id> bright <n|all> <0-100>` or `!mon <id> power <n|all> on|off` goes to the user half over its pipe (`M <id> <command>`, answered `R <id> ok|err ...`). The answer reaches the board as `monctl.reply`. Power is Windows' own display off (`SC_MONITORPOWER`), every display at once; "on" nudges the mouse a pixel and back. DDC standby is not used: a DisplayPort monitor in standby drops out of Windows and can't be woken from here. A brightness set is reported as set for 15 s, since monitors answer DDC reads with the old value for a while.
+
+The user half also sends the `idle` feed every second (`@source idle helper:idle 1000`): `pc.idle_s`, seconds since the last keyboard or mouse input in the session (`GetLastInputInfo`), for the board's night mode.
 
 ```cmd
 ESP32-Helper.exe --monitors                 # list monitors with brightness and power

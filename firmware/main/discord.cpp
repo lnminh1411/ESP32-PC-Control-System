@@ -29,6 +29,7 @@
 #include "net.h"
 #include "optos.h"
 #include "pc_state.h"
+#include "night.h"
 #include "pcstats.h"
 #include "screens.h"
 #include "secrets_or_example.h"
@@ -401,7 +402,7 @@ enum PanelView {
 // Panel tabs; the #control panel and the /actions panel each remember theirs
 enum PanelCat : uint8_t { CAT_DOOR, CAT_PC, CAT_RGB, CAT_FAN, CAT_MON, CAT_AI, CAT_BOARD, CAT_DISPLAY, CAT_COUNT };
 static const char *const CAT_LABEL[CAT_COUNT] = {"Door", "PC Control", "PC Case RGB LEDs", "PC Fan Control", "PC Monitor Control",
-                                                 "Local Agent Control", "Board", "Display"};
+                                                 "Local Agent Control", "ESP32 Board Control", "ESP32 Display Control"};
 static const char *const CAT_ID[CAT_COUNT] = {"tab_door", "tab_pc", "tab_rgb", "tab_fan", "tab_mon", "tab_ai", "tab_board", "tab_display"};
 static uint8_t catStanding = CAT_PC, catEphemeral = CAT_PC;
 static uint8_t &panelCat(bool standing) { return standing ? catStanding : catEphemeral; }
@@ -455,6 +456,28 @@ static void addFaceSelect(cJSON *comps, int panel) {
     cJSON_AddItemToArray(opts, op);
   }
   cJSON_AddItemToArray(row, sel);
+}
+
+// Status LED brightness in 10 % steps (saved); night mode caps it at 20 %
+static void addLedSelect(cJSON *comps) {
+  cJSON *sel = cJSON_CreateObject();
+  cJSON_AddNumberToObject(sel, "type", 3);
+  cJSON_AddStringToObject(sel, "custom_id", "led_bright");
+  char ph[40];
+  snprintf(ph, sizeof ph, "Status LED max: %u %%", (unsigned)ledBrightness());
+  cJSON_AddStringToObject(sel, "placeholder", ph);
+  cJSON *opts = cJSON_AddArrayToObject(sel, "options");
+  for (int v = 10; v <= 100; v += 10) {
+    cJSON *op = cJSON_CreateObject();
+    char label[32], val[8];
+    snprintf(label, sizeof label, "Status LED max %d %%", v);
+    snprintf(val, sizeof val, "%d", v);
+    cJSON_AddStringToObject(op, "label", label);
+    cJSON_AddStringToObject(op, "value", val);
+    if (v == ledBrightness()) cJSON_AddBoolToObject(op, "default", true);
+    cJSON_AddItemToArray(opts, op);
+  }
+  cJSON_AddItemToArray(addRow(comps), sel);
 }
 
 // Brightness for every panel in 5 % steps (saved, as `bl all` does), plus Off
@@ -762,6 +785,8 @@ static void buildEmbed(cJSON *embed, const char *footerText, bool standing) {
     if (netUp() && netIp()[0]) snprintf(v, sizeof v, "%s (%d dBm)", netIp(), netRssi());
     else snprintf(v, sizeof v, "down");
     addField(fields, "Board Wi-Fi", v);
+    nightStatus(v, sizeof v);
+    addField(fields, "Night mode", v);
   } else if (cat == CAT_RGB) {
     const char *mainRule = pcText("hw.rgb.main"), *ramRule = pcText("hw.rgb.ram");
     addField(fields, "PcHwCtl", pcStat("hw.ok") >= 1 ? "state feed live" : "no state (not running?)");
@@ -865,6 +890,9 @@ static void buildEmbed(cJSON *embed, const char *footerText, bool standing) {
     snprintf(v, sizeof v, "%u KB free", (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
     addField(fields, "PSRAM", v);
     addField(fields, "Last restart", resetReasonText());
+    if (ledMode() == LED_OFF) snprintf(v, sizeof v, "off");
+    else snprintf(v, sizeof v, "on, max %u %%%s", (unsigned)ledBrightness(), nightEngaged() ? " (night: 20 %)" : "");
+    addField(fields, "Status LED", v);
   } else {
     for (int i = 0; i < N_PANELS; i++) {
       char name[12];
@@ -872,7 +900,8 @@ static void buildEmbed(cJSON *embed, const char *footerText, bool standing) {
       snprintf(v, sizeof v, "%s, %u %%", screensForce[i] == FACE_NONE ? "auto" : faceLabel(screensForce[i]), backlightPct(i));
       addField(fields, name, v);
     }
-    addField(fields, "Displays", backlightForcedOff() ? "off" : backlightIsIdle() ? "dark (PC asleep)" : "on");
+    addField(fields, "Displays", backlightForcedOff() ? "off" : backlightIsIdle() ? "dark (PC asleep)" :
+                                 nightEngaged() ? "night mode (10 %, PC-off screens)" : "on");
   }
 
   const char *ft = (footerText && footerText[0]) ? footerText :
@@ -937,6 +966,8 @@ static void buildComponents(cJSON *data, PanelView view, bool standing) {
     addButton(r, "PC reset", "reset", 4);
     r = addRow(comps);
     addButton(r, "Screenshot", "shot", 2);   // Refresh/Close share this row
+    addButton(r, nightEnabled() ? "Night auto: on" : "Night auto: off", "night", nightEnabled() ? 1 : 2);
+    addButton(r, nightEngaged() ? "End night now" : "Start night now", "night_now", nightEngaged() ? 3 : 2);
   } else if (cat == CAT_RGB) {
     // 5 rows: tabs, mode, color, brightness, then target group + Refresh/Close
     cJSON_DeleteItemFromArray(comps, cJSON_GetArraySize(comps) - 1);
@@ -961,13 +992,20 @@ static void buildComponents(cJSON *data, PanelView view, bool standing) {
     cJSON_DeleteItemFromArray(comps, cJSON_GetArraySize(comps) - 1);
     addMonRows(comps);
     r = addRow(comps);
-    addButton(r, "Screen on", "mon_on", 3);
-    addButton(r, "Screen off", "mon_off", 4);
+    addButton(r, "All screens on", "mon_on", 3);
+    addButton(r, "All screens off", "mon_off", 4);
   } else if (cat == CAT_AI) {
     // 5 rows: tabs, model, context/idle, services, Refresh/Close
     addAiRows(comps, r);
     r = addRow(comps);
   } else if (cat == CAT_BOARD) {
+    // 4 rows: tabs, status LED brightness, LED on/off, board buttons + Refresh/Close
+    cJSON_DeleteItemFromArray(comps, cJSON_GetArraySize(comps) - 1);
+    addLedSelect(comps);
+    r = addRow(comps);
+    bool ledOff = ledMode() == LED_OFF;
+    addButton(r, ledOff ? "Status LED: off" : "Status LED: on", "led_toggle", ledOff ? 2 : 1);
+    r = addRow(comps);
     addButton(r, "Restart board", "reboot", 4);
     addButton(r, "Refresh weather", "wx_refresh", 2);
     addButton(r, "Reconnect Discord", "dc_reconnect", 2);
@@ -1283,8 +1321,9 @@ static bool monInteraction(const char *cid, cJSON *jVal, const char *id, const c
     snprintf(what, sizeof what, "%s: brightness %d %%", t, pct);
   } else if (!strcmp(cid, "mon_on") || !strcmp(cid, "mon_off")) {
     bool on = !strcmp(cid, "mon_on");
-    snprintf(cmd, sizeof cmd, "power %s %s", target, on ? "on" : "off");
-    snprintf(what, sizeof what, "%s: screen %s", t, on ? "on" : "off");
+    // Windows' own display off: every display at once, any input wakes them
+    snprintf(cmd, sizeof cmd, "power all %s", on ? "on" : "off");
+    snprintf(what, sizeof what, "All screens %s", on ? "on" : "off");
   }
   if (cmd[0] && monCommand(cmd, what)) panelRefreshLater(standing, token);
   sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
@@ -1379,6 +1418,16 @@ static void onInteraction(cJSON *d) {
 
     cJSON *jVals = data ? cJSON_GetObjectItem(data, "values") : nullptr;
     cJSON *jVal = (jVals && cJSON_IsArray(jVals)) ? cJSON_GetArrayItem(jVals, 0) : nullptr;
+    if (jVal && cJSON_IsString(jVal) && !strcmp(cid, "led_bright")) {
+      int v = atoi(jVal->valuestring);
+      if (v < 10) v = 10;
+      if (v > 100) v = 100;
+      ledBrightnessSet((uint8_t)v);
+      ledSettingsSave();
+      snprintf(lastPanelResult, sizeof lastPanelResult, "Status LED max %d %%", v);
+      sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
+      return;
+    }
     if (jVal && cJSON_IsString(jVal) && !strncmp(cid, "face_", 5)) {
       // Display tab: a screen picked for one panel (not saved, `face` command)
       char cmd[32];
@@ -1466,6 +1515,23 @@ static void onInteraction(cJSON *d) {
     } else if (!strcmp(cid, "lock")) {
       runAndGetFirstLine("power lock", lastPanelResult, sizeof lastPanelResult);
       if (!lastPanelResult[0]) snprintf(lastPanelResult, sizeof lastPanelResult, "Lock sent to the PC");
+      sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
+    } else if (!strcmp(cid, "night")) {
+      nightSetEnabled(!nightEnabled());
+      snprintf(lastPanelResult, sizeof lastPanelResult, "Night mode %s",
+               nightEnabled() ? "on: 22:00-06:00 after 15 min without input" : "off");
+      sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
+    } else if (!strcmp(cid, "led_toggle")) {
+      bool off = ledMode() != LED_OFF;
+      ledModeSet(off ? LED_OFF : LED_AUTO);
+      ledSettingsSave();
+      snprintf(lastPanelResult, sizeof lastPanelResult, "Status LED %s", off ? "off" : "on");
+      sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
+    } else if (!strcmp(cid, "night_now")) {
+      bool start = !nightEngaged();
+      nightManual(start);
+      snprintf(lastPanelResult, sizeof lastPanelResult, "%s",
+               start ? "Night mode started: input on the PC or End ends it" : "Night mode ended");
       sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
     } else if (!strcmp(cid, "shot")) {
       runAndGetFirstLine("screenshot", lastPanelResult, sizeof lastPanelResult);

@@ -22,6 +22,7 @@
 #include "pcwarn.h"
 #include "aictl.h"
 #include "monctl.h"
+#include "night.h"
 #include "hwctl.h"
 #include "weather.h"
 #include "wol.h"
@@ -73,6 +74,8 @@ extern "C" void app_main() {
   backlightInit();
 
   wolInit();
+  ledSettingsLoad();
+  nightInit();
 
   ESP_ERROR_CHECK(esp_event_loop_create_default());
 
@@ -121,6 +124,7 @@ extern "C" void app_main() {
     hwPoll();
     aiPoll();
     monPoll();
+    nightPoll();
     pcGoingPoll();
     netPoll();
     discordPoll();

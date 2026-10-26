@@ -36,6 +36,7 @@
 #include "wol.h"
 #include "sys.h"
 #include "views.h"
+#include "night.h"
 
 typedef void (*Handler)(const char *a1, const char *a2);
 
@@ -439,6 +440,7 @@ static void cmdLayout(const char *a1, const char *a2) {
 static void cmdHw(const char *, const char *) { hwConsole(""); }
 static void cmdAi(const char *, const char *) { aiConsole(""); }
 static void cmdMon(const char *, const char *) { monConsole(""); }
+static void cmdNight(const char *a1, const char *) { nightConsole(a1 ? a1 : ""); }
 static void cmdPcWarn(const char *, const char *) { pcWarnCommand(""); }
 
 static const Command COMMANDS[] = {
@@ -455,7 +457,8 @@ static const Command COMMANDS[] = {
   {"reboot",  "  (restart the board)",               cmdReboot},
   {"hw",      "<ping | rgb ...>  (PcHwCtl via the PC)",       cmdHw},
   {"ai",      "<status | model ... | restart <name> | ...>  (LocalAIHost via the PC)", cmdAi},
-  {"mon",     "<bright <n|all> <0-100> | power <n|all> on|off>  (PC monitors, DDC/CI)", cmdMon},
+  {"mon",     "<bright <n|all> <0-100> | power all on|off>  (PC monitors: DDC/CI brightness, Windows display off)", cmdMon},
+  {"night",   "[on|off|start|end|status]  (night mode: on/off = the automatic one; start/end = now)", cmdNight},
   {"screenshot", "  (secret PC screenshot to #logging, 5 min)", cmdScreenshot},
   {"led",     "<auto|on|off|sweep|0-100>",           cmdLed},
   {"pcsim",   "<on|off|auto>  (test: pretend the PC is on/off)", cmdPcSim},

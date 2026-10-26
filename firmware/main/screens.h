@@ -33,6 +33,7 @@ constexpr uint16_t C_GIF_KEY = 0xF81F;
 
 Face screensFace(View v);                       // face to show now for an auto view
 extern Face screensForce[N_PANELS];             // `face` command: pin a face (docs, screenshots)
+extern bool screensNight;                       // night mode: the PC-off faces everywhere, pins ignored
 bool screensIsGif(Face f);                      // FACE_GIF*
 void screensDraw(Face f, LGFX_Sprite &c);       // full canvas redraw (GIF faces: the band only)
 uint32_t screensPeriodMs(Face f);               // redraw period with no new data; 0 = data-driven

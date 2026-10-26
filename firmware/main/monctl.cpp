@@ -66,7 +66,7 @@ void monPoll() {
 
 void monConsole(const char *command) {
   while (*command == ' ' || *command == '\t') command++;
-  if (!*command) { logMsg("mon: usage mon <bright <n|all> <0-100> | power <n|all> on|off>"); return; }
+  if (!*command) { logMsg("mon: usage mon <bright <n|all> <0-100> | power all on|off>"); return; }
   uint32_t id;
   const char *err = monSend(command, &id);
   if (err) logMsg("mon: %s", err);

@@ -1807,6 +1807,7 @@ static partial class AgyQuota {
     Thread mediaThread = new Thread(MediaLoop) { IsBackground = true, Name = "esp32_media" };
     mediaThread.Start();
     new Thread(MonitorLoop) { IsBackground = true, Name = "esp32_monitors" }.Start();
+    new Thread(IdleLoop) { IsBackground = true, Name = "esp32_idle" }.Start();
 
     while (true) {
       DateTime t0 = DateTime.UtcNow;

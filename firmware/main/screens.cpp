@@ -1455,11 +1455,12 @@ static void drawClock(LGFX_Sprite &c) {
 // ---- screens.h API Implementation ----
 
 Face screensForce[N_PANELS];
+bool screensNight;
 
 Face screensFace(View v) {
   GoingKind going = pcGoing();
   bool restartish = (going == GO_RESTART || going == GO_UPDATE_RESTART || going == GO_UPDATE_SHUTDOWN);
-  bool on = (pcState() == PC_ON && !restartish);
+  bool on = (pcState() == PC_ON && !restartish && !screensNight);
 
   switch (v) {
     case VIEW_PC:

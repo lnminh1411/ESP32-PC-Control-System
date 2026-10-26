@@ -515,9 +515,12 @@ void displaySaveBacklight(int panel, uint8_t pct) {
   displayNvsPoll();
 }
 
+static uint8_t blCap = 100;   // night mode
+
 static void blApply() {
   for (int i = 0; i < N_PANELS; i++) {
-    uint32_t duty = (screensIdle || forcedOff) ? 0 : (uint32_t)((uint64_t)PWM_MAX * blPct[i] / 100);
+    uint8_t pct = blPct[i] < blCap ? blPct[i] : blCap;
+    uint32_t duty = (screensIdle || forcedOff) ? 0 : (uint32_t)((uint64_t)PWM_MAX * pct / 100);
     pwmWrite(PWM_CH_BL(i), duty);
   }
 }
@@ -555,3 +558,10 @@ void backlightForceOff(bool off) {
 }
 
 bool backlightForcedOff() { return forcedOff; }
+
+void backlightCap(uint8_t pct) {
+  blCap = pct > 100 ? 100 : pct;
+  blApply();
+}
+
+uint8_t backlightCapPct() { return blCap; }

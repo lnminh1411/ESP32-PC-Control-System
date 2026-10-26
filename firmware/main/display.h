@@ -76,6 +76,8 @@ void backlightIdle(bool idle);
 bool backlightIsIdle();
 void backlightForceOff(bool off);   // all panels dark until turned back on (not saved)
 bool backlightForcedOff();
+void backlightCap(uint8_t pct);     // night mode: every panel at most pct, 100 = no cap (not saved)
+uint8_t backlightCapPct();
 
 // Screen setup persistence (NVS namespace "disp")
 View displayStoredView(int panel);

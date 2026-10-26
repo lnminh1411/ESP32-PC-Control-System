@@ -33,3 +33,6 @@ void ledModeSet(LedMode m);
 LedMode ledMode();
 void ledBrightnessSet(uint8_t pct);   // 0-100, applies to every "on"
 uint8_t ledBrightness();
+void ledSettingsLoad();               // after nvs_flash_init: saved brightness and on/off
+void ledSettingsSave();               // Discord: keep brightness and on/off (LED_OFF = off, else auto)
+void ledCapSet(uint8_t pct);          // night mode: brightness at most pct, 100 = no cap (not saved)
