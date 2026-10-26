@@ -19,6 +19,7 @@
 #include "usb.h"
 #include "views.h"
 #include "power.h"
+#include "pcwarn.h"
 #include "aictl.h"
 #include "hwctl.h"
 #include "weather.h"
@@ -115,6 +116,7 @@ extern "C" void app_main() {
     consolePoll();
     wolPoll();
     powerPoll();
+    pcWarnPoll();
     hwPoll();
     aiPoll();
     pcGoingPoll();
