@@ -27,6 +27,8 @@
 //        ESP32-Helper.exe --bench     time one Update() of each hardware
 //        ESP32-Helper.exe --agy-once  poll Antigravity quota once, print it
 //        ESP32-Helper.exe --media     sample media sessions for 5 s
+//        ESP32-Helper.exe --monitors ["<command>"]  list monitors over DDC/CI, after
+//                                     an optional "bright 2 50" / "power all on"
 //        --transport auto|winusb|hid|serial  transport mode (default: auto)
 //        --port COMn                  skip VID auto-detect, force serial COMn
 //        --no-user                    with --console: don't start the user half
@@ -664,6 +666,8 @@ class PcStats : ServiceBase {
       HandleShotLine(line);
     } else if (line.StartsWith("!hw", StringComparison.OrdinalIgnoreCase)) {
       HandleHwLine(line);
+    } else if (line.StartsWith("!mon", StringComparison.OrdinalIgnoreCase)) {
+      HandleMonLine(line);
     } else if (line.StartsWith("!ai", StringComparison.OrdinalIgnoreCase)) {
       HandleAiLine(line);
     } else {
@@ -710,9 +714,11 @@ class PcStats : ServiceBase {
     string id = m.Groups[1].Value.ToLowerInvariant();
     string command = m.Groups[2].Value.Trim();
     string lower = command.ToLowerInvariant();
-    // fan set/curve/release only: PcHwCtl keeps each fan's floorPct and caps a
-    // fan override at its ipc.maxTtlS, so nothing from here sticks forever
-    bool fan = lower.StartsWith("fan set ") || lower.StartsWith("fan curve ") || lower.StartsWith("fan release ");
+    // fan set/curve/release/zerorpm only: PcHwCtl keeps each fan's floorPct and
+    // caps a fan override at its ipc.maxTtlS, so no speed from here sticks
+    // forever (zerorpm is a setting PcHwCtl keeps, like the GPU driver's own)
+    bool fan = lower.StartsWith("fan set ") || lower.StartsWith("fan curve ") || lower.StartsWith("fan release ") ||
+               lower.StartsWith("fan zerorpm ");
     if (lower != "ping" && !lower.StartsWith("rgb ") && !fan) {
       SetHwReply(id, "err only rgb and fan commands are allowed");
       Log("hw: #" + id + " refused (not an rgb or fan command)");
@@ -883,17 +889,48 @@ class PcStats : ServiceBase {
     return (n / 1024).ToString("0", CultureInfo.InvariantCulture) + "k";
   }
 
+  // ---- PC Monitor Control (DDC/CI, in the user half) ----
+  // The board's `!mon <id> <command>` (bright <n|all> <pct>, power <n|all>
+  // on|off) goes to the user half, which talks DDC/CI to the monitors
+  // (Monitors.cs) and answers "R <id> ok|err ...". The answer comes back as the
+  // text stat monctl.reply = "<id> ok" or "<id> err <message>", 30 s like hw.reply.
+  static readonly Regex MonCmdRegex = new Regex(@"^!mon\s+([0-9a-fA-F]{1,8})\s+((?:bright|power)\s.+)$", RegexOptions.IgnoreCase);
+  static readonly object monLock = new object();
+  static string monReply;
+  static DateTime monReplyExpiresUtc;
+
+  static void HandleMonLine(string line) {
+    Match m = MonCmdRegex.Match(line.Trim());
+    if (!m.Success) { Log("mon: unrecognized command"); return; }
+    string id = m.Groups[1].Value.ToLowerInvariant();
+    string command = m.Groups[2].Value.Trim();
+    if (!SendToUserHalf("M " + id + " " + command)) {
+      SetMonReply(id, "err nobody signed in (the user half talks to the monitors)");
+      Log("mon: #" + id + " " + command + " -> no user half");
+    }
+  }
+
+  static void SetMonReply(string id, string reply) {
+    lock (monLock) {
+      monReply = TruncateUtf8(id + " " + reply, 120);
+      monReplyExpiresUtc = DateTime.UtcNow.AddSeconds(30);
+    }
+    sendNow.Set();
+  }
+
   // ---- User-session half ----
   // Session 0 cannot see the user's desktop or media sessions, so the service
   // starts this exe again with --user in the active console session (the
   // signed-in user's token, so it runs with that user's normal rights) and
   // keeps one running there. --console mode starts it as the current user.
   // Two anonymous pipes, UTF-8 lines. User half to service:
-  //   F <feed> <n>   then n key=value lines (feeds: agy, media; @source helper:<feed>)
+  //   F <feed> <n>   then n key=value lines (feeds: agy, media, mon; @source helper:<feed>)
   //   A <base64>     cover art, 144x144 RGB565 big-endian (41,472 bytes)
   //   L <text>       log line, written to this log as "user: <text>"
+  //   R <id> <reply> answer to an M request
   // Service to user half:
   //   S <nonce> <webhook>   take a screenshot
+  //   M <id> <command>      monitor command (Monitors.cs)
   // The user half exits as soon as its pipes break, so it never outlives us.
   class HelperFeed {
     public string[] Lines;
@@ -1068,6 +1105,9 @@ class PcStats : ServiceBase {
             if (art.Length == 41472) lock (helperLock) { helperArt = art; }
           } else if (line.StartsWith("L ")) {
             Log("user: " + line.Substring(2));
+          } else if (line.StartsWith("R ")) {
+            int sp = line.IndexOf(' ', 2);
+            if (sp > 2) SetMonReply(line.Substring(2, sp - 2), line.Substring(sp + 1));
           }
         }
       }
@@ -2515,6 +2555,10 @@ class PcStats : ServiceBase {
     if (args.Length == 3 && args[0] == "--user") { RunSta(delegate() { AgyQuota.RunUser(args[1], args[2]); }); return; }
     if (args.Length == 1 && args[0] == "--agy-once") { RunSta(AgyQuota.RunOnceTest); return; }
     if (args.Length == 1 && args[0] == "--media") { RunSta(AgyQuota.RunMediaTest); return; }
+    if (args.Length >= 1 && args[0] == "--monitors") {
+      AgyQuota.RunMonitorTest(args.Length > 1 ? string.Join(" ", args, 1, args.Length - 1) : null);
+      return;
+    }
     if (args.Length == 1 && args[0] == "--agy-usage") {
       AgyUsage.Window w, f;
       bool ok = AgyUsage.Read(out w, out f);
@@ -4114,6 +4158,12 @@ class PcStats : ServiceBase {
           if (aiReply != null) {
             if (DateTime.UtcNow < aiReplyExpiresUtc) texts.Add(new KeyValuePair<string, string>("aictl.reply", aiReply));
             else aiReply = null;
+          }
+        }
+        lock (monLock) {
+          if (monReply != null) {
+            if (DateTime.UtcNow < monReplyExpiresUtc) texts.Add(new KeyValuePair<string, string>("monctl.reply", monReply));
+            else monReply = null;
           }
         }
 

@@ -21,6 +21,7 @@
 #include "power.h"
 #include "pcwarn.h"
 #include "aictl.h"
+#include "monctl.h"
 #include "hwctl.h"
 #include "weather.h"
 #include "wol.h"
@@ -119,6 +120,7 @@ extern "C" void app_main() {
     pcWarnPoll();
     hwPoll();
     aiPoll();
+    monPoll();
     pcGoingPoll();
     netPoll();
     discordPoll();

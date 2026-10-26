@@ -32,7 +32,7 @@ using System.Drawing.Imaging;
 using Windows.Media.Control;
 using Windows.Storage.Streams;
 
-static class AgyQuota {
+static partial class AgyQuota {
   [DllImport("kernel32.dll", SetLastError = true)]
   static extern bool AttachConsole(int dwProcessId);
 
@@ -1710,6 +1710,7 @@ static class AgyQuota {
           string line;
           while ((line = r.ReadLine()) != null) {
             if (line.StartsWith("S ")) lock (serviceLock) { pendingShot = line.Substring(2); }
+            else if (line.StartsWith("M ")) HandleMonitorRequest(line.Substring(2));
           }
         }
       } catch { }
@@ -1805,6 +1806,7 @@ static class AgyQuota {
     // media runs on its own 250 ms loop; the quota loop below polls every minute
     Thread mediaThread = new Thread(MediaLoop) { IsBackground = true, Name = "esp32_media" };
     mediaThread.Start();
+    new Thread(MonitorLoop) { IsBackground = true, Name = "esp32_monitors" }.Start();
 
     while (true) {
       DateTime t0 = DateTime.UtcNow;

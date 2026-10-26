@@ -236,12 +236,14 @@ One per line on the USB CDC console or the CH343 UART:
 | Command | Does |
 |---|---|
 | `status`, `perf`, `pcstats [text]` | Board state; per-core CPU and bus load (run twice); stats received from the PC |
+| `wifi scan` | The networks the board hears (channel, signal, security) and its allowed channels, then rejoins. A failed join logs its reason |
 | `view <1\|2\|3> <pc\|media\|ai\|gif\|dash\|status\|stats\|metrics>` | What a panel shows (saved) |
 | `face <1\|2\|3> <auto\|pc\|gif\|restart\|update\|media\|weather\|ai\|localai\|clock>` | Force one face, for testing and screenshots (not saved) |
 | `shot <1\|2\|3>` | Screenshot of a panel, streamed as base64 on the CDC port |
 | `pcsim <on\|off\|auto>` | Pretend the PC is on or off (LED, faces, backlights), for testing |
 | `door <1-4> [ms]`, `reset`, `reboot` | Press a door button; pulse the motherboard reset; restart the board itself |
 | `screenshot` | Post the PC's desktop to #logging for 5 min, then auto-delete (needs the service + a #logging webhook) |
+| `mon <bright <n\|all> <0-100> \| power <n\|all> on\|off>` | The PC's monitors over DDC/CI, numbered from the left (done by the service's user-session half) |
 | `wake [force \| mac <AA:BB:..>]`, `power <sleep\|hibernate\|restart\|shutdown\|lock>` | Wake-on-LAN; power commands over USB (`lock` locks the signed-in session) |
 | `going <restart\|shutdown\|update_restart\|update_shutdown\|sleep\|clear>` | Tell the board what the PC is about to do |
 | `bl <1\|2\|3\|all> <0-100\|on\|off>`, `display <on\|off>`, `led <auto\|on\|off\|sweep\|0-100>` | Backlights (saved); all panels dark until `display on` (not saved); status LED |
@@ -282,6 +284,10 @@ category dropdown; picking one swaps the controls below it:
 |---|---|---|
 | Door | Door remote state | Door 1-4 |
 | PC Control | PC state, board Wi-Fi | Wake PC, Lock, Sleep, Hibernate; Restart, Shut down, PC reset (these ask first); Screenshot |
+| PC Case RGB LEDs | PcHwCtl's RGB rules and brightness | Mode, color and brightness dropdowns; target group (All, Motherboard, RAM) |
+| PC Fan Control | Each fan's speed, rpm and temperature, the RX 6600 and RTX 3050 included (with Zero RPM) | Target (All fans, Case fans, one case fan, RX 6600, RTX 3050), speed (held 5/15/60 min) and curve dropdowns; a Zero RPM dropdown in place of the curve for a GPU; Auto releases the override |
+| PC Monitor Control | Each monitor's power and brightness, numbered from the left | Target (one monitor or all), brightness in 10 % steps, Screen on / Screen off (DDC/CI) |
+| Local Agent Control | Local model, phase, context, auto-unload | Load, unload, reload, context size, auto-unload, keep awake; restart the stack's services |
 | Board | Uptime, Wi-Fi, internal RAM, PSRAM, last restart reason | Restart board (asks first), Refresh weather, Reconnect Discord |
 | Display | Each panel's screen and backlight | A screen dropdown per panel (each with an Auto option; not saved, like `face`); a brightness dropdown for all panels (5 % steps + Off, saved) |
 

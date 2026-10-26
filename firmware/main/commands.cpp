@@ -30,6 +30,7 @@
 #include "screens.h"
 #include "power.h"
 #include "aictl.h"
+#include "monctl.h"
 #include "hwctl.h"
 #include "usb.h"
 #include "wol.h"
@@ -47,6 +48,11 @@ struct Command {
 static void cmdHelp(const char *, const char *);
 
 // socks: every open lwIP socket with its local and remote address
+static void cmdWifi(const char *a1, const char *) {
+  if (a1 && !strcmp(a1, "scan")) netScan();
+  else logMsg("wifi: usage wifi scan");
+}
+
 static void cmdSocks(const char *, const char *) {
   int n = 0;
   for (int fd = LWIP_SOCKET_OFFSET; fd < LWIP_SOCKET_OFFSET + CONFIG_LWIP_MAX_SOCKETS; fd++) {
@@ -432,6 +438,7 @@ static void cmdLayout(const char *a1, const char *a2) {
 // before strtok splits it, so these only run for help's sake
 static void cmdHw(const char *, const char *) { hwConsole(""); }
 static void cmdAi(const char *, const char *) { aiConsole(""); }
+static void cmdMon(const char *, const char *) { monConsole(""); }
 static void cmdPcWarn(const char *, const char *) { pcWarnCommand(""); }
 
 static const Command COMMANDS[] = {
@@ -448,11 +455,13 @@ static const Command COMMANDS[] = {
   {"reboot",  "  (restart the board)",               cmdReboot},
   {"hw",      "<ping | rgb ...>  (PcHwCtl via the PC)",       cmdHw},
   {"ai",      "<status | model ... | restart <name> | ...>  (LocalAIHost via the PC)", cmdAi},
+  {"mon",     "<bright <n|all> <0-100> | power <n|all> on|off>  (PC monitors, DDC/CI)", cmdMon},
   {"screenshot", "  (secret PC screenshot to #logging, 5 min)", cmdScreenshot},
   {"led",     "<auto|on|off|sweep|0-100>",           cmdLed},
   {"pcsim",   "<on|off|auto>  (test: pretend the PC is on/off)", cmdPcSim},
   {"perf",    "",                                             cmdPerf},
   {"socks",   "",                                             cmdSocks},
+  {"wifi",    "scan  (the networks the board hears)",         cmdWifi},
   {"bench",   "[all|usage|cpu|mem|flash|spi|usb <KB>]",             benchCommand},
   {"pcstats", "[text]",                                       cmdPcStats},
   {"pcwarn",  "[set <metric> <high|crit> <v|off|default> | avg <ms> | reset | demo [one] | off]", cmdPcWarn},
@@ -475,6 +484,7 @@ void commandRun(char *line) {
   while (*line == ' ' || *line == '\t') line++;
   if (!strncmp(line, "hw", 2) && (!line[2] || line[2] == ' ' || line[2] == '\t')) { hwConsole(line + 2); return; }
   if (!strncmp(line, "ai", 2) && (!line[2] || line[2] == ' ' || line[2] == '\t')) { aiConsole(line + 2); return; }
+  if (!strncmp(line, "mon", 3) && (!line[3] || line[3] == ' ' || line[3] == '\t')) { monConsole(line + 3); return; }
   if (!strncmp(line, "pcwarn", 6) && (!line[6] || line[6] == ' ' || line[6] == '\t')) { pcWarnCommand(line + 6); return; }
   char *cmd = strtok(line, " \t");
   if (!cmd) return;

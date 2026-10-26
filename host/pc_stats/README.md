@@ -326,6 +326,15 @@ ESP32-Helper.exe --going
 ```
 Prints the last 15 event 1074 entries (`time | process | type | code | reason -> kind`), followed by the computed `pc.last_down` / `pc.last_down_at` and `pc.update_pending`.
 
+## PC Monitor Control (DDC/CI)
+
+The user-session half (`Monitors.cs`) talks DDC/CI to every physical monitor through `dxva2.dll`, since session 0 sees no monitors. Monitors are numbered from the left. Every 5 s, and right after each change, it sends the `mon` feed (`@source mon helper:mon 1000` in stats.ini): `mon.count`, then `mon.<n>.name`, `.main`, `.bright` (%, -1 = no answer) and `.power` (1 on, 0 off, -1 no answer). The board's `!mon <id> bright <n|all> <0-100>` or `!mon <id> power <n|all> on|off` goes to the user half over its pipe (`M <id> <command>`, answered `R <id> ok|err ...`). The answer reaches the board as `monctl.reply`. Off is VCP 0xD6 = 4, the monitor's own standby, so DDC can wake it again.
+
+```cmd
+ESP32-Helper.exe --monitors                 # list monitors with brightness and power
+ESP32-Helper.exe --monitors bright 2 50     # run one command first, then list
+```
+
 ## USB COM Port Notice
 
 When connected over the WinUSB pipe or the vendor HID interface (`auto` uses one of them), the ESP32-S3's USB CDC COM port is completely unused by the service. Firmware can be flashed and serial consoles opened without stopping the service.

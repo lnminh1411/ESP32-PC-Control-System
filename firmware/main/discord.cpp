@@ -25,6 +25,7 @@
 #include "display.h"
 #include "hwctl.h"
 #include "log.h"
+#include "monctl.h"
 #include "net.h"
 #include "optos.h"
 #include "pc_state.h"
@@ -398,9 +399,10 @@ enum PanelView {
 };
 
 // Panel tabs; the #control panel and the /actions panel each remember theirs
-enum PanelCat : uint8_t { CAT_DOOR, CAT_PC, CAT_RGB, CAT_FAN, CAT_AI, CAT_BOARD, CAT_DISPLAY, CAT_COUNT };
-static const char *const CAT_LABEL[CAT_COUNT] = {"Door", "PC Control", "PC Case RGB LEDs", "PC Case Fan Control", "Local Agent Control", "Board", "Display"};
-static const char *const CAT_ID[CAT_COUNT] = {"tab_door", "tab_pc", "tab_rgb", "tab_fan", "tab_ai", "tab_board", "tab_display"};
+enum PanelCat : uint8_t { CAT_DOOR, CAT_PC, CAT_RGB, CAT_FAN, CAT_MON, CAT_AI, CAT_BOARD, CAT_DISPLAY, CAT_COUNT };
+static const char *const CAT_LABEL[CAT_COUNT] = {"Door", "PC Control", "PC Case RGB LEDs", "PC Fan Control", "PC Monitor Control",
+                                                 "Local Agent Control", "Board", "Display"};
+static const char *const CAT_ID[CAT_COUNT] = {"tab_door", "tab_pc", "tab_rgb", "tab_fan", "tab_mon", "tab_ai", "tab_board", "tab_display"};
 static uint8_t catStanding = CAT_PC, catEphemeral = CAT_PC;
 static uint8_t &panelCat(bool standing) { return standing ? catStanding : catEphemeral; }
 
@@ -548,7 +550,7 @@ static bool rgbCommand(const char *cmd, const char *what) {
   // what changed on the PC goes to the PC channel too
   if (ok) {
     bool fan = !strncmp(cmd, "fan ", 4);
-    discordPost(DC_PC, fan ? "PC Case Fan Control" : "PC Case RGB LEDs", what, fan ? 0x1ABC9C : 0x9B59B6);
+    discordPost(DC_PC, fan ? "PC Fan Control" : "PC Case RGB LEDs", what, fan ? 0x1ABC9C : 0x9B59B6);
   }
   return ok;
 }
@@ -627,11 +629,20 @@ static void addAiRows(cJSON *comps, cJSON *r) {
 // override for the chosen hold time (PcHwCtl needs a ttl for fans, max 1 h);
 // each fan's floorPct still wins (CPU 50 %, pump 100 %). Auto drops the
 // override and any curve switch. Fan keys and curve names are PcHwCtl's
-// config (C:\ProgramData\PcHwCtl\pchwctl.json).
+// config (C:\ProgramData\PcHwCtl\pchwctl.json). "All fans" is PcHwCtl's
+// `all`, the GPUs included; "Case fans" is the three case fan keys, one
+// command each. The GPU fans run their own curves (RX 6600 through the
+// driver's OD8 fan curve, RTX 3050 through LHM) and get a Zero RPM menu in
+// place of the curve menu.
 static const RgbOpt FAN_TARGETS[] = {
-  {"all", "All fans"}, {"cpu-fans", "CPU fans"}, {"rear-fan", "Rear fan"}, {"front-fans", "Front fans"}};
+  {"all", "All fans"}, {"case", "Case fans"}, {"cpu-fans", "CPU fans"}, {"rear-fan", "Rear fan"},
+  {"front-fans", "Front fans"}, {"gpu-amd", "RX 6600 fan"}, {"gpu-nvidia", "RTX 3050 fan"}};
+static const char *const FAN_CASE_KEYS[] = {"cpu-fans", "rear-fan", "front-fans"};
 static const RgbOpt FAN_SHOWN[] = {   // embed rows: state.txt keys use _ for -
-  {"cpu_fans", "CPU fans"}, {"rear_fan", "Rear fan"}, {"front_fans", "Front fans"}, {"water_pump", "Water pump"}};
+  {"cpu_fans", "CPU fans"}, {"rear_fan", "Rear fan"}, {"front_fans", "Front fans"}, {"water_pump", "Water pump"},
+  {"gpu_amd", "RX 6600"}, {"gpu_nvidia", "RTX 3050"}};
+static const RgbOpt FAN_ZERO_RPM[] = {{"on", "Zero RPM: on (stops when cool)"}, {"off", "Zero RPM: off (always spins)"},
+  {"default", "Zero RPM: config default"}};
 static const RgbOpt FAN_SPEEDS[] = {{"20", "Speed 20 %"}, {"30", "Speed 30 %"}, {"40", "Speed 40 %"}, {"50", "Speed 50 %"},
   {"60", "Speed 60 %"}, {"70", "Speed 70 %"}, {"80", "Speed 80 %"}, {"90", "Speed 90 %"}, {"100", "Speed 100 %"}};
 static const RgbOpt FAN_CURVES[] = {{"graph", "Curve: graph"}, {"flat", "Curve: flat"}, {"auto", "Curve: auto"}};
@@ -658,8 +669,70 @@ static void addFanRows(cJSON *comps) {
   char ph[64];
   snprintf(ph, sizeof ph, "Speed for %s (hold %d min)", FAN_TARGETS[fanTarget].label, FAN_HOLD_MIN[fanHold]);
   addRgbSelect(comps, "fan_pct", ph, FAN_SPEEDS, RGB_N(FAN_SPEEDS));
-  snprintf(ph, sizeof ph, "Curve for %s", FAN_TARGETS[fanTarget].label);
-  addRgbSelect(comps, "fan_curve", ph, FAN_CURVES, RGB_N(FAN_CURVES));
+  const char *t = FAN_TARGETS[fanTarget].value;
+  if (!strncmp(t, "gpu-", 4)) {
+    snprintf(ph, sizeof ph, "Zero RPM for %s", FAN_TARGETS[fanTarget].label);
+    addRgbSelect(comps, "fan_zr", ph, FAN_ZERO_RPM, RGB_N(FAN_ZERO_RPM));
+  } else {
+    snprintf(ph, sizeof ph, "Curve for %s", FAN_TARGETS[fanTarget].label);
+    addRgbSelect(comps, "fan_curve", ph, FAN_CURVES, RGB_N(FAN_CURVES));
+  }
+}
+
+// PC Monitor Control tab (DDC/CI through the PC's user-session half,
+// monctl.h). The monitors and their state come from the mon.* stats,
+// numbered from the left; picks go to one monitor or to all of them.
+static const RgbOpt MON_BRIGHT[] = {{"0", "Brightness 0 %"}, {"10", "Brightness 10 %"}, {"20", "Brightness 20 %"},
+  {"30", "Brightness 30 %"}, {"40", "Brightness 40 %"}, {"50", "Brightness 50 %"}, {"60", "Brightness 60 %"},
+  {"70", "Brightness 70 %"}, {"80", "Brightness 80 %"}, {"90", "Brightness 90 %"}, {"100", "Brightness 100 %"}};
+static uint8_t monTarget = 0;            // 0 = all monitors, else the monitor's number
+
+static int monCount() {
+  float n = pcStat("mon.count");
+  if (isnan(n) || n < 0) return 0;
+  return n > 24 ? 24 : (int)n;           // a select menu holds 25 options, one is "All"
+}
+
+// "2 MSI PRO MP275 (main)"
+static void monLabel(int n, char *buf, size_t size) {
+  char k[24];
+  snprintf(k, sizeof k, "mon.%d.name", n);
+  const char *name = pcText(k);
+  snprintf(k, sizeof k, "mon.%d.main", n);
+  snprintf(buf, size, "%d %.40s%s", n, *name ? name : "Monitor", pcStat(k) >= 1 ? " (main)" : "");
+}
+
+static void monTargetLabel(char *buf, size_t size) {
+  if (!monTarget || monTarget > monCount()) snprintf(buf, size, "All monitors");
+  else monLabel(monTarget, buf, size);
+}
+
+static void addMonRows(cJSON *comps) {
+  int n = monCount();
+  if (monTarget > n) monTarget = 0;
+  cJSON *sel = cJSON_CreateObject();
+  cJSON_AddNumberToObject(sel, "type", 3);
+  cJSON_AddStringToObject(sel, "custom_id", "mon_target");
+  cJSON *arr = cJSON_AddArrayToObject(sel, "options");
+  for (int i = 0; i <= n; i++) {
+    cJSON *op = cJSON_CreateObject();
+    char name[64], label[80], value[12];
+    if (i) monLabel(i, name, sizeof name);
+    else snprintf(name, sizeof name, "All monitors");
+    snprintf(label, sizeof label, "Target: %s", name);
+    if (i) snprintf(value, sizeof value, "%d", i);
+    else snprintf(value, sizeof value, "all");
+    cJSON_AddStringToObject(op, "label", label);
+    cJSON_AddStringToObject(op, "value", value);
+    if (i == monTarget) cJSON_AddBoolToObject(op, "default", true);
+    cJSON_AddItemToArray(arr, op);
+  }
+  cJSON_AddItemToArray(addRow(comps), sel);
+
+  char t[64], ph[88];
+  monTargetLabel(t, sizeof t);
+  snprintf(ph, sizeof ph, "Brightness for %s", t);
+  addRgbSelect(comps, "mon_bright", ph, MON_BRIGHT, RGB_N(MON_BRIGHT));
 }
 
 static void addField(cJSON *fields, const char *name, const char *value) {
@@ -711,14 +784,39 @@ static void buildEmbed(cJSON *embed, const char *footerText, bool standing) {
       float temp = pcStat(k);
       snprintf(k, sizeof k, "hw.%s.ovr", f.value);
       bool ovr = pcStat(k) >= 1;   // a speed override from here or another client
+      snprintf(k, sizeof k, "hw.%s.park", f.value);
+      bool parked = pcStat(k) >= 1;   // GPU Zero RPM: stopped right now
+      snprintf(k, sizeof k, "hw.%s.zr", f.value);
+      float zr = pcStat(k);           // GPU Zero RPM setting, NaN for case fans
       if (isnan(pct)) snprintf(v, sizeof v, "?");
-      else snprintf(v, sizeof v, "%.0f %%%s, %.0f rpm, %.0f C", pct, ovr ? " (held)" : "", isnan(rpm) ? 0.0f : rpm, isnan(temp) ? 0.0f : temp);
+      else if (parked) snprintf(v, sizeof v, "stopped (Zero RPM), %.0f C", isnan(temp) ? 0.0f : temp);
+      else snprintf(v, sizeof v, "%.0f %%%s, %.0f rpm, %.0f C%s", pct, ovr ? " (held)" : "", isnan(rpm) ? 0.0f : rpm,
+                    isnan(temp) ? 0.0f : temp, isnan(zr) ? "" : zr >= 1 ? ", ZR on" : ", ZR off");
       addField(fields, f.label, v);
     }
     float mix = pcStat("hw.mix");
     if (!isnan(mix)) { snprintf(v, sizeof v, "%.0f C", mix); addField(fields, "Mix temp", v); }
     snprintf(v, sizeof v, "%s, hold %d min", FAN_TARGETS[fanTarget].label, FAN_HOLD_MIN[fanHold]);
     addField(fields, "Panel targets", v);
+  } else if (cat == CAT_MON) {
+    int n = monCount();
+    if (!n) addField(fields, "Monitors", pcStat("mon.count") == 0 ? "none answer DDC/CI" : "no data (nobody signed in?)");
+    for (int i = 1; i <= n; i++) {
+      char name[64], k[24];
+      monLabel(i, name, sizeof name);
+      snprintf(k, sizeof k, "mon.%d.power", i);
+      float power = pcStat(k);
+      snprintf(k, sizeof k, "mon.%d.bright", i);
+      float bright = pcStat(k);
+      if (isnan(power) || power < 0) snprintf(v, sizeof v, "no DDC answer");
+      else if (power < 1) snprintf(v, sizeof v, "off");
+      else if (isnan(bright) || bright < 0) snprintf(v, sizeof v, "on");
+      else snprintf(v, sizeof v, "on, %.0f %%", bright);
+      addField(fields, name, v);
+    }
+    char t[64];
+    monTargetLabel(t, sizeof t);
+    addField(fields, "Panel targets", t);
   } else if (cat == CAT_AI) {
     char w1[32], w2[32];
     const char *model = pcText("ai.model_name");
@@ -858,6 +956,13 @@ static void buildComponents(cJSON *data, PanelView view, bool standing) {
     snprintf(label, sizeof label, "Hold: %d min", FAN_HOLD_MIN[fanHold]);
     addButton(r, label, "fan_hold", 2);
     addButton(r, "Auto (release)", "fan_release", 1);
+  } else if (cat == CAT_MON) {
+    // 4 rows: tabs, target, brightness, then Screen on/off + Refresh/Close
+    cJSON_DeleteItemFromArray(comps, cJSON_GetArraySize(comps) - 1);
+    addMonRows(comps);
+    r = addRow(comps);
+    addButton(r, "Screen on", "mon_on", 3);
+    addButton(r, "Screen off", "mon_off", 4);
   } else if (cat == CAT_AI) {
     // 5 rows: tabs, model, context/idle, services, Refresh/Close
     addAiRows(comps, r);
@@ -1111,11 +1216,77 @@ static bool fanInteraction(const char *cid, cJSON *jVal, const char *id, const c
         snprintf(cmd, sizeof cmd, "fan curve %s %s", f, c.value);
         snprintf(what, sizeof what, "%s: curve %s", label, c.value);
       }
+  } else if (!strcmp(cid, "fan_zr")) {
+    for (const RgbOpt &z : FAN_ZERO_RPM)
+      if (!strcmp(val, z.value) && !strncmp(f, "gpu-", 4)) {
+        snprintf(cmd, sizeof cmd, "fan zerorpm %s %s", f, z.value);
+        snprintf(what, sizeof what, "%s: Zero RPM %s", label, z.value);
+      }
   } else if (!strcmp(cid, "fan_release")) {
     snprintf(cmd, sizeof cmd, "fan release %s", f);
     snprintf(what, sizeof what, "%s back to PcHwCtl curves", label);
   }
-  if (cmd[0] && rgbCommand(cmd, what)) panelRefreshLater(standing, token);
+  if (cmd[0] && !strcmp(f, "case")) {
+    // not a PcHwCtl key: the same command for each case fan, one post
+    const char *at = strstr(cmd, " case");   // "fan set case 40 900" -> "fan set " + key + " 40 900"
+    bool all = true;
+    char one[64], reply[96];
+    for (const char *key : FAN_CASE_KEYS) {
+      snprintf(one, sizeof one, "%.*s %s%s", (int)(at - cmd), cmd, key, at + 5);
+      bool ok = hwRun(one, 3000, reply, sizeof reply);
+      logMsg("discord: %s -> %s", one, reply);
+      if (!ok) {
+        snprintf(lastPanelResult, sizeof lastPanelResult, "%.56s failed: %.56s", what, !strncmp(reply, "err ", 4) ? reply + 4 : reply);
+        all = false;
+        break;
+      }
+    }
+    if (all) {
+      snprintf(lastPanelResult, sizeof lastPanelResult, "%.100s", what);
+      discordPost(DC_PC, "PC Fan Control", what, 0x1ABC9C);
+      panelRefreshLater(standing, token);
+    }
+  } else if (cmd[0] && rgbCommand(cmd, what)) panelRefreshLater(standing, token);
+  sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
+  return true;
+}
+
+// One monitor command from a panel pick; the footer gets the PC's answer
+static bool monCommand(const char *cmd, const char *what) {
+  char reply[96];
+  bool ok = monRun(cmd, 5000, reply, sizeof reply);
+  if (ok) snprintf(lastPanelResult, sizeof lastPanelResult, "%.100s", what);
+  else snprintf(lastPanelResult, sizeof lastPanelResult, "%.56s failed: %.56s", what, !strncmp(reply, "err ", 4) ? reply + 4 : reply);
+  logMsg("discord: mon %s -> %s", cmd, reply);
+  if (ok) discordPost(DC_PC, "PC Monitor Control", what, 0x3498DB);
+  return ok;
+}
+
+// Monitor tab selects and buttons; true when cid was one of them
+static bool monInteraction(const char *cid, cJSON *jVal, const char *id, const char *token, bool standing) {
+  if (strncmp(cid, "mon_", 4)) return false;
+  const char *val = jVal && cJSON_IsString(jVal) ? jVal->valuestring : "";
+  char t[64], target[12], cmd[48] = "", what[96];
+  monTargetLabel(t, sizeof t);
+  if (monTarget && monTarget <= monCount()) snprintf(target, sizeof target, "%d", monTarget);
+  else snprintf(target, sizeof target, "all");
+  if (!strcmp(cid, "mon_target")) {
+    monTarget = !strcmp(val, "all") ? 0 : (uint8_t)atoi(val);
+    if (monTarget > monCount()) monTarget = 0;
+    monTargetLabel(t, sizeof t);
+    snprintf(lastPanelResult, sizeof lastPanelResult, "Monitor picks now go to %s", t);
+  } else if (!strcmp(cid, "mon_bright")) {
+    int pct = atoi(val);
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+    snprintf(cmd, sizeof cmd, "bright %s %d", target, pct);
+    snprintf(what, sizeof what, "%s: brightness %d %%", t, pct);
+  } else if (!strcmp(cid, "mon_on") || !strcmp(cid, "mon_off")) {
+    bool on = !strcmp(cid, "mon_on");
+    snprintf(cmd, sizeof cmd, "power %s %s", target, on ? "on" : "off");
+    snprintf(what, sizeof what, "%s: screen %s", t, on ? "on" : "off");
+  }
+  if (cmd[0] && monCommand(cmd, what)) panelRefreshLater(standing, token);
   sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
   return true;
 }
@@ -1232,6 +1403,7 @@ static void onInteraction(cJSON *d) {
       return;
     }
     if (fanInteraction(cid, jVal, id, token, standing)) return;
+    if (monInteraction(cid, jVal, id, token, standing)) return;
     if (jVal && cJSON_IsString(jVal) && !strncmp(cid, "rgb_", 4)) {
       // RGB tab picks: the footer says whether PcHwCtl took it; the new state
       // shows on the redraw a few seconds later

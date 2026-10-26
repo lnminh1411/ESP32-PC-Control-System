@@ -23,7 +23,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="PcStats.cs;AgyQuota.cs;AgyUsage.cs;Net.cs" />
+    <Compile Include="PcStats.cs;AgyQuota.cs;AgyUsage.cs;Monitors.cs;Net.cs" />
   </ItemGroup>
 
   <ItemGroup>

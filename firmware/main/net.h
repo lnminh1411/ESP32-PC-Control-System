@@ -10,7 +10,8 @@
 #include <stdint.h>
 
 void netInit();
-void netPoll();                 // call from loop(): OTA + connection logging
+void netPoll();
+void netScan();                 // console `wifi scan`: log the networks the board hears                 // call from loop(): OTA + connection logging
 bool netUp();
 const char *netIp();            // "" while down
 int netRssi();                  // dBm, 0 while down

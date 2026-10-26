@@ -192,12 +192,29 @@ static esp_err_t layoutPutHandler(httpd_req_t *req) {
   return ESP_OK;
 }
 
+static volatile bool scanning;   // `wifi scan` holds the reconnect off
+
 static void wifiEventHandler(void *, esp_event_base_t event_base, int32_t event_id, void *event_data) {
   if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
     wifi_event_sta_disconnected_t *disconn = (wifi_event_sta_disconnected_t *)event_data;
-    if (ip[0]) logMsg("wifi: disconnected (reason %u), retrying", disconn->reason);
+    // a join that keeps failing says why: when the reason changes, else once a minute
+    static uint8_t lastReason;
+    static uint32_t lastReasonMs;
+    uint8_t reason = disconn->reason;
+    if (ip[0]) {
+      logMsg("wifi: disconnected (reason %u), retrying", reason);
+    } else if (reason != lastReason || nowMs() - lastReasonMs >= 60000) {
+      const char *why = reason == WIFI_REASON_NO_AP_FOUND ? ", network not seen"
+                      : reason == WIFI_REASON_AUTH_FAIL || reason == WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT ||
+                        reason == WIFI_REASON_HANDSHAKE_TIMEOUT ? ", wrong password or security mode"
+                      : reason == WIFI_REASON_NO_AP_FOUND_W_COMPATIBLE_SECURITY ? ", security mode not supported"
+                      : reason == WIFI_REASON_ASSOC_FAIL || reason == WIFI_REASON_ASSOC_EXPIRE ? ", router refused" : "";
+      logMsg("wifi: can't join %s (reason %u%s), retrying", WIFI_SSID, reason, why);
+      lastReasonMs = nowMs();
+    }
+    lastReason = reason;
     ip[0] = 0;
-    esp_wifi_connect();
+    if (!scanning) esp_wifi_connect();
   } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
     ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
     snprintf(ip, sizeof ip, IPSTR, IP2STR(&event->ip_info.ip));
@@ -217,7 +234,8 @@ void netInit() {
   esp_netif_set_hostname(sta_netif, NET_HOSTNAME);
 
   wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-  esp_wifi_init(&cfg);
+  esp_err_t e = esp_wifi_init(&cfg);
+  if (e != ESP_OK) logMsg("wifi: init failed (%s)", esp_err_to_name(e));
 
   esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifiEventHandler, nullptr, nullptr);
   esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifiEventHandler, nullptr, nullptr);
@@ -229,10 +247,45 @@ void netInit() {
   strncpy((char *)wifi_cfg.sta.password, WIFI_PASS, sizeof(wifi_cfg.sta.password));
   esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg);
 
-  esp_wifi_start();
+  e = esp_wifi_start();
+  if (e != ESP_OK) logMsg("wifi: start failed (%s)", esp_err_to_name(e));
   esp_wifi_set_ps(WIFI_PS_NONE);
-  esp_wifi_connect();
+  e = esp_wifi_connect();
+  if (e != ESP_OK) logMsg("wifi: connect failed (%s)", esp_err_to_name(e));
   logMsg("wifi: joining %s", WIFI_SSID);
+}
+
+// `wifi scan`: drops the connection attempt, lists every network the board
+// hears (hidden ones too), then joins again. Blocks the caller ~3 s.
+void netScan() {
+  scanning = true;
+  esp_wifi_disconnect();
+  vTaskDelay(pdMS_TO_TICKS(200));
+  wifi_scan_config_t sc = {};
+  sc.show_hidden = true;
+  esp_err_t e = esp_wifi_scan_start(&sc, true);
+  if (e != ESP_OK) {
+    logMsg("wifi: scan failed (%s)", esp_err_to_name(e));
+  } else {
+    uint16_t n = 0;
+    esp_wifi_scan_get_ap_num(&n);
+    uint16_t got = n > 30 ? 30 : n;
+    wifi_ap_record_t *aps = (wifi_ap_record_t *)heap_caps_calloc(got ? got : 1, sizeof(wifi_ap_record_t), MALLOC_CAP_SPIRAM);
+    if (aps && esp_wifi_scan_get_ap_records(&got, aps) == ESP_OK) {
+      logMsg("wifi: %u networks heard (strongest first)", n);
+      for (int i = 0; i < got; i++)
+        logMsg("  %-32.32s ch %2u %4d dBm auth %d", aps[i].ssid[0] ? (const char *)aps[i].ssid : "(hidden)",
+               aps[i].primary, aps[i].rssi, (int)aps[i].authmode);
+    } else {
+      esp_wifi_clear_ap_list();
+    }
+    free(aps);
+  }
+  wifi_country_t c;
+  if (esp_wifi_get_country(&c) == ESP_OK)
+    logMsg("wifi: country %.2s, channels %u-%u", c.cc, c.schan, c.schan + c.nchan - 1);
+  scanning = false;
+  esp_wifi_connect();
 }
 
 static volatile int rssiCached;
