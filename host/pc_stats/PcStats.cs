@@ -180,6 +180,32 @@ class PcStats : ServiceBase {
   [DllImport("powrprof.dll", SetLastError = true)]
   static extern bool SetSuspendState(bool hibernate, bool forceCritical, bool disableWakeEvent);
 
+  // lock: the service runs in session 0, LockWorkStation has to run in the user's
+  [DllImport("kernel32.dll")]
+  static extern uint WTSGetActiveConsoleSessionId();
+
+  [DllImport("wtsapi32.dll", SetLastError = true)]
+  static extern bool WTSQueryUserToken(uint sessionId, out IntPtr token);
+
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+  struct STARTUPINFO {
+    public int cb;
+    public string lpReserved, lpDesktop, lpTitle;
+    public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+    public short wShowWindow, cbReserved2;
+    public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
+  }
+
+  [StructLayout(LayoutKind.Sequential)]
+  struct PROCESS_INFORMATION {
+    public IntPtr hProcess, hThread;
+    public int dwProcessId, dwThreadId;
+  }
+
+  [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+  static extern bool CreateProcessAsUser(IntPtr hToken, string app, string cmdLine, IntPtr procAttr, IntPtr threadAttr,
+      bool inherit, uint flags, IntPtr env, string dir, ref STARTUPINFO si, out PROCESS_INFORMATION pi);
+
   [DllImport("powrprof.dll", SetLastError = true)]
   static extern bool GetPwrCapabilities(IntPtr lpSystemPowerCapabilities);
 
@@ -508,7 +534,7 @@ class PcStats : ServiceBase {
     string action = m.Groups[1].Value.ToLowerInvariant();
     string nonce = m.Groups[2].Value.ToLowerInvariant();
 
-    if (action != "sleep" && action != "hibernate" && action != "restart" && action != "shutdown") {
+    if (action != "sleep" && action != "hibernate" && action != "restart" && action != "shutdown" && action != "lock") {
       Log("power: unrecognized action '" + action + "' in command '" + line + "'");
       return;
     }
@@ -590,9 +616,38 @@ class PcStats : ServiceBase {
     }
   }
 
+  // Lock the console session: rundll32 user32.dll,LockWorkStation started in
+  // that session with the user's token (SYSTEM may ask for it)
+  static void LockConsoleSession() {
+    uint session = WTSGetActiveConsoleSessionId();
+    IntPtr token;
+    if (session == 0xFFFFFFFF || !WTSQueryUserToken(session, out token)) {
+      Log("power: lock: no user signed in at the console (" + Marshal.GetLastWin32Error() + ")");
+      return;
+    }
+    try {
+      STARTUPINFO si = new STARTUPINFO();
+      si.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+      si.lpDesktop = @"winsta0\default";
+      PROCESS_INFORMATION pi;
+      string exe = Path.Combine(Environment.SystemDirectory, "rundll32.exe");
+      if (!CreateProcessAsUser(token, exe, "\"" + exe + "\" user32.dll,LockWorkStation", IntPtr.Zero, IntPtr.Zero,
+              false, 0x08000000, IntPtr.Zero, null, ref si, out pi)) {   // CREATE_NO_WINDOW
+        Log("power: lock: CreateProcessAsUser failed: " + Marshal.GetLastWin32Error());
+        return;
+      }
+      CloseHandle(pi.hThread);
+      CloseHandle(pi.hProcess);
+    } finally {
+      CloseHandle(token);
+    }
+  }
+
   static void ExecutePowerAction(string action) {
     try {
-      if (action == "sleep") {
+      if (action == "lock") {
+        LockConsoleSession();
+      } else if (action == "sleep") {
         if (!SetSuspendState(false, false, false)) {
           Log("power: SetSuspendState(sleep) failed: " + Marshal.GetLastWin32Error());
         }

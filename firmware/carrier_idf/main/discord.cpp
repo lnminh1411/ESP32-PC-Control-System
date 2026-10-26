@@ -25,6 +25,7 @@
 #include "net.h"
 #include "optos.h"
 #include "pc_state.h"
+#include "screens.h"
 #include "secrets_or_example.h"
 #include "sys.h"
 
@@ -385,15 +386,36 @@ enum PanelView {
   PANEL_CONFIRM_SLEEP,
   PANEL_CONFIRM_RESTART,
   PANEL_CONFIRM_SHUTDOWN,
-  PANEL_CONFIRM_HIBERNATE
+  PANEL_CONFIRM_HIBERNATE,
+  PANEL_CONFIRM_REBOOT
 };
+
+// Panel tabs; the #control panel and the /actions panel each remember theirs
+enum PanelCat : uint8_t { CAT_DOOR, CAT_PC, CAT_BOARD, CAT_DISPLAY, CAT_COUNT };
+static const char *const CAT_LABEL[CAT_COUNT] = {"Door", "PC Control", "Board", "Display"};
+static const char *const CAT_ID[CAT_COUNT] = {"tab_door", "tab_pc", "tab_board", "tab_display"};
+static uint8_t catStanding = CAT_PC, catEphemeral = CAT_PC;
+static uint8_t &panelCat(bool standing) { return standing ? catStanding : catEphemeral; }
+
+// Faces the Display tab offers per panel, as the `face` command names them
+struct FaceOpt { const char *name, *label; Face f; };
+static const FaceOpt FACE_OPTS[] = {
+  {"auto", "Auto (follows the PC)", FACE_NONE}, {"pc", "PC stats", FACE_PC_STATS}, {"gif", "GIF", FACE_GIF},
+  {"media", "Media", FACE_MEDIA}, {"weather", "Weather", FACE_WEATHER}, {"ai", "AI usage", FACE_AI_USAGE},
+  {"localai", "Local AI", FACE_LOCAL_AI}, {"clock", "Clock", FACE_CLOCK}};
+
+static const char *faceLabel(Face f) {
+  for (const FaceOpt &o : FACE_OPTS)
+    if (o.f == f) return o.label;
+  return "other";
+}
 
 static void addButton(cJSON *row, const char *label, const char *id, int style) {
   cJSON *b = cJSON_CreateObject();
   cJSON_AddNumberToObject(b, "type", 2);
   cJSON_AddStringToObject(b, "label", label);
   cJSON_AddStringToObject(b, "custom_id", id);
-  cJSON_AddNumberToObject(b, "style", style); // 1 blurple, 2 grey, 4 red
+  cJSON_AddNumberToObject(b, "style", style); // 1 blurple, 2 grey, 3 green, 4 red
   cJSON_AddItemToArray(row, b);
 }
 
@@ -405,53 +427,76 @@ static cJSON *addRow(cJSON *comps) {
   return rowComps;
 }
 
+// Screen picker for one panel: a select menu with the override marked
+static void addFaceSelect(cJSON *comps, int panel) {
+  cJSON *row = addRow(comps);
+  cJSON *sel = cJSON_CreateObject();
+  cJSON_AddNumberToObject(sel, "type", 3);
+  char id[12];
+  snprintf(id, sizeof id, "face_%d", panel + 1);
+  cJSON_AddStringToObject(sel, "custom_id", id);
+  cJSON *opts = cJSON_AddArrayToObject(sel, "options");
+  for (const FaceOpt &o : FACE_OPTS) {
+    cJSON *op = cJSON_CreateObject();
+    char label[48];
+    snprintf(label, sizeof label, "Panel %d: %s", panel + 1, o.label);
+    cJSON_AddStringToObject(op, "label", label);
+    cJSON_AddStringToObject(op, "value", o.name);
+    if (screensForce[panel] == o.f) cJSON_AddBoolToObject(op, "default", true);
+    cJSON_AddItemToArray(opts, op);
+  }
+  cJSON_AddItemToArray(row, sel);
+}
+
+static void addField(cJSON *fields, const char *name, const char *value) {
+  cJSON *f = cJSON_CreateObject();
+  cJSON_AddStringToObject(f, "name", name);
+  cJSON_AddStringToObject(f, "value", value);
+  cJSON_AddBoolToObject(f, "inline", true);
+  cJSON_AddItemToArray(fields, f);
+}
+
 static void buildEmbed(cJSON *embed, const char *footerText, bool standing) {
-  cJSON_AddStringToObject(embed, "title", "ESP32 PC Control");
+  uint8_t cat = panelCat(standing);
+  char title[48];
+  snprintf(title, sizeof title, "ESP32 PC Control | %s", CAT_LABEL[cat]);
+  cJSON_AddStringToObject(embed, "title", title);
   cJSON_AddNumberToObject(embed, "color", 0x5865F2);
-
   cJSON *fields = cJSON_AddArrayToObject(embed, "fields");
+  char v[64];
 
-  cJSON *fPc = cJSON_CreateObject();
-  cJSON_AddStringToObject(fPc, "name", "PC");
-  cJSON_AddStringToObject(fPc, "value", (pcState() == PC_ON) ? "on" : (pcState() == PC_OFF) ? "asleep" : "no host");
-  cJSON_AddBoolToObject(fPc, "inline", true);
-  cJSON_AddItemToArray(fields, fPc);
-
-  char blStr[32];
-  snprintf(blStr, sizeof blStr, "%u / %u / %u %%", backlightPct(0), backlightPct(1), backlightPct(2));
-  cJSON *fBl = cJSON_CreateObject();
-  cJSON_AddStringToObject(fBl, "name", "Backlights");
-  cJSON_AddStringToObject(fBl, "value", blStr);
-  cJSON_AddBoolToObject(fBl, "inline", true);
-  cJSON_AddItemToArray(fields, fBl);
-
-  uint32_t s = nowMs() / 1000;
-  char upStr[32];
-  snprintf(upStr, sizeof upStr, "%lu:%02lu:%02lu", (unsigned long)(s / 3600), (unsigned long)((s / 60) % 60), (unsigned long)(s % 60));
-  cJSON *fUp = cJSON_CreateObject();
-  cJSON_AddStringToObject(fUp, "name", "Uptime");
-  cJSON_AddStringToObject(fUp, "value", upStr);
-  cJSON_AddBoolToObject(fUp, "inline", true);
-  cJSON_AddItemToArray(fields, fUp);
-
-  char wifiStr[48];
-  if (netUp() && netIp()[0]) snprintf(wifiStr, sizeof wifiStr, "%s (%d dBm)", netIp(), netRssi());
-  else snprintf(wifiStr, sizeof wifiStr, "down");
-  cJSON *fWifi = cJSON_CreateObject();
-  cJSON_AddStringToObject(fWifi, "name", "Wi-Fi");
-  cJSON_AddStringToObject(fWifi, "value", wifiStr);
-  cJSON_AddBoolToObject(fWifi, "inline", true);
-  cJSON_AddItemToArray(fields, fWifi);
-
-  char doorStr[32];
-  int dp = doorPressed();
-  if (dp > 0) snprintf(doorStr, sizeof doorStr, "B%d pressed", dp);
-  else snprintf(doorStr, sizeof doorStr, "idle");
-  cJSON *fDoor = cJSON_CreateObject();
-  cJSON_AddStringToObject(fDoor, "name", "Door remote");
-  cJSON_AddStringToObject(fDoor, "value", doorStr);
-  cJSON_AddBoolToObject(fDoor, "inline", true);
-  cJSON_AddItemToArray(fields, fDoor);
+  addField(fields, "PC", (pcState() == PC_ON) ? "on" : (pcState() == PC_OFF) ? "asleep" : "no host");
+  if (cat == CAT_DOOR) {
+    int dp = doorPressed();
+    if (dp > 0) snprintf(v, sizeof v, "B%d pressed", dp);
+    else snprintf(v, sizeof v, "idle");
+    addField(fields, "Door remote", v);
+  } else if (cat == CAT_PC) {
+    if (netUp() && netIp()[0]) snprintf(v, sizeof v, "%s (%d dBm)", netIp(), netRssi());
+    else snprintf(v, sizeof v, "down");
+    addField(fields, "Board Wi-Fi", v);
+  } else if (cat == CAT_BOARD) {
+    uint32_t s = nowMs() / 1000;
+    snprintf(v, sizeof v, "%lu:%02lu:%02lu", (unsigned long)(s / 3600), (unsigned long)((s / 60) % 60), (unsigned long)(s % 60));
+    addField(fields, "Uptime", v);
+    if (netUp() && netIp()[0]) snprintf(v, sizeof v, "%s (%d dBm)", netIp(), netRssi());
+    else snprintf(v, sizeof v, "down");
+    addField(fields, "Wi-Fi", v);
+    snprintf(v, sizeof v, "%u KB free, largest %u KB", (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),
+             (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024));
+    addField(fields, "Internal RAM", v);
+    snprintf(v, sizeof v, "%u KB free", (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
+    addField(fields, "PSRAM", v);
+    addField(fields, "Last restart", resetReasonText());
+  } else {
+    for (int i = 0; i < N_PANELS; i++) {
+      char name[12];
+      snprintf(name, sizeof name, "Panel %d", i + 1);
+      snprintf(v, sizeof v, "%s, %u %%", screensForce[i] == FACE_NONE ? "auto" : faceLabel(screensForce[i]), backlightPct(i));
+      addField(fields, name, v);
+    }
+    addField(fields, "Displays", backlightForcedOff() ? "off" : backlightIsIdle() ? "dark (PC asleep)" : "on");
+  }
 
   const char *ft = (footerText && footerText[0]) ? footerText :
                    lastPanelResult[0] ? lastPanelResult :
@@ -460,46 +505,64 @@ static void buildEmbed(cJSON *embed, const char *footerText, bool standing) {
   cJSON_AddStringToObject(footer, "text", ft);
 }
 
+static void confirmRow(cJSON *comps, const char *label, const char *id, int style) {
+  cJSON *r1 = addRow(comps);
+  addButton(r1, label, id, style);
+  addButton(r1, "Cancel", "refresh", 2);
+}
+
 static void buildComponents(cJSON *data, PanelView view, bool standing) {
   cJSON *comps = cJSON_AddArrayToObject(data, "components");
-  if (view == PANEL_NORMAL) {
-    cJSON *r1 = addRow(comps);
-    addButton(r1, "Door 1", "door_1", 1);
-    addButton(r1, "Door 2", "door_2", 1);
-    addButton(r1, "Door 3", "door_3", 1);
-    addButton(r1, "Door 4", "door_4", 1);
+  switch (view) {
+    case PANEL_CONFIRM_RESET: confirmRow(comps, "Yes, reset", "reset_confirm", 4); return;
+    case PANEL_CONFIRM_SLEEP: confirmRow(comps, "Yes, sleep", "sleep_confirm", 2); return;
+    case PANEL_CONFIRM_RESTART: confirmRow(comps, "Yes, restart", "restart_confirm", 4); return;
+    case PANEL_CONFIRM_SHUTDOWN: confirmRow(comps, "Yes, shut down", "shutdown_confirm", 4); return;
+    case PANEL_CONFIRM_HIBERNATE: confirmRow(comps, "Yes, hibernate", "hibernate_confirm", 2); return;
+    case PANEL_CONFIRM_REBOOT: confirmRow(comps, "Yes, restart the board", "reboot_confirm", 4); return;
+    case PANEL_NORMAL: break;
+  }
 
-    cJSON *r2 = addRow(comps);
-    addButton(r2, "Wake PC", "wake", 3);
-    addButton(r2, "Sleep", "sleep", 2);
-    addButton(r2, "Hibernate", "hibernate", 2);
-    addButton(r2, "Restart", "restart", 4);
-    addButton(r2, "Shut down", "shutdown", 4);
+  // row 1: the tabs, the open one highlighted, and Refresh
+  uint8_t cat = panelCat(standing);
+  cJSON *tabs = addRow(comps);
+  for (int i = 0; i < CAT_COUNT; i++) addButton(tabs, CAT_LABEL[i], CAT_ID[i], i == cat ? 1 : 2);
+  addButton(tabs, "Refresh", "refresh", 2);
 
-    cJSON *r3 = addRow(comps);
-    addButton(r3, "Refresh", "refresh", 2);
-    addButton(r3, "PC reset", "reset", 4);
-    if (!standing) addButton(r3, "Close", "close", 2);
-  } else if (view == PANEL_CONFIRM_RESET) {
-    cJSON *r1 = addRow(comps);
-    addButton(r1, "Yes, reset", "reset_confirm", 4);
-    addButton(r1, "Cancel", "refresh", 2);
-  } else if (view == PANEL_CONFIRM_SLEEP) {
-    cJSON *r1 = addRow(comps);
-    addButton(r1, "Yes, sleep", "sleep_confirm", 2);
-    addButton(r1, "Cancel", "refresh", 2);
-  } else if (view == PANEL_CONFIRM_RESTART) {
-    cJSON *r1 = addRow(comps);
-    addButton(r1, "Yes, restart", "restart_confirm", 4);
-    addButton(r1, "Cancel", "refresh", 2);
-  } else if (view == PANEL_CONFIRM_SHUTDOWN) {
-    cJSON *r1 = addRow(comps);
-    addButton(r1, "Yes, shut down", "shutdown_confirm", 4);
-    addButton(r1, "Cancel", "refresh", 2);
-  } else if (view == PANEL_CONFIRM_HIBERNATE) {
-    cJSON *r1 = addRow(comps);
-    addButton(r1, "Yes, hibernate", "hibernate_confirm", 2);
-    addButton(r1, "Cancel", "refresh", 2);
+  // Close (the /actions panel only) goes on the tab's last row
+  if (cat == CAT_DOOR) {
+    cJSON *r = addRow(comps);
+    addButton(r, "Door 1", "door_1", 1);
+    addButton(r, "Door 2", "door_2", 1);
+    addButton(r, "Door 3", "door_3", 1);
+    addButton(r, "Door 4", "door_4", 1);
+    if (!standing) addButton(r, "Close", "close", 2);
+  } else if (cat == CAT_PC) {
+    cJSON *r = addRow(comps);
+    addButton(r, "Wake PC", "wake", 3);
+    addButton(r, "Lock", "lock", 1);
+    addButton(r, "Sleep", "sleep", 2);
+    addButton(r, "Hibernate", "hibernate", 2);
+    r = addRow(comps);
+    addButton(r, "Restart", "restart", 4);
+    addButton(r, "Shut down", "shutdown", 4);
+    addButton(r, "PC reset", "reset", 4);
+    if (!standing) addButton(r, "Close", "close", 2);
+  } else if (cat == CAT_BOARD) {
+    cJSON *r = addRow(comps);
+    addButton(r, "Restart board", "reboot", 4);
+    addButton(r, "Refresh weather", "wx_refresh", 2);
+    addButton(r, "Reconnect Discord", "dc_reconnect", 2);
+    if (!standing) addButton(r, "Close", "close", 2);
+  } else {
+    for (int i = 0; i < N_PANELS; i++) addFaceSelect(comps, i);
+    cJSON *r = addRow(comps);
+    addButton(r, "Dimmer", "bl_down", 2);
+    addButton(r, "Brighter", "bl_up", 2);
+    if (backlightForcedOff()) addButton(r, "Displays on", "disp_on", 3);
+    else addButton(r, "Displays off", "disp_off", 4);
+    addButton(r, "All auto", "face_auto", 2);
+    if (!standing) addButton(r, "Close", "close", 2);
   }
 }
 
@@ -707,9 +770,71 @@ static void onInteraction(cJSON *d) {
     if (!standing) panelTouchedMs = nowMs();
     if (DISCORD_APP_ID[0]) ackButton(id, token);
 
+    cJSON *jVals = data ? cJSON_GetObjectItem(data, "values") : nullptr;
+    cJSON *jVal = (jVals && cJSON_IsArray(jVals)) ? cJSON_GetArrayItem(jVals, 0) : nullptr;
+    if (jVal && cJSON_IsString(jVal) && !strncmp(cid, "face_", 5)) {
+      // Display tab: a screen picked for one panel (not saved, `face` command)
+      char cmd[32];
+      snprintf(cmd, sizeof cmd, "face %s %s", cid + 5, jVal->valuestring);
+      runAndGetFirstLine(cmd, lastPanelResult, sizeof lastPanelResult);
+      sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
+      return;
+    }
+    for (int i = 0; i < CAT_COUNT; i++) {
+      if (!strcmp(cid, CAT_ID[i])) {
+        panelCat(standing) = (uint8_t)i;
+        lastPanelResult[0] = 0;
+        sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, nullptr);
+        return;
+      }
+    }
+
     if (!strcmp(cid, "refresh")) {
       snprintf(lastPanelResult, sizeof lastPanelResult, "Refreshed");
       sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, "Refreshed");
+    } else if (!strcmp(cid, "lock")) {
+      runAndGetFirstLine("power lock", lastPanelResult, sizeof lastPanelResult);
+      if (!lastPanelResult[0]) snprintf(lastPanelResult, sizeof lastPanelResult, "Lock sent to the PC");
+      sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
+    } else if (!strcmp(cid, "reboot")) {
+      sendPanelResponse(id, token, 7, standing, PANEL_CONFIRM_REBOOT, "Restart the board? (the PC is not touched)");
+    } else if (!strcmp(cid, "reboot_confirm")) {
+      snprintf(lastPanelResult, sizeof lastPanelResult, "Board restarting, back in ~30 s");
+      sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
+      logMsg("discord: board restart requested");
+      runOnMainLoop("reboot");
+    } else if (!strcmp(cid, "wx_refresh")) {
+      runAndGetFirstLine("weather refresh", lastPanelResult, sizeof lastPanelResult);
+      sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
+    } else if (!strcmp(cid, "dc_reconnect")) {
+      snprintf(lastPanelResult, sizeof lastPanelResult, "Reconnecting to Discord");
+      sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
+      requestReconnect = true;
+    } else if (!strcmp(cid, "bl_down") || !strcmp(cid, "bl_up")) {
+      // 20 % steps on every panel, kept between 10 and 100 (saved, as `bl` does)
+      bool up = cid[3] == 'u';
+      for (int i = 0; i < N_PANELS; i++) {
+        int v = backlightPct(i) + (up ? 20 : -20);
+        v = v < 10 ? 10 : v > 100 ? 100 : v;
+        char cmd[24], ignore[64];
+        snprintf(cmd, sizeof cmd, "bl %d %d", i + 1, v);
+        runAndGetFirstLine(cmd, ignore, sizeof ignore);
+      }
+      snprintf(lastPanelResult, sizeof lastPanelResult, "Backlights %u / %u / %u %%", backlightPct(0), backlightPct(1),
+               backlightPct(2));
+      sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
+    } else if (!strcmp(cid, "disp_on") || !strcmp(cid, "disp_off")) {
+      runAndGetFirstLine(cid[5] == 'n' ? "display on" : "display off", lastPanelResult, sizeof lastPanelResult);
+      sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
+    } else if (!strcmp(cid, "face_auto")) {
+      char ignore[64];
+      for (int i = 0; i < N_PANELS; i++) {
+        char cmd[16];
+        snprintf(cmd, sizeof cmd, "face %d auto", i + 1);
+        runAndGetFirstLine(cmd, ignore, sizeof ignore);
+      }
+      snprintf(lastPanelResult, sizeof lastPanelResult, "All panels back to auto");
+      sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
     } else if (!strcmp(cid, "reset")) {
       sendPanelResponse(id, token, 7, standing, PANEL_CONFIRM_RESET, "Reset the PC?");
     } else if (!strcmp(cid, "reset_confirm")) {
@@ -1002,7 +1127,7 @@ void discordInit() {
   if (!wsBuf) wsBuf = (char *)malloc(WS_BUF_SIZE);
   if (DISCORD_CH_LOG[0]) logRing = (char *)heap_caps_malloc(LOG_RING_SIZE, MALLOC_CAP_SPIRAM);
   loadControlPanelId();
-  xTaskCreatePinnedToCore(botTask, "discord", 12288, nullptr, 1, &botTaskHandle, 0);
+  xTaskCreatePinnedToCore(botTask, "discord", 10240, nullptr, 1, &botTaskHandle, 0);
   logMsg("discord: bot starting");
 }
 

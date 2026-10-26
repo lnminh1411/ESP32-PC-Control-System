@@ -15,6 +15,7 @@ uint32_t freePsram();
 uint32_t freeHeap();       // all heaps (internal + PSRAM)
 uint32_t freeInternal();
 float chipTempC();         // internal temperature sensor, NAN if unavailable
+const char *resetReasonText();   // why the board last restarted ("crash", "power-on", ...)
 
 // LEDC: one low-speed timer at 20 kHz / 10 bit for every PWM output.
 //   channels 0-2 = panel backlights, channel 3 = status LED

@@ -254,14 +254,16 @@ static esp_err_t httpEventCb(esp_http_client_event_t *evt) {
   return ESP_OK;
 }
 
-static bool httpGet(const char *url, char *buf, size_t cap, int *outStatus) {
+// timeoutMs: GDACS can take over 10 s to start sending a large track
+static bool httpGet(const char *url, char *buf, size_t cap, int *outStatus, int timeoutMs = 10000) {
   HttpBuffer hb = {buf, cap, 0};
   buf[0] = '\0';
 
   esp_http_client_config_t cfg = {};
   cfg.url = url;
   cfg.crt_bundle_attach = esp_crt_bundle_attach;
-  cfg.timeout_ms = 10000;
+  cfg.timeout_ms = timeoutMs;
+  cfg.buffer_size_tx = 1024;   // the nowcast's 17-point URL is ~550 bytes
   cfg.event_handler = httpEventCb;
   cfg.user_data = &hb;
 
@@ -812,7 +814,7 @@ static void pollCyclones(char *buf, size_t cap) {
     char *big = (char *)heap_caps_malloc(bigCap, MALLOC_CAP_SPIRAM);
     if (!big) continue;
     cycloneTrackUrl(url, sizeof url, cand[k].eventId, cand[k].episodeId);
-    bool got = httpGet(url, big, bigCap, &status);
+    bool got = httpGet(url, big, bigCap, &status, 30000);
     size_t len = strlen(big);
     if (got && cycloneParseTrack(big, len, cand[k], now, &tracks_[dst])) {
       clearError(ERR_TC_TRACK);
@@ -1171,7 +1173,7 @@ void weatherInit() {
   owntracksInit();
   pushoverInit();
 
-  xTaskCreatePinnedToCore(weatherTask, "weather", 12288, nullptr, 1, &wxTaskHandle, 0);
+  xTaskCreatePinnedToCore(weatherTask, "weather", 9216, nullptr, 1, &wxTaskHandle, 0);
   logMsg("weather: service initialized%s", homeConfigured ? "" : " (no home set; use `weather home <lat>,<lon> [name]`)");
 }
 
@@ -1248,6 +1250,12 @@ void weatherCommand(const char *a1, const char *a2) {
     }
     setHomeLocation(lat, lon, name);
     logMsg("weather: home set to %s (%.5f, %.5f)", name, lat, lon);
+  } else if (a1 && !strcmp(a1, "refresh")) {
+    homeChanged = true;     // forecast, AQI and nowcast at once
+    cycloneRefresh = true;  // and GDACS
+    if (wxTaskHandle) xTaskNotifyGive(wxTaskHandle);
+    logMsg("weather: refresh queued");
+    return;
   } else if (a1 && !strcmp(a1, "storms")) {
     cycloneRefresh = true;
     if (wxTaskHandle) xTaskNotifyGive(wxTaskHandle);
@@ -1335,7 +1343,7 @@ void weatherCommand(const char *a1, const char *a2) {
            (unsigned)budgetPhoneCalls, (unsigned)budgetFcCalls);
     return;
   } else {
-    logMsg("weather: usage weather <show|demo [rain|typhoon]|clear|storms|home <lat>,<lon> [name]|test-alert>");
+    logMsg("weather: usage weather <show|refresh|demo [rain|typhoon]|clear|storms|home <lat>,<lon> [name]|test-alert>");
     return;
   }
 

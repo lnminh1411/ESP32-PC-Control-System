@@ -432,6 +432,7 @@ void displayInit() {
 // ---- backlights & NVS persistence ----
 static uint8_t blPct[N_PANELS] = {100, 100, 100};   // user setting
 static bool screensIdle;                            // PC asleep/off -> all dark
+static bool forcedOff;                              // `display off` / Discord: dark until on
 
 struct NvsSlot {
   uint8_t val;
@@ -516,7 +517,7 @@ void displaySaveBacklight(int panel, uint8_t pct) {
 
 static void blApply() {
   for (int i = 0; i < N_PANELS; i++) {
-    uint32_t duty = screensIdle ? 0 : (uint32_t)((uint64_t)PWM_MAX * blPct[i] / 100);
+    uint32_t duty = (screensIdle || forcedOff) ? 0 : (uint32_t)((uint64_t)PWM_MAX * blPct[i] / 100);
     pwmWrite(PWM_CH_BL(i), duty);
   }
 }
@@ -547,3 +548,10 @@ void backlightIdle(bool idle) {
 }
 
 bool backlightIsIdle() { return screensIdle; }
+
+void backlightForceOff(bool off) {
+  forcedOff = off;
+  blApply();
+}
+
+bool backlightForcedOff() { return forcedOff; }

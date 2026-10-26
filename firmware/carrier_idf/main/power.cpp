@@ -32,9 +32,10 @@ const char *powerRequest(const char *action) {
   bool isHibernate = !strcmp(action, "hibernate");
   bool isRestart = !strcmp(action, "restart");
   bool isShutdown = !strcmp(action, "shutdown");
+  bool isLock = !strcmp(action, "lock");   // service only: locks the signed-in session
 
-  if (!isSleep && !isHibernate && !isRestart && !isShutdown) {
-    return "unknown action (must be sleep, hibernate, restart, shutdown)";
+  if (!isSleep && !isHibernate && !isRestart && !isShutdown && !isLock) {
+    return "unknown action (must be sleep, hibernate, restart, shutdown, lock)";
   }
 
   if (pcState() != PC_ON && !pcStatsFresh()) {

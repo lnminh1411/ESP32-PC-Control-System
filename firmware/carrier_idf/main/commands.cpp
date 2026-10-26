@@ -2,6 +2,7 @@
 
 #include <ctype.h>
 #include <esp_heap_caps.h>
+#include <esp_system.h>
 #include <mbedtls/base64.h>
 #include <LovyanGFX.hpp>
 #include <math.h>
@@ -217,7 +218,7 @@ static void cmdGoing(const char *a1, const char *) {
 
 static void cmdPower(const char *a1, const char *) {
   if (!a1) {
-    logMsg("power: usage power <sleep|hibernate|restart|shutdown>");
+    logMsg("power: usage power <sleep|hibernate|restart|shutdown|lock>");
     return;
   }
   const char *err = powerRequest(a1);
@@ -393,6 +394,21 @@ static void cmdFace(const char *a1, const char *a2) {
   logMsg("face: usage face <1|2|3> <auto|pc|gif|restart|update|media|weather|ai|localai|clock>");
 }
 
+// The board itself, not the PC (`reset` is the PC's reset line)
+static void cmdReboot(const char *, const char *) {
+  logMsg("reboot: restarting the board");
+  sleepMs(300);   // let the line reach the console and the log
+  esp_restart();
+}
+
+// display <on|off>: all panels dark until turned on again; not saved
+static void cmdDisplay(const char *a1, const char *) {
+  bool on = a1 && !strcmp(a1, "on"), off = a1 && !strcmp(a1, "off");
+  if (!on && !off) { logMsg("display: usage display <on|off> (now %s)", backlightForcedOff() ? "off" : "on"); return; }
+  backlightForceOff(off);
+  logMsg("display: panels %s", off ? "off" : "on");
+}
+
 static void cmdWeather(const char *a1, const char *a2) {
   weatherCommand(a1, a2);
 }
@@ -409,8 +425,10 @@ static const Command COMMANDS[] = {
   {"reset",   "",                                    cmdReset},
   {"wake",    "[force | mac <AA:BB:..>]",            cmdWake},
   {"going",   "<restart|shutdown|update_restart|update_shutdown|sleep|clear>", cmdGoing},
-  {"power",   "<sleep|hibernate|restart|shutdown>",  cmdPower},
+  {"power",   "<sleep|hibernate|restart|shutdown|lock>", cmdPower},
   {"bl",      "<1|2|3|all> <0-100|on|off>",          cmdBacklight},
+  {"display", "<on|off>  (all panels, not saved)",   cmdDisplay},
+  {"reboot",  "  (restart the board)",               cmdReboot},
   {"led",     "<auto|on|off|sweep|0-100>",           cmdLed},
   {"pcsim",   "<on|off|auto>  (test: pretend the PC is on/off)", cmdPcSim},
   {"perf",    "",                                             cmdPerf},
@@ -421,7 +439,7 @@ static const Command COMMANDS[] = {
   {"layout",  "<show|reload|default|begin|data <b64>|end>",  cmdLayout},
   {"face",    "<1|2|3> <auto|pc|gif|restart|update|media|weather|ai|localai|clock>", cmdFace},
   {"shot",    "<1|2|3>  (panel screenshot, base64 on CDC)",   cmdShot},
-  {"weather", "<show|demo [rain|typhoon]|clear|storms>",                    cmdWeather},
+  {"weather", "<show|refresh|demo [rain|typhoon]|clear|storms>",                    cmdWeather},
 };
 
 static void cmdHelp(const char *, const char *) {

@@ -74,6 +74,8 @@ void backlightSet(int panel, uint8_t pct);   // 0-100
 uint8_t backlightPct(int panel);
 void backlightIdle(bool idle);
 bool backlightIsIdle();
+void backlightForceOff(bool off);   // all panels dark until turned back on (not saved)
+bool backlightForcedOff();
 
 // Screen setup persistence (NVS namespace "disp")
 View displayStoredView(int panel);

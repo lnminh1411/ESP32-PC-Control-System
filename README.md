@@ -236,12 +236,12 @@ One per line on the USB CDC console or the CH343 UART:
 | `face <1\|2\|3> <auto\|pc\|gif\|restart\|update\|media\|weather\|ai\|localai\|clock>` | Force one face, for testing and screenshots (not saved) |
 | `shot <1\|2\|3>` | Screenshot of a panel, streamed as base64 on the CDC port |
 | `pcsim <on\|off\|auto>` | Pretend the PC is on or off (LED, faces, backlights), for testing |
-| `door <1-4> [ms]`, `reset` | Press a door button; pulse the motherboard reset |
-| `wake [force \| mac <AA:BB:..>]`, `power <sleep\|hibernate\|restart\|shutdown>` | Wake-on-LAN; power commands over USB |
+| `door <1-4> [ms]`, `reset`, `reboot` | Press a door button; pulse the motherboard reset; restart the board itself |
+| `wake [force \| mac <AA:BB:..>]`, `power <sleep\|hibernate\|restart\|shutdown\|lock>` | Wake-on-LAN; power commands over USB (`lock` locks the signed-in session) |
 | `going <restart\|shutdown\|update_restart\|update_shutdown\|sleep\|clear>` | Tell the board what the PC is about to do |
-| `bl <1\|2\|3\|all> <0-100\|on\|off>`, `led <auto\|on\|off\|sweep\|0-100>` | Backlights; status LED |
+| `bl <1\|2\|3\|all> <0-100\|on\|off>`, `display <on\|off>`, `led <auto\|on\|off\|sweep\|0-100>` | Backlights (saved); all panels dark until `display on` (not saved); status LED |
 | `fps [budget <20-95> \| cap <1\|2\|3> <1-60\|off>]` | SPI budget and per-panel frame caps |
-| `layout <show\|reload\|default\|...>`, `weather <show\|demo [rain\|typhoon]\|clear\|storms\|home <lat>,<lon>>` | Dashboard layouts; weather |
+| `layout <show\|reload\|default\|...>`, `weather <show\|refresh\|demo [rain\|typhoon]\|clear\|storms\|home <lat>,<lon>>` | Dashboard layouts; weather |
 
 ### Build and flash
 
@@ -268,6 +268,18 @@ The Discord bot uses up to four channels, each set by its channel id in
 
 PC and weather posts fall back to `DISCORD_CHANNEL_ID` when their own key is
 empty. Only `DISCORD_OWNER_ID` can use the buttons.
+
+The panel (#control, or `/actions` for one that only you see) has four tabs:
+
+| Tab | Shows | Buttons |
+|---|---|---|
+| Door | Door remote state | Door 1-4 |
+| PC Control | PC state, board Wi-Fi | Wake PC, Lock, Sleep, Hibernate; Restart, Shut down, PC reset (these ask first) |
+| Board | Uptime, Wi-Fi, internal RAM, PSRAM, last restart reason | Restart board (asks first), Refresh weather, Reconnect Discord |
+| Display | Each panel's screen and backlight | A screen picker per panel (not saved, like `face`), Dimmer / Brighter (20 % steps, saved), Displays off / on (not saved), All auto |
+
+Lock needs the PC stats service: the board has no keyboard to send Win+L, so
+the service starts `LockWorkStation` in the signed-in session.
 
 `WAKE_DIM_BACKLIGHTS` (secrets.h, default false) is for motherboards that drag
 the USB 5 V rail down while the PC powers on from shutdown: the board browns

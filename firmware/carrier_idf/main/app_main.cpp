@@ -28,14 +28,19 @@
 
 // Why the board last restarted: in the log, and in #pc-announcement when it
 // was not a normal power-on or a requested restart
+const char *resetReasonText() {
+  esp_reset_reason_t r = esp_reset_reason();
+  return r == ESP_RST_POWERON ? "power-on" : r == ESP_RST_SW ? "restart requested" :
+         r == ESP_RST_PANIC ? "crash" : r == ESP_RST_INT_WDT ? "interrupt watchdog" :
+         r == ESP_RST_TASK_WDT ? "task watchdog" : r == ESP_RST_WDT ? "watchdog" :
+         r == ESP_RST_BROWNOUT ? "brownout (supply voltage dropped)" :
+         r == ESP_RST_USB ? "USB reset" : r == ESP_RST_EXT ? "reset pin" :
+         r == ESP_RST_DEEPSLEEP ? "deep sleep" : "unknown";
+}
+
 static void logResetReason() {
   esp_reset_reason_t r = esp_reset_reason();
-  const char *why = r == ESP_RST_POWERON ? "power-on" : r == ESP_RST_SW ? "restart requested" :
-                    r == ESP_RST_PANIC ? "crash" : r == ESP_RST_INT_WDT ? "interrupt watchdog" :
-                    r == ESP_RST_TASK_WDT ? "task watchdog" : r == ESP_RST_WDT ? "watchdog" :
-                    r == ESP_RST_BROWNOUT ? "brownout (supply voltage dropped)" :
-                    r == ESP_RST_USB ? "USB reset" : r == ESP_RST_EXT ? "reset pin" :
-                    r == ESP_RST_DEEPSLEEP ? "deep sleep" : "unknown";
+  const char *why = resetReasonText();
   logMsg("boot: last reset: %s (%d)", why, (int)r);
   if (r != ESP_RST_POWERON && r != ESP_RST_SW && r != ESP_RST_USB) {
     char msg[80];
