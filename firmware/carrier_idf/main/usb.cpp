@@ -467,6 +467,9 @@ bool usbCdcWriteAll(const char *buf, size_t len) {
 
 void usbCdcWrite(const char *buf, size_t len) {
   if (!s_cdc_connected || !buf || !len || !s_cdc_tx_lock) return;
+  // a log line from inside a locked write (TinyUSB "Flush failed") would
+  // re-take this non-recursive mutex and trip a FreeRTOS assert: drop it
+  if (xSemaphoreGetMutexHolder(s_cdc_tx_lock) == xTaskGetCurrentTaskHandle()) return;
   if (xSemaphoreTake(s_cdc_tx_lock, pdMS_TO_TICKS(2)) != pdTRUE) return;
   size_t queued = tinyusb_cdcacm_write_queue(TINYUSB_CDC_ACM_0, (const uint8_t *)buf, len);
   if (queued > 0) tinyusb_cdcacm_write_flush(TINYUSB_CDC_ACM_0, 0);
