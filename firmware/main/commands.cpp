@@ -28,6 +28,7 @@
 #include "pcstats.h"
 #include "screens.h"
 #include "power.h"
+#include "aictl.h"
 #include "hwctl.h"
 #include "usb.h"
 #include "wol.h"
@@ -426,9 +427,10 @@ static void cmdLayout(const char *a1, const char *a2) {
   layoutCommand(a1, a2);
 }
 
-// `hw` takes the whole rest of the line; commandRun hands it over before
-// strtok splits it, so this only runs for help's sake
+// `hw` and `ai` take the whole rest of the line; commandRun hands it over
+// before strtok splits it, so these only run for help's sake
 static void cmdHw(const char *, const char *) { hwConsole(""); }
+static void cmdAi(const char *, const char *) { aiConsole(""); }
 
 static const Command COMMANDS[] = {
   {"help",    "",                                    cmdHelp},
@@ -443,6 +445,7 @@ static const Command COMMANDS[] = {
   {"display", "<on|off>  (all panels, not saved)",   cmdDisplay},
   {"reboot",  "  (restart the board)",               cmdReboot},
   {"hw",      "<ping | rgb ...>  (PcHwCtl via the PC)",       cmdHw},
+  {"ai",      "<status | model ... | restart <name> | ...>  (LocalAIHost via the PC)", cmdAi},
   {"screenshot", "  (secret PC screenshot to #logging, 5 min)", cmdScreenshot},
   {"led",     "<auto|on|off|sweep|0-100>",           cmdLed},
   {"pcsim",   "<on|off|auto>  (test: pretend the PC is on/off)", cmdPcSim},
@@ -468,6 +471,7 @@ static void cmdHelp(const char *, const char *) {
 void commandRun(char *line) {
   while (*line == ' ' || *line == '\t') line++;
   if (!strncmp(line, "hw", 2) && (!line[2] || line[2] == ' ' || line[2] == '\t')) { hwConsole(line + 2); return; }
+  if (!strncmp(line, "ai", 2) && (!line[2] || line[2] == ' ' || line[2] == '\t')) { aiConsole(line + 2); return; }
   char *cmd = strtok(line, " \t");
   if (!cmd) return;
   char *a1 = strtok(nullptr, " \t"), *a2 = strtok(nullptr, " \t");

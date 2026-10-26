@@ -21,6 +21,7 @@
 #include "board_time.h"
 #include "commands.h"
 #include "config.h"
+#include "aictl.h"
 #include "display.h"
 #include "hwctl.h"
 #include "log.h"
@@ -390,13 +391,16 @@ enum PanelView {
   PANEL_CONFIRM_RESTART,
   PANEL_CONFIRM_SHUTDOWN,
   PANEL_CONFIRM_HIBERNATE,
-  PANEL_CONFIRM_REBOOT
+  PANEL_CONFIRM_REBOOT,
+  PANEL_CONFIRM_AI_FORCE,
+  PANEL_CONFIRM_AI_RELOAD,
+  PANEL_CONFIRM_AI_GATEWAY
 };
 
 // Panel tabs; the #control panel and the /actions panel each remember theirs
-enum PanelCat : uint8_t { CAT_DOOR, CAT_PC, CAT_RGB, CAT_BOARD, CAT_DISPLAY, CAT_COUNT };
-static const char *const CAT_LABEL[CAT_COUNT] = {"Door", "PC Control", "PC Case RGB LEDs", "Board", "Display"};
-static const char *const CAT_ID[CAT_COUNT] = {"tab_door", "tab_pc", "tab_rgb", "tab_board", "tab_display"};
+enum PanelCat : uint8_t { CAT_DOOR, CAT_PC, CAT_RGB, CAT_FAN, CAT_AI, CAT_BOARD, CAT_DISPLAY, CAT_COUNT };
+static const char *const CAT_LABEL[CAT_COUNT] = {"Door", "PC Control", "PC Case RGB LEDs", "PC Case Fan Control", "Local Agent Control", "Board", "Display"};
+static const char *const CAT_ID[CAT_COUNT] = {"tab_door", "tab_pc", "tab_rgb", "tab_fan", "tab_ai", "tab_board", "tab_display"};
 static uint8_t catStanding = CAT_PC, catEphemeral = CAT_PC;
 static uint8_t &panelCat(bool standing) { return standing ? catStanding : catEphemeral; }
 
@@ -571,6 +575,137 @@ static void rgbAwaitState(const char *g, const char *mode, const RgbSnap &before
   while (!rgbShows(g, mode, before, bright) && (uint32_t)(nowMs() - t0) < 4000) vTaskDelay(pdMS_TO_TICKS(100));
 }
 
+// Local Agent Control tab (LocalAIHost via the PC, aictl.h). The service's
+// status, squeezed by the PC into "model=asleep ctx=- want=128k idle=20
+// keep=on busy=0 down=none last=-", is fetched when the tab opens, on Refresh
+// and after each action; live model state comes from the hub's ai.* keys.
+static char aiStatus[121] = "";          // last status words, "" = unknown
+static char aiStatusErr[64] = "";        // why the last status failed
+static int aiIdleOn = 20;                // auto-unload minutes to restore after "off"
+
+static void aiRefreshStatus() {
+  char out[121];
+  if (aiRun("status", 8000, out, sizeof out)) {
+    snprintf(aiStatus, sizeof aiStatus, "%s", out[2] == ' ' ? out + 3 : "");
+    aiStatusErr[0] = 0;
+  } else {
+    aiStatus[0] = 0;
+    snprintf(aiStatusErr, sizeof aiStatusErr, "%.60s", !strncmp(out, "err ", 4) ? out + 4 : out);
+  }
+}
+
+// One word of aiStatus ("idle" -> "20"); "" when missing
+static const char *aiField(const char *key, char *buf, size_t size) {
+  buf[0] = 0;
+  size_t kl = strlen(key);
+  for (const char *p = aiStatus; *p;) {
+    while (*p == ' ') p++;
+    const char *e = strchr(p, ' ');
+    size_t wl = e ? (size_t)(e - p) : strlen(p);
+    if (wl > kl && !strncmp(p, key, kl) && p[kl] == '=') {
+      size_t vl = wl - kl - 1;
+      if (vl >= size) vl = size - 1;
+      memcpy(buf, p + kl + 1, vl);
+      buf[vl] = 0;
+      return buf;
+    }
+    p += wl;
+  }
+  return buf;
+}
+
+static void addAiRows(cJSON *comps, cJSON *r) {
+  char idle[8], keep[8], want[8];
+  aiField("idle", idle, sizeof idle);
+  aiField("keep", keep, sizeof keep);
+  aiField("want", want, sizeof want);
+  if (atoi(idle) > 0) aiIdleOn = atoi(idle);
+
+  addButton(r, "Load", "ai_load", 3);
+  addButton(r, "Unload", "ai_unload", 2);
+  addButton(r, "Force unload", "ai_force", 4);
+  addButton(r, "Reload", "ai_reload", 4);
+  addButton(r, "Warm cache", "ai_warm", 2);
+
+  r = addRow(comps);
+  addButton(r, "Ctx 128K", "ai_ctx_default", !strcmp(want, "128k") ? 1 : 2);
+  addButton(r, "Ctx 256K", "ai_ctx_heavy", !strcmp(want, "256k") ? 1 : 2);
+  char label[40];
+  if (!idle[0] || !strcmp(idle, "-")) snprintf(label, sizeof label, "Auto-unload: ?");
+  else if (atoi(idle) == 0) snprintf(label, sizeof label, "Auto-unload: off");
+  else snprintf(label, sizeof label, "Auto-unload: %s min", idle);
+  addButton(r, label, "ai_idle", 2);
+  snprintf(label, sizeof label, "Keep awake: %s", keep[0] && strcmp(keep, "-") ? keep : "?");
+  addButton(r, label, "ai_keep", 2);
+
+  r = addRow(comps);
+  addButton(r, "Restart gateway", "ai_gw", 4);
+  addButton(r, "Restart Web UI", "ai_webui", 2);
+  addButton(r, "Restart proxy", "ai_proxy", 2);
+  addButton(r, "Guard check", "ai_guard", 2);
+}
+
+// Fan tab (PcHwCtl via the PC, same relay as RGB). A speed pick is an
+// override for the chosen hold time (PcHwCtl needs a ttl for fans, max 1 h);
+// each fan's floorPct still wins (CPU 50 %, pump 100 %). Auto drops the
+// override and any curve switch. Fan keys and curve names are PcHwCtl's
+// config (C:\ProgramData\PcHwCtl\pchwctl.json).
+static const RgbOpt FAN_TARGETS[] = {
+  {"all", "All fans"}, {"cpu-fans", "CPU fans"}, {"rear-fan", "Rear fan"}, {"front-fans", "Front fans"}};
+static const RgbOpt FAN_SHOWN[] = {   // embed rows: state.txt keys use _ for -
+  {"cpu_fans", "CPU fans"}, {"rear_fan", "Rear fan"}, {"front_fans", "Front fans"}, {"water_pump", "Water pump"}};
+static const RgbOpt FAN_SPEEDS[] = {{"20", "Speed 20 %"}, {"30", "Speed 30 %"}, {"40", "Speed 40 %"}, {"50", "Speed 50 %"},
+  {"60", "Speed 60 %"}, {"70", "Speed 70 %"}, {"80", "Speed 80 %"}, {"90", "Speed 90 %"}, {"100", "Speed 100 %"}};
+static const RgbOpt FAN_CURVES[] = {{"graph", "Curve: graph"}, {"flat", "Curve: flat"}, {"auto", "Curve: auto"}};
+static const int FAN_HOLD_MIN[] = {5, 15, 60};
+static uint8_t fanTarget = 0;            // index into FAN_TARGETS
+static uint8_t fanHold = 1;              // index into FAN_HOLD_MIN
+
+static void addFanRows(cJSON *comps) {
+  cJSON *sel = cJSON_CreateObject();
+  cJSON_AddNumberToObject(sel, "type", 3);
+  cJSON_AddStringToObject(sel, "custom_id", "fan_target");
+  cJSON *arr = cJSON_AddArrayToObject(sel, "options");
+  for (int i = 0; i < RGB_N(FAN_TARGETS); i++) {
+    cJSON *op = cJSON_CreateObject();
+    char label[40];
+    snprintf(label, sizeof label, "Target: %s", FAN_TARGETS[i].label);
+    cJSON_AddStringToObject(op, "label", label);
+    cJSON_AddStringToObject(op, "value", FAN_TARGETS[i].value);
+    if (i == fanTarget) cJSON_AddBoolToObject(op, "default", true);
+    cJSON_AddItemToArray(arr, op);
+  }
+  cJSON_AddItemToArray(addRow(comps), sel);
+
+  char ph[64];
+  snprintf(ph, sizeof ph, "Speed for %s (hold %d min)", FAN_TARGETS[fanTarget].label, FAN_HOLD_MIN[fanHold]);
+  addRgbSelect(comps, "fan_pct", ph, FAN_SPEEDS, RGB_N(FAN_SPEEDS));
+  snprintf(ph, sizeof ph, "Curve for %s", FAN_TARGETS[fanTarget].label);
+  addRgbSelect(comps, "fan_curve", ph, FAN_CURVES, RGB_N(FAN_CURVES));
+}
+
+// Waits (max 3 s) until a fan's % moves: overrides ramp in 8 % steps per tick
+// and reach the board through state.txt 1-3 s later
+struct FanSnap { float pct[RGB_N(FAN_SHOWN)]; };
+static void fanSnap(FanSnap &f) {
+  for (int i = 0; i < RGB_N(FAN_SHOWN); i++) {
+    char k[32];
+    snprintf(k, sizeof k, "hw.%s.pct", FAN_SHOWN[i].value);
+    f.pct[i] = pcStat(k);
+  }
+}
+
+static void fanAwaitChange(const FanSnap &before) {
+  uint32_t t0 = nowMs();
+  while ((uint32_t)(nowMs() - t0) < 3000) {
+    FanSnap now;
+    fanSnap(now);
+    for (int i = 0; i < RGB_N(FAN_SHOWN); i++)
+      if (!isnan(now.pct[i]) && now.pct[i] != before.pct[i]) return;
+    vTaskDelay(pdMS_TO_TICKS(100));
+  }
+}
+
 static void addField(cJSON *fields, const char *name, const char *value) {
   cJSON *f = cJSON_CreateObject();
   cJSON_AddStringToObject(f, "name", name);
@@ -608,6 +743,61 @@ static void buildEmbed(cJSON *embed, const char *footerText, bool standing) {
     else snprintf(v, sizeof v, "%d %%", (int)lroundf(b));
     addField(fields, "Brightness", v);
     addField(fields, "Panel targets", RGB_GROUPS[rgbGroup].label);
+  } else if (cat == CAT_FAN) {
+    addField(fields, "PcHwCtl", pcStat("hw.ok") >= 1 ? "state feed live" : "no state (not running?)");
+    for (const RgbOpt &f : FAN_SHOWN) {
+      char k[32];
+      snprintf(k, sizeof k, "hw.%s.pct", f.value);
+      float pct = pcStat(k);
+      snprintf(k, sizeof k, "hw.%s.rpm", f.value);
+      float rpm = pcStat(k);
+      snprintf(k, sizeof k, "hw.%s.temp", f.value);
+      float temp = pcStat(k);
+      snprintf(k, sizeof k, "hw.%s.ovr", f.value);
+      bool ovr = pcStat(k) >= 1;   // a speed override from here or another client
+      if (isnan(pct)) snprintf(v, sizeof v, "?");
+      else snprintf(v, sizeof v, "%.0f %%%s, %.0f rpm, %.0f C", pct, ovr ? " (held)" : "", isnan(rpm) ? 0.0f : rpm, isnan(temp) ? 0.0f : temp);
+      addField(fields, f.label, v);
+    }
+    float mix = pcStat("hw.mix");
+    if (!isnan(mix)) { snprintf(v, sizeof v, "%.0f C", mix); addField(fields, "Mix temp", v); }
+    snprintf(v, sizeof v, "%s, hold %d min", FAN_TARGETS[fanTarget].label, FAN_HOLD_MIN[fanHold]);
+    addField(fields, "Panel targets", v);
+  } else if (cat == CAT_AI) {
+    char w1[32], w2[32];
+    const char *model = pcText("ai.model_name");
+    if (!*model) model = aiField("model", w1, sizeof w1);
+    addField(fields, "Model", *model ? model : "?");
+    const char *phase = pcText("ai.phase_name");
+    addField(fields, "Phase", *phase ? phase : "?");
+    aiField("ctx", w1, sizeof w1);
+    aiField("want", w2, sizeof w2);
+    if (!w2[0]) snprintf(v, sizeof v, "?");
+    else if (!strcmp(w1, "-")) snprintf(v, sizeof v, "next load %s", w2);
+    else snprintf(v, sizeof v, "%.12s (next load %.12s)", w1, w2);
+    addField(fields, "Context", v);
+    aiField("idle", w1, sizeof w1);
+    double unloadIn = pcStat("ai.unload_in_s");
+    if (!w1[0] || !strcmp(w1, "-")) snprintf(v, sizeof v, "?");
+    else if (atoi(w1) == 0) snprintf(v, sizeof v, "off");
+    else if (!isnan(unloadIn) && unloadIn > 0)
+      snprintf(v, sizeof v, "after %s min (in %d:%02d)", w1, (int)unloadIn / 60, (int)unloadIn % 60);
+    else snprintf(v, sizeof v, "after %s min idle", w1);
+    addField(fields, "Auto-unload", v);
+    addField(fields, "Keep awake", aiField("keep", w1, sizeof w1)[0] ? w1 : "?");
+    aiField("down", w1, sizeof w1);
+    if (!aiStatus[0]) snprintf(v, sizeof v, "unknown: %.50s", aiStatusErr[0] ? aiStatusErr : "no status yet");
+    else if (!strcmp(w1, "none")) snprintf(v, sizeof v, "all running");
+    else snprintf(v, sizeof v, "down: %s", w1);
+    addField(fields, "Services", v);
+    aiField("last", w1, sizeof w1);
+    if (w1[0] && strcmp(w1, "-")) addField(fields, "Last action", w1);
+    double vram = pcStat("ai.vram_mb"), temp = pcStat("ai.gpu_temp");
+    if (!isnan(vram)) {
+      if (!isnan(temp)) snprintf(v, sizeof v, "%.0f MB, %.0f C", vram, temp);
+      else snprintf(v, sizeof v, "%.0f MB", vram);
+      addField(fields, "VRAM", v);
+    }
   } else if (cat == CAT_BOARD) {
     uint32_t s = nowMs() / 1000;
     snprintf(v, sizeof v, "%lu:%02lu:%02lu", (unsigned long)(s / 3600), (unsigned long)((s / 60) % 60), (unsigned long)(s % 60));
@@ -653,6 +843,9 @@ static void buildComponents(cJSON *data, PanelView view, bool standing) {
     case PANEL_CONFIRM_SHUTDOWN: confirmRow(comps, "Yes, shut down", "shutdown_confirm", 4); return;
     case PANEL_CONFIRM_HIBERNATE: confirmRow(comps, "Yes, hibernate", "hibernate_confirm", 2); return;
     case PANEL_CONFIRM_REBOOT: confirmRow(comps, "Yes, restart the board", "reboot_confirm", 4); return;
+    case PANEL_CONFIRM_AI_FORCE: confirmRow(comps, "Yes, force unload", "ai_force_confirm", 4); return;
+    case PANEL_CONFIRM_AI_RELOAD: confirmRow(comps, "Yes, reload", "ai_reload_confirm", 4); return;
+    case PANEL_CONFIRM_AI_GATEWAY: confirmRow(comps, "Yes, restart the gateway", "ai_gw_confirm", 4); return;
     case PANEL_NORMAL: break;
   }
 
@@ -700,6 +893,19 @@ static void buildComponents(cJSON *data, PanelView view, bool standing) {
       snprintf(bid, sizeof bid, "rgbg_%s", RGB_GROUPS[i].value);
       addButton(r, RGB_GROUPS[i].label, bid, i == rgbGroup ? 1 : 2);
     }
+  } else if (cat == CAT_FAN) {
+    // 5 rows: tabs, target, speed, curve, then Hold/Auto + Refresh/Close
+    cJSON_DeleteItemFromArray(comps, cJSON_GetArraySize(comps) - 1);
+    addFanRows(comps);
+    r = addRow(comps);
+    char label[24];
+    snprintf(label, sizeof label, "Hold: %d min", FAN_HOLD_MIN[fanHold]);
+    addButton(r, label, "fan_hold", 2);
+    addButton(r, "Auto (release)", "fan_release", 1);
+  } else if (cat == CAT_AI) {
+    // 5 rows: tabs, model, context/idle, services, Refresh/Close
+    addAiRows(comps, r);
+    r = addRow(comps);
   } else if (cat == CAT_BOARD) {
     addButton(r, "Restart board", "reboot", 4);
     addButton(r, "Refresh weather", "wx_refresh", 2);
@@ -838,6 +1044,102 @@ static void replyEphemeralText(const char *id, const char *token, const char *te
   free(body);
 }
 
+// One LocalAIHost command from a tab button; the footer gets its answer
+static void aiAction(const char *cmd, const char *what) {
+  char reply[121];
+  bool ok = aiRun(cmd, 12000, reply, sizeof reply);
+  if (ok) snprintf(lastPanelResult, sizeof lastPanelResult, "%.80s%s", what, strstr(reply, "started") ? " (started)" : "");
+  else snprintf(lastPanelResult, sizeof lastPanelResult, "%.50s failed: %.60s", what, !strncmp(reply, "err ", 4) ? reply + 4 : reply);
+  logMsg("discord: ai %s -> %s", cmd, reply);
+}
+
+// Local Agent Control buttons; true when cid was one of them
+static bool aiButton(const char *cid, const char *id, const char *token, bool standing) {
+  if (strncmp(cid, "ai_", 3)) return false;
+  struct Confirm { const char *cid; PanelView view; const char *ask; };
+  static const Confirm CONFIRMS[] = {
+    {"ai_force", PANEL_CONFIRM_AI_FORCE, "Force unload the model? A running request is cut off."},
+    {"ai_reload", PANEL_CONFIRM_AI_RELOAD, "Reload the model? A running request is cut off."},
+    {"ai_gw", PANEL_CONFIRM_AI_GATEWAY, "Restart the OpenClaw gateway? It kills an active run."}};
+  for (const Confirm &c : CONFIRMS)
+    if (!strcmp(cid, c.cid)) { sendPanelResponse(id, token, 7, standing, c.view, c.ask); return true; }
+
+  struct Act { const char *cid, *cmd, *what; };
+  static const Act ACTS[] = {
+    {"ai_load", "model load", "Model load"},
+    {"ai_unload", "model unload", "Model unload"},
+    {"ai_force_confirm", "model unload force", "Model force unload"},
+    {"ai_reload_confirm", "model reload", "Model reload"},
+    {"ai_warm", "gateway warm", "Gateway cache warm-up"},
+    {"ai_ctx_default", "model ctx default", "Context 128K"},
+    {"ai_ctx_heavy", "model ctx heavy", "Context 256K"},
+    {"ai_gw_confirm", "restart gateway", "Gateway restart"},
+    {"ai_webui", "restart webui", "Web UI restart"},
+    {"ai_proxy", "restart wake-proxy", "Wake proxy restart"},
+    {"ai_guard", "guard check", "Guard check"}};
+  char cmd[40], what[48], w[8];
+  cmd[0] = 0;
+  for (const Act &a : ACTS)
+    if (!strcmp(cid, a.cid)) { snprintf(cmd, sizeof cmd, "%s", a.cmd); snprintf(what, sizeof what, "%s", a.what); }
+  if (!strcmp(cid, "ai_idle")) {
+    bool off = atoi(aiField("idle", w, sizeof w)) == 0 && w[0] && strcmp(w, "-");
+    if (off) snprintf(cmd, sizeof cmd, "model idle %d", aiIdleOn);
+    else snprintf(cmd, sizeof cmd, "model idle 0");
+    if (off) snprintf(what, sizeof what, "Auto-unload after %d min", aiIdleOn);
+    else snprintf(what, sizeof what, "Auto-unload off");
+  } else if (!strcmp(cid, "ai_keep")) {
+    bool on = !strcmp(aiField("keep", w, sizeof w), "on");
+    snprintf(cmd, sizeof cmd, "model keepawake %s", on ? "off" : "on");
+    snprintf(what, sizeof what, "Keep awake %s", on ? "off" : "on");
+  }
+  if (!cmd[0]) {
+    snprintf(lastPanelResult, sizeof lastPanelResult, "Unknown button");
+  } else {
+    aiAction(cmd, what);
+    aiRefreshStatus();
+  }
+  sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
+  return true;
+}
+
+// Fan tab selects and buttons; true when cid was one of them
+static bool fanInteraction(const char *cid, cJSON *jVal, const char *id, const char *token, bool standing) {
+  if (strncmp(cid, "fan_", 4)) return false;
+  const char *val = jVal && cJSON_IsString(jVal) ? jVal->valuestring : "";
+  const char *f = FAN_TARGETS[fanTarget].value, *label = FAN_TARGETS[fanTarget].label;
+  char cmd[64] = "", what[64];
+  if (!strcmp(cid, "fan_target")) {
+    for (int i = 0; i < RGB_N(FAN_TARGETS); i++)
+      if (!strcmp(val, FAN_TARGETS[i].value)) fanTarget = (uint8_t)i;
+    snprintf(lastPanelResult, sizeof lastPanelResult, "Fan picks now go to %s", FAN_TARGETS[fanTarget].label);
+  } else if (!strcmp(cid, "fan_hold")) {
+    fanHold = (uint8_t)((fanHold + 1) % RGB_N(FAN_HOLD_MIN));
+    snprintf(lastPanelResult, sizeof lastPanelResult, "Speed picks now hold %d min", FAN_HOLD_MIN[fanHold]);
+  } else if (!strcmp(cid, "fan_pct")) {
+    int pct = atoi(val);
+    if (pct < 20) pct = 20;
+    if (pct > 100) pct = 100;
+    snprintf(cmd, sizeof cmd, "fan set %s %d %d", f, pct, FAN_HOLD_MIN[fanHold] * 60);
+    snprintf(what, sizeof what, "%s: %d %% for %d min", label, pct, FAN_HOLD_MIN[fanHold]);
+  } else if (!strcmp(cid, "fan_curve")) {
+    for (const RgbOpt &c : FAN_CURVES)
+      if (!strcmp(val, c.value)) {
+        snprintf(cmd, sizeof cmd, "fan curve %s %s", f, c.value);
+        snprintf(what, sizeof what, "%s: curve %s", label, c.value);
+      }
+  } else if (!strcmp(cid, "fan_release")) {
+    snprintf(cmd, sizeof cmd, "fan release %s", f);
+    snprintf(what, sizeof what, "%s back to PcHwCtl curves", label);
+  }
+  if (cmd[0]) {
+    FanSnap before;
+    fanSnap(before);
+    if (rgbCommand(cmd, what)) fanAwaitChange(before);
+  }
+  sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
+  return true;
+}
+
 static void onInteraction(cJSON *d) {
   cJSON *jId = cJSON_GetObjectItem(d, "id");
   cJSON *jToken = cJSON_GetObjectItem(d, "token");
@@ -949,6 +1251,7 @@ static void onInteraction(cJSON *d) {
       sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
       return;
     }
+    if (fanInteraction(cid, jVal, id, token, standing)) return;
     if (jVal && cJSON_IsString(jVal) && !strncmp(cid, "rgb_", 4)) {
       // RGB tab picks: PcHwCtl answers within ~3 s (Discord already acked)
       const char *val = jVal->valuestring, *g = RGB_GROUPS[rgbGroup].value;
@@ -996,17 +1299,21 @@ static void onInteraction(cJSON *d) {
       if (!strcmp(jVal->valuestring, CAT_ID[i])) {
         panelCat(standing) = (uint8_t)i;
         lastPanelResult[0] = 0;
+        if (i == CAT_AI) aiRefreshStatus();
         sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, nullptr);
         return;
       }
     }
 
-    if (!strncmp(cid, "rgbg_", 5)) {
+    if (aiButton(cid, id, token, standing)) {
+      // handled
+    } else if (!strncmp(cid, "rgbg_", 5)) {
       for (int i = 0; i < RGB_N(RGB_GROUPS); i++)
         if (!strcmp(cid + 5, RGB_GROUPS[i].value)) rgbGroup = (uint8_t)i;
       snprintf(lastPanelResult, sizeof lastPanelResult, "RGB picks now go to %s", RGB_GROUPS[rgbGroup].label);
       sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
     } else if (!strcmp(cid, "refresh")) {
+      if (panelCat(standing) == CAT_AI) aiRefreshStatus();
       snprintf(lastPanelResult, sizeof lastPanelResult, "Refreshed");
       sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, "Refreshed");
     } else if (!strcmp(cid, "lock")) {

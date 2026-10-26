@@ -533,6 +533,8 @@ class PcStats : ServiceBase {
       HandleShotLine(line);
     } else if (line.StartsWith("!hw", StringComparison.OrdinalIgnoreCase)) {
       HandleHwLine(line);
+    } else if (line.StartsWith("!ai", StringComparison.OrdinalIgnoreCase)) {
+      HandleAiLine(line);
     } else {
       Log("board: unrecognized line '" + line + "'");
     }
@@ -562,8 +564,8 @@ class PcStats : ServiceBase {
 
   // ---- PC hardware control (PcHwCtl) ----
   // The board's `!hw <id> <command>` goes to PcHwCtl's named pipe (the fan and
-  // RGB service in E:\PC Hardware Controller, docs/ipc.md). Only rgb commands
-  // and ping pass. The answer goes back as the text stat
+  // RGB service in E:\PC Hardware Controller, docs/ipc.md). Only rgb and fan
+  // commands and ping pass. The answer goes back as the text stat
   // hw.reply = "<id> ok" or "<id> err <message>", repeated each tick for 30 s.
   static readonly Regex HwCmdRegex = new Regex(@"^!hw\s+([0-9a-fA-F]{1,8})\s+(.+)$");
   static readonly object hwLock = new object();
@@ -577,9 +579,12 @@ class PcStats : ServiceBase {
     string id = m.Groups[1].Value.ToLowerInvariant();
     string command = m.Groups[2].Value.Trim();
     string lower = command.ToLowerInvariant();
-    if (lower != "ping" && !lower.StartsWith("rgb ")) {
-      SetHwReply(id, "err only rgb commands are allowed");
-      Log("hw: #" + id + " refused (not an rgb command)");
+    // fan set/curve/release only: PcHwCtl keeps each fan's floorPct and caps a
+    // fan override at its ipc.maxTtlS, so nothing from here sticks forever
+    bool fan = lower.StartsWith("fan set ") || lower.StartsWith("fan curve ") || lower.StartsWith("fan release ");
+    if (lower != "ping" && !lower.StartsWith("rgb ") && !fan) {
+      SetHwReply(id, "err only rgb and fan commands are allowed");
+      Log("hw: #" + id + " refused (not an rgb or fan command)");
       return;
     }
     if (Interlocked.CompareExchange(ref hwBusy, 1, 0) != 0) {
@@ -605,29 +610,146 @@ class PcStats : ServiceBase {
     sendNow.Set();   // answer on the next tick, not the one after
   }
 
-  // One request, one JSON line back: {"ok":true,...} or {"ok":false,"error":"..."}
   static string SendToPcHwCtl(string command) {
+    Dictionary<string, object> data;
+    return PipeRequest("PcHwCtl", command, 2000, out data);
+  }
+
+  // One request, one JSON line back: {"ok":true,"data":...} or {"ok":false,"error":"..."}.
+  // Returns "ok" (data set) or "err <why>".
+  static string PipeRequest(string pipeName, string command, int readTimeoutMs, out Dictionary<string, object> data) {
+    data = null;
     try {
-      using (var pipe = new NamedPipeClientStream(".", "PcHwCtl", PipeDirection.InOut)) {
+      using (var pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut)) {
         pipe.Connect(1000);
         var w = new StreamWriter(pipe, Utf8NoBom) { AutoFlush = true, NewLine = "\n" };
         var r = new StreamReader(pipe, Utf8NoBom);
         w.WriteLine(command);
         var read = r.ReadLineAsync();
-        if (!read.Wait(2000)) return "err PcHwCtl did not answer";
+        if (!read.Wait(readTimeoutMs)) return "err " + pipeName + " did not answer";
         string json = read.Result;
-        if (json == null) return "err PcHwCtl closed the pipe";
+        if (json == null) return "err " + pipeName + " closed the pipe";
         Dictionary<string, object> o = Json.ParseObject(json);
-        object ok, err;
-        if (o != null && o.TryGetValue("ok", out ok) && ok is bool && (bool)ok) return "ok";
+        object ok, err, d;
+        if (o != null && o.TryGetValue("ok", out ok) && ok is bool && (bool)ok) {
+          if (o.TryGetValue("data", out d)) data = d as Dictionary<string, object>;
+          return "ok";
+        }
         if (o != null && o.TryGetValue("error", out err) && err != null) return "err " + Convert.ToString(err, CultureInfo.InvariantCulture);
         return "err unexpected answer";
       }
     } catch (System.TimeoutException) {
-      return "err PcHwCtl not running";
+      return "err " + pipeName + " not running";
     } catch (Exception ex) {
       return "err " + ex.GetType().Name;
     }
+  }
+
+  // ---- Local AI stack control (LocalAIHost) ----
+  // The board's `!ai <id> <command>` goes to the LocalAIHost service's pipe
+  // (E:\Local LLM\Service, Project_Note.md): model load/unload/ctx/idle,
+  // restarts of the stack's children. The answer comes back as the text stat
+  // aictl.reply = "<id> ok[ <info>]" or "<id> err <message>", 30 s like hw.reply
+  // (ai.* belongs to the status hub's @source ai). `status` is squeezed into
+  // key=value words for the Discord tab.
+  static readonly Regex AiCmdRegex = new Regex(@"^!ai\s+([0-9a-fA-F]{1,8})\s+(.+)$");
+  static readonly string[] AiAllowed = { "ping", "status", "model", "restart", "stop", "start", "gateway", "guard" };
+  static readonly object aiLock = new object();
+  static string aiReply;
+  static DateTime aiReplyExpiresUtc;
+  static readonly object aiPipeLock = new object();   // one LocalAIHost request at a time
+  static int aiQueued;
+
+  static void HandleAiLine(string line) {
+    Match m = AiCmdRegex.Match(line.Trim());
+    if (!m.Success) { Log("ai: unrecognized command"); return; }
+    string id = m.Groups[1].Value.ToLowerInvariant();
+    string command = m.Groups[2].Value.Trim();
+    string verb = command.Split(' ')[0].ToLowerInvariant();
+    if (Array.IndexOf(AiAllowed, verb) < 0) {
+      SetAiReply(id, "err not allowed: " + verb);
+      Log("ai: #" + id + " refused (" + verb + ")");
+      return;
+    }
+    // queued, not refused: the Discord tab asks for status right after each
+    // action, and the console or a second panel may ask at the same time
+    if (Interlocked.Increment(ref aiQueued) > 4) {
+      Interlocked.Decrement(ref aiQueued);
+      SetAiReply(id, "err busy");
+      return;
+    }
+    ThreadPool.QueueUserWorkItem(delegate(object o) {
+      try {
+        lock (aiPipeLock) {
+          Dictionary<string, object> data;
+          // 20 s: a forced unload can take ~8 s, status ~2 s with the model asleep
+          string reply = PipeRequest("LocalAIHost", command, 20000, out data);
+          if (reply == "ok") {
+            if (verb == "status") reply = "ok " + AiStatusLine(data);
+            else if (data != null && data.ContainsKey("started")) reply = "ok started";
+          }
+          SetAiReply(id, reply);
+          if (verb != "status") Log("ai: #" + id + " " + command + " -> " + reply);
+        }
+      } finally {
+        Interlocked.Decrement(ref aiQueued);
+      }
+    });
+  }
+
+  static void SetAiReply(string id, string reply) {
+    lock (aiLock) {
+      aiReply = TruncateUtf8(id + " " + reply, 120);
+      aiReplyExpiresUtc = DateTime.UtcNow.AddSeconds(30);
+    }
+    sendNow.Set();
+  }
+
+  // "model=asleep ctx=- want=128k idle=20 keep=on busy=0 down=none last=load:ok"
+  static string AiStatusLine(Dictionary<string, object> d) {
+    if (d == null) return "";
+    var sb = new StringBuilder();
+    Dictionary<string, object> model = GetDict(d, "model");
+    sb.Append("model=").Append(Word(model, "state"));
+    sb.Append(" ctx=").Append(CtxWord(model, "ctx"));
+    sb.Append(" want=").Append(CtxWord(model, "desired_ctx"));
+    object idle = model != null && model.ContainsKey("idle_minutes") ? model["idle_minutes"] : null;
+    sb.Append(" idle=").Append(idle == null ? "-" : Convert.ToDouble(idle, CultureInfo.InvariantCulture).ToString("0", CultureInfo.InvariantCulture));
+    object keep = model != null && model.ContainsKey("keep_awake") ? model["keep_awake"] : null;
+    sb.Append(" keep=").Append(keep is bool ? ((bool)keep ? "on" : "off") : "-");
+    object busy = d.ContainsKey("busy") ? d["busy"] : null;
+    sb.Append(" busy=").Append(busy is bool && (bool)busy ? "1" : "0");
+    var down = new List<string>();
+    Dictionary<string, object> children = GetDict(d, "children");
+    if (children != null) {
+      foreach (KeyValuePair<string, object> kv in children) {
+        string st = Word(kv.Value as Dictionary<string, object>, "state");
+        if (st != "running" && st != "external") down.Add(kv.Key + ":" + st);
+      }
+    }
+    sb.Append(" down=").Append(down.Count == 0 ? "none" : string.Join(",", down));
+    Dictionary<string, object> last = GetDict(d, "last");
+    sb.Append(" last=").Append(last == null ? "-" : Word(last, "action").Replace(' ', '_') + ":" + Word(last, "result").Replace(' ', '_'));
+    return sb.ToString();
+  }
+
+  static Dictionary<string, object> GetDict(Dictionary<string, object> d, string key) {
+    object v;
+    return d != null && d.TryGetValue(key, out v) ? v as Dictionary<string, object> : null;
+  }
+
+  static string Word(Dictionary<string, object> d, string key) {
+    object v;
+    if (d == null || !d.TryGetValue(key, out v) || v == null) return "-";
+    string s = Convert.ToString(v, CultureInfo.InvariantCulture);
+    return s.Length > 24 ? s.Substring(0, 24) : s;
+  }
+
+  static string CtxWord(Dictionary<string, object> d, string key) {
+    object v;
+    if (d == null || !d.TryGetValue(key, out v) || v == null) return "-";
+    double n = Convert.ToDouble(v, CultureInfo.InvariantCulture);
+    return (n / 1024).ToString("0", CultureInfo.InvariantCulture) + "k";
   }
 
   // ---- User-session half ----
@@ -2262,6 +2384,13 @@ class PcStats : ServiceBase {
     if (args.Length == 3 && args[0] == "--user") { RunSta(delegate() { AgyQuota.RunUser(args[1], args[2]); }); return; }
     if (args.Length == 1 && args[0] == "--agy-once") { RunSta(AgyQuota.RunOnceTest); return; }
     if (args.Length == 1 && args[0] == "--media") { RunSta(AgyQuota.RunMediaTest); return; }
+    if (args.Length == 1 && args[0] == "--agy-usage") {
+      AgyUsage.Window w, f;
+      bool ok = AgyUsage.Read(out w, out f);
+      Console.WriteLine(AgyUsage.LastText ?? "(no panel text)");
+      Console.WriteLine("parsed: " + ok + ", weekly " + w.Pct + "% reset " + w.ResetUtc + ", 5h " + f.Pct + "% reset " + f.ResetUtc);
+      return;
+    }
     for (int i = 0; i < args.Length; i++) {
       if (args[i] == "--console") consoleMode = true;
       else if (args[i] == "--no-user") noUserHalf = true;
@@ -3799,6 +3928,12 @@ class PcStats : ServiceBase {
           if (hwReply != null) {
             if (DateTime.UtcNow < hwReplyExpiresUtc) texts.Add(new KeyValuePair<string, string>("hw.reply", hwReply));
             else hwReply = null;
+          }
+        }
+        lock (aiLock) {
+          if (aiReply != null) {
+            if (DateTime.UtcNow < aiReplyExpiresUtc) texts.Add(new KeyValuePair<string, string>("aictl.reply", aiReply));
+            else aiReply = null;
           }
         }
 
