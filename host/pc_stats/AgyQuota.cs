@@ -261,6 +261,8 @@ static class AgyQuota {
   static string memToken, memTokenFor;     // access token renewed here, never written anywhere
   static DateTime memTokenUntil;
   static string[] agyClient;               // {id, secret} read from agy.exe, kept out of the repo
+  static List<string[]> agyCandidates;    // every {id, secret} pair in agy.exe, scanned once
+  static string refreshErrLogged;         // last refresh failure logged (once per kind)
   static bool cloudErrLogged;
   static AgyUsage.Window usageWeek, usageFive;   // from agy's /usage panel
   static DateTime lastUsageUtc = DateTime.MinValue;
@@ -311,9 +313,14 @@ static class AgyQuota {
   }
 
   // Google does not rotate the refresh token here, so agy's stored login
-  // stays valid and untouched
+  // stays valid and untouched. The pair that worked last goes first, then the
+  // rest: after an account switch the new login can belong to another client.
   static string RefreshAgyToken(string refreshToken) {
-    List<string[]> tries = agyClient != null ? new List<string[]> { agyClient } : AgyClientCandidates();
+    if (agyCandidates == null) agyCandidates = AgyClientCandidates();
+    List<string[]> tries = new List<string[]>();
+    if (agyClient != null) tries.Add(agyClient);
+    foreach (string[] c in agyCandidates) if (c != agyClient) tries.Add(c);
+    string lastErr = "no OAuth client found in agy.exe";
     foreach (string[] c in tries) {
       try {
         ServicePointManager.SecurityProtocol |= (SecurityProtocolType)3072;
@@ -331,11 +338,18 @@ static class AgyQuota {
         Dictionary<string, object> r = new JavaScriptSerializer().DeserializeObject(body) as Dictionary<string, object>;
         if (r == null || !r.ContainsKey("access_token")) continue;
         agyClient = c;
+        refreshErrLogged = null;
         memTokenUntil = DateTime.UtcNow.AddSeconds(Convert.ToDouble(r["expires_in"], CultureInfo.InvariantCulture) - 120);
         return Convert.ToString(r["access_token"], CultureInfo.InvariantCulture);
-      } catch (WebException) {
+      } catch (WebException ex) {
         // wrong pair (invalid_client) or signed out: try the next one
+        HttpWebResponse r = ex.Response as HttpWebResponse;
+        lastErr = r != null ? "HTTP " + ((int)r.StatusCode).ToString(CultureInfo.InvariantCulture) : ex.Status.ToString();
       }
+    }
+    if (refreshErrLogged != lastErr) {
+      refreshErrLogged = lastErr;
+      Log("agy cloud: token refresh failed with all " + tries.Count.ToString(CultureInfo.InvariantCulture) + " client pairs (last: " + lastErr + ")");
     }
     return null;
   }
