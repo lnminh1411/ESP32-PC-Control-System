@@ -43,3 +43,6 @@ enum DiscordChannel { DC_PC, DC_WEATHER };
 void discordPost(DiscordChannel ch, const char *title, const char *desc, uint32_t color);
 // log.cpp hands every log line here for DISCORD_CH_LOG
 void discordLog(const char *line, size_t len);
+// While a Discord handler waits on the PC (hwctl/aictl), keeps the bot
+// answering: heartbeats and new button clicks. No-op outside the bot task.
+void discordWaitTick();

@@ -1035,6 +1035,7 @@ static void weatherTask(void *) {
   uint32_t lastPhoneNowcastMs = 0;
   uint32_t lastNvsSaveMs = nowMs();
   bool prevNetUp = false;
+  uint32_t netUpMs = 0;
   bool forceImmediate = false;
 
   for (;;) {
@@ -1045,7 +1046,12 @@ static void weatherTask(void *) {
       homeChanged = false;
       forceImmediate = true;
     }
+    if (currentNet && !prevNetUp) netUpMs = nowMs();
     prevNetUp = currentNet;
+
+    // After Wi-Fi comes up, let Discord's TLS handshakes finish first (or
+    // 30 s): handshakes running side by side left ~3 KB internal RAM at boot
+    if (currentNet && !discordUp() && nowMs() - netUpMs < 30000) continue;
 
     if (currentNet && testAlertPending) {
       testAlertPending = false;

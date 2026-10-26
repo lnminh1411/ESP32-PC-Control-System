@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "discord.h"
 #include "log.h"
 #include "pcstats.h"
 #include "sys.h"
@@ -46,6 +47,7 @@ bool hwWaitReply(uint32_t id, uint32_t timeoutMs, char *out, size_t outSize) {
   uint32_t t0 = nowMs();
   while ((uint32_t)(nowMs() - t0) < timeoutMs) {
     if (replyFor(id, out, outSize)) return true;
+    discordWaitTick();   // the bot task keeps acking clicks and heartbeating
     vTaskDelay(pdMS_TO_TICKS(50));
   }
   snprintf(out, outSize, "err no answer from the PC");

@@ -1,7 +1,7 @@
 # Benchmark
 
 Carrier board (ESP32-S3 rev 0.2, 240 MHz, 16 MB flash, 8 MB octal PSRAM at
-80 MHz), firmware as of 2026-10-25, PC on, Wi-Fi at -27 dBm.
+80 MHz), firmware as of 2026-10-26, PC on, Wi-Fi at -27 dBm.
 Run it again with the console command `bench all` (`bench usage` for memory use only,
 `bench usb <KB>` for USB),
 and time Wi-Fi from the PC with
@@ -9,26 +9,57 @@ and time Wi-Fi from the PC with
 
 ## Usage
 
-From `bench usage` (part of `bench all`), board up ~1 min, PC on:
+From `bench usage` (part of `bench all`), after three bench rounds (see below), PC on:
 
 | Memory | Used | Notes |
 |---|---|---|
-| SRAM (512 KB) | 491 KB (96%) | 183 KB static (code in IRAM, data/bss, ROM, cache); heap 328 KB with 307 KB in use, 21 KB free, largest block 10 KB; lowest free ever: under 1 KB |
-| PSRAM (8 MB) | 5152 KB (63%) | lowest free ever 2993 KB, largest free block 3008 KB |
+| SRAM (512 KB) | 442 KB (86%) | 165 KB static (code in IRAM, data/bss, ROM, cache); heap 346 KB with 276 KB in use, 71 KB free, largest block 31 KB; lowest free ever: 34 KB |
+| PSRAM (8 MB) | 5041 KB (62%) | lowest free ever 1097 KB (bench buffers), largest free block 3136 KB |
 | Flash (16 MB) | fully partitioned | app slots 2 x 3 MB (OTA), FAT 9.8 MB, NVS 20 KB, core dump 64 KB |
-| App image | 1520 KB of 3072 KB (49%) | code 980 KB, data 459 KB |
+| App image | 1558 KB of 3072 KB (51%) | code 1006 KB, data 467 KB |
 | FAT /ffat | 4508 KB of 9996 KB (45%) | gif.bin 4501 KB, layout.json, saved text images |
-| NVS | 195 of 630 entries | 8 namespaces |
+| NVS | 199 of 630 entries | 8 namespaces |
 
-Task stacks, least ever free (bytes): main 12880, websocket 7548, weather 7440,
-httpd 6944, discord 6552, esp_timer 3084, flush 2828, wifi 2564, mdns 2296,
-TinyUSB 2124, tiT 1360, Tmr Svc 1336, led 1200, sys_evt 792, IDLE 688-696,
+Task stacks, least ever free (bytes): main 6696, weather 4612, discord 4300,
+httpd 3404, websocket 3324, flush 2820, wifi 2688, TinyUSB 2124, esp_timer 1876,
+mdns 1784, tiT 1372, Tmr Svc 1328, led 1200, sys_evt 792, IDLE 688-696,
 ipc 500-508.
 
-Internal RAM is the tight one: its free space has dropped below 1 KB at some
-point since boot (TLS handshakes for Discord, weather and the Wi-Fi login at
-once). Allocations that must be internal fail at that moment; PSRAM has
-3 MB to spare.
+## Internal RAM, before and after 2026-10-26
+
+Internal RAM was the tight one: free space fell to ~3 KB within 8 s of boot,
+when the Wi-Fi login and three or four TLS handshakes ran at once, and
+idled near 40 KB with an 8.7 KB largest block (a TLS handshake needs ~4 KB
+blocks). Four changes:
+
+1. Wi-Fi static TX buffers 16 -> 8 (`CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM`):
+   with PSRAM on they default to static, ~1.6 KB each in internal RAM for good.
+2. mbedTLS: dynamic buffers, config data and CA chain freed after the
+   handshake, peer certificate not kept.
+3. Discord button clicks and slash commands handled in the bot task through a
+   queue instead of in the websocket task: one REST TLS client instead of two,
+   websocket task stack 12 -> 8 KB, and a slow PC command no longer holds the
+   gateway connection.
+4. The weather task waits for Discord's gateway (or 30 s) before its first
+   HTTPS fetch after Wi-Fi comes up.
+
+Same test both times: three rounds of `bench all`, `bench usb 2048`, three 4 MB
+Wi-Fi downloads and 30 pings (`soak.py`).
+
+| | Before (internal lwIP, 18:26) | After (21:00) |
+|---|---|---|
+| Internal free, lowest during the rounds | 40.9 KB | 73.1 KB |
+| Largest internal block | 8.7 KB | 31.7 KB |
+| Internal free, lowest ever since boot | ~2-3 KB | 34 KB |
+| PSRAM free | 3.16 MB | 3.23 MB |
+| Wi-Fi download, 9 runs | 0.60-0.88 MB/s, 0.80 average | 0.62-0.92 MB/s, 0.78 average |
+| `bench usb 2048` CDC write | 0.23 MB/s | 0.23 MB/s |
+| Ping loss | 0% | 0% |
+
+Step by step, 90 s after boot: 40 KB free / 7.5 KB largest -> 54.5 / 22.5
+(TX buffers) -> 68.7 / 29.7 (mbedTLS) -> 72.5 / 31.7 (queue; lowest ever 22 ->
+38 KB) -> 72.6 / 31.7 (boot stagger, kept as a guard). The Wi-Fi difference is
+within the radio's run-to-run swing.
 
 ## Speed
 
@@ -40,21 +71,20 @@ once). Allocations that must be internal fail at that moment; PSRAM has
 | SRAM | copy / write / read | 239-377 / 238-738 / 119 MB/s (varies run to run with alignment) |
 | SRAM | random read | 13 ns |
 | PSRAM | copy / write / read (1 MB buffers) | 22 / 35 / 53 MB/s |
-| PSRAM | random read (1 MB span) | 504 ns |
-| PSRAM to SRAM | copy in 4 KB pieces | 60 MB/s |
+| PSRAM | random read (1 MB span) | 506 ns |
+| PSRAM to SRAM | copy in 4 KB pieces | 62 MB/s |
 | Flash | raw partition read (4 KB) | 11.5 MB/s |
 | Flash | memory-mapped read (cache) | 26.7 MB/s |
-| Flash | FAT file read (gif.bin, 4.5 MB) | 5.2 MB/s |
-| Display SPI | full 240x320 RGB444 frame (115 200 B) | 29.5-29.8 ms, 3.9 MB/s, 77-78% of the 40 MHz wire |
-| USB CDC | board to PC | 0.93 MB/s sent, 0.78 MB/s received by the PC |
-| Wi-Fi | HTTP download to the PC (4 MB, 3 runs) | 0.83-0.94 MB/s |
-| Wi-Fi | ping | 2-8 ms, 3 ms average |
+| Flash | FAT file read (gif.bin, 4.5 MB) | 5.1 MB/s |
+| Display SPI | full 240x320 RGB444 frame (115 200 B) | 29.6-29.8 ms, 3.9 MB/s, 77-78% of the 40 MHz wire |
+| USB CDC | board to PC | 0.93 MB/s sent, 0.78 MB/s received by the PC (2026-10-25) |
+| Wi-Fi | HTTP download to the PC (4 MB, 9 runs) | 0.62-0.92 MB/s |
+| Wi-Fi | ping | 2-15 ms, 6 ms average |
 
 Notes:
 - A full frame takes ~30 ms per panel, so all three panels repainting at once
   cap out near 11 fps; the dirty-rect diff is what keeps normal faces at their
   frame rates. SPI runs at 40 MHz because 80 MHz gave blank panels.
-- Wi-Fi throughput is low on purpose: 8 static RX buffers and a BA window of 8
-  free internal RAM for TLS (see `sdkconfig.defaults`). Nothing on the board
-  needs more than ~100 KB/s.
-- Internal RAM at the time: 24.9 KB free, largest block 7.7 KB; PSRAM 3.1 MB free.
+- Wi-Fi throughput is low on purpose: 8 static RX and 8 static TX buffers and
+  a BA window of 8 free internal RAM for TLS (see `sdkconfig.defaults`).
+  Nothing on the board needs more than ~100 KB/s.

@@ -58,12 +58,20 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 # TLS: plain malloc, so small allocations (Wi-Fi WPA3 bignums) stay internal and the
 # 16 KB record buffers go to PSRAM (SPIRAM_MALLOC_ALWAYSINTERNAL=4096)
 CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC=y
+# TLS sessions hold less between records: buffers sized per record, config and
+# CA chain freed after the handshake, peer certificate not kept
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA=y
+CONFIG_MBEDTLS_DYNAMIC_FREE_CA_CERT=y
+# CONFIG_MBEDTLS_SSL_KEEP_PEER_CERTIFICATE is not set
 # Software AES: hardware AES needs DMA bounce buffers in internal RAM for PSRAM data
 CONFIG_MBEDTLS_HARDWARE_AES=n
 # Internal RAM for TLS/sockets: Wi-Fi hot paths stay in flash, fewer fixed RX buffers
 CONFIG_ESP_WIFI_IRAM_OPT=n
 CONFIG_ESP_WIFI_RX_IRAM_OPT=n
 CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=8
+# static TX buffers (the PSRAM default) sit in internal RAM for good: 8, not 16
+CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=8
 CONFIG_ESP_WIFI_RX_BA_WIN=8
 # mDNS packets in PSRAM: at boot the TLS handshakes left no internal RAM and mDNS sends failed
 CONFIG_MDNS_MEMORY_ALLOC_SPIRAM=y

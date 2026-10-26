@@ -545,34 +545,12 @@ static bool rgbCommand(const char *cmd, const char *what) {
   if (ok) snprintf(lastPanelResult, sizeof lastPanelResult, "%s", what);
   else snprintf(lastPanelResult, sizeof lastPanelResult, "%.56s failed: %.56s", what, !strncmp(reply, "err ", 4) ? reply + 4 : reply);
   logMsg("discord: %s -> %s", cmd, reply);
-  return ok;
-}
-
-// PcHwCtl's state file reaches the board 1-3 s after it took a command (file,
-// then the PC's next poll and tick), so the panel waits for the new state
-// before redrawing. mode: the rule type the group(s) should show, or nullptr
-// for "auto" (any change from before); bright: the expected %, or -1.
-struct RgbSnap { char main[24], ram[24]; };
-static void rgbSnap(RgbSnap &s) {
-  snprintf(s.main, sizeof s.main, "%s", pcText("hw.rgb.main"));
-  snprintf(s.ram, sizeof s.ram, "%s", pcText("hw.rgb.ram"));
-}
-
-static bool rgbShows(const char *g, const char *mode, const RgbSnap &before, int bright) {
-  if (bright >= 0) {
-    float b = pcStat("hw.rgb.bright");
-    return !isnan(b) && (int)lroundf(b) == bright;
+  // what changed on the PC goes to the PC channel too
+  if (ok) {
+    bool fan = !strncmp(cmd, "fan ", 4);
+    discordPost(DC_PC, fan ? "PC Case Fan Control" : "PC Case RGB LEDs", what, fan ? 0x1ABC9C : 0x9B59B6);
   }
-  RgbSnap now;
-  rgbSnap(now);
-  bool doMain = strcmp(g, "ram") != 0, doRam = strcmp(g, "main") != 0;
-  if (mode) return (!doMain || !strcmp(now.main, mode)) && (!doRam || !strcmp(now.ram, mode));
-  return (doMain && strcmp(now.main, before.main)) || (doRam && strcmp(now.ram, before.ram));
-}
-
-static void rgbAwaitState(const char *g, const char *mode, const RgbSnap &before, int bright) {
-  uint32_t t0 = nowMs();
-  while (!rgbShows(g, mode, before, bright) && (uint32_t)(nowMs() - t0) < 4000) vTaskDelay(pdMS_TO_TICKS(100));
+  return ok;
 }
 
 // Local Agent Control tab (LocalAIHost via the PC, aictl.h). The service's
@@ -682,28 +660,6 @@ static void addFanRows(cJSON *comps) {
   addRgbSelect(comps, "fan_pct", ph, FAN_SPEEDS, RGB_N(FAN_SPEEDS));
   snprintf(ph, sizeof ph, "Curve for %s", FAN_TARGETS[fanTarget].label);
   addRgbSelect(comps, "fan_curve", ph, FAN_CURVES, RGB_N(FAN_CURVES));
-}
-
-// Waits (max 3 s) until a fan's % moves: overrides ramp in 8 % steps per tick
-// and reach the board through state.txt 1-3 s later
-struct FanSnap { float pct[RGB_N(FAN_SHOWN)]; };
-static void fanSnap(FanSnap &f) {
-  for (int i = 0; i < RGB_N(FAN_SHOWN); i++) {
-    char k[32];
-    snprintf(k, sizeof k, "hw.%s.pct", FAN_SHOWN[i].value);
-    f.pct[i] = pcStat(k);
-  }
-}
-
-static void fanAwaitChange(const FanSnap &before) {
-  uint32_t t0 = nowMs();
-  while ((uint32_t)(nowMs() - t0) < 3000) {
-    FanSnap now;
-    fanSnap(now);
-    for (int i = 0; i < RGB_N(FAN_SHOWN); i++)
-      if (!isnan(now.pct[i]) && now.pct[i] != before.pct[i]) return;
-    vTaskDelay(pdMS_TO_TICKS(100));
-  }
 }
 
 static void addField(cJSON *fields, const char *name, const char *value) {
@@ -970,6 +926,33 @@ static void ackButton(const char *id, const char *token) {
          (long long)lateMs, (unsigned long)(nowMs() - t0), code);
 }
 
+// A panel action only waits for the PC to accept the command; the state it
+// changes reaches the board 1-3 s later (PcHwCtl's state file, then the PC's
+// next poll and tick), so the panel is drawn once more a few seconds after.
+// One pending redraw: a newer click replaces it. Uses the click's token, which
+// can edit the message for 15 minutes (standing panel included).
+static struct {
+  bool pending, standing;
+  uint32_t atMs;
+  char token[256];
+} panelLater;
+
+static void panelRefreshLater(bool standing, const char *token) {
+  if (!DISCORD_APP_ID[0] || !token || !token[0]) return;
+  panelLater.pending = true;
+  panelLater.standing = standing;
+  panelLater.atMs = nowMs() + 3000;
+  snprintf(panelLater.token, sizeof panelLater.token, "%s", token);
+}
+
+static void aiRefreshStatus();
+static void panelLaterService() {
+  if (!panelLater.pending || (int32_t)(nowMs() - panelLater.atMs) < 0) return;
+  panelLater.pending = false;
+  if (panelCat(panelLater.standing) == CAT_AI) aiRefreshStatus();
+  sendPanelResponse("", panelLater.token, 7, panelLater.standing, PANEL_NORMAL, lastPanelResult);
+}
+
 // Post the standing panel in #control, or bring the one there up to date
 static void controlPanelSync() {
   if (!DISCORD_CH_CONTROL[0]) return;
@@ -1051,6 +1034,7 @@ static void aiAction(const char *cmd, const char *what) {
   if (ok) snprintf(lastPanelResult, sizeof lastPanelResult, "%.80s%s", what, strstr(reply, "started") ? " (started)" : "");
   else snprintf(lastPanelResult, sizeof lastPanelResult, "%.50s failed: %.60s", what, !strncmp(reply, "err ", 4) ? reply + 4 : reply);
   logMsg("discord: ai %s -> %s", cmd, reply);
+  if (ok) discordPost(DC_PC, "Local Agent Control", lastPanelResult, 0x5865F2);
 }
 
 // Local Agent Control buttons; true when cid was one of them
@@ -1096,7 +1080,7 @@ static bool aiButton(const char *cid, const char *id, const char *token, bool st
     snprintf(lastPanelResult, sizeof lastPanelResult, "Unknown button");
   } else {
     aiAction(cmd, what);
-    aiRefreshStatus();
+    panelRefreshLater(standing, token);   // status again once the service moved
   }
   sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
   return true;
@@ -1131,11 +1115,7 @@ static bool fanInteraction(const char *cid, cJSON *jVal, const char *id, const c
     snprintf(cmd, sizeof cmd, "fan release %s", f);
     snprintf(what, sizeof what, "%s back to PcHwCtl curves", label);
   }
-  if (cmd[0]) {
-    FanSnap before;
-    fanSnap(before);
-    if (rgbCommand(cmd, what)) fanAwaitChange(before);
-  }
+  if (cmd[0] && rgbCommand(cmd, what)) panelRefreshLater(standing, token);
   sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
   return true;
 }
@@ -1188,7 +1168,8 @@ static void onInteraction(cJSON *d) {
       panelTouchedMs = panelOpenedMs = nowMs();
       panelActive = true;
       lastPanelResult[0] = 0;
-      sendPanelResponse(id, token, 4, false, PANEL_NORMAL, nullptr);
+      // deferred by ackInteraction when the app id is known: edit it, else answer
+      sendPanelResponse(id, token, DISCORD_APP_ID[0] ? 7 : 4, false, PANEL_NORMAL, nullptr);
       if (hadOld && oldToken[0] && DISCORD_APP_ID[0]) {
         char delPath[640];
         snprintf(delPath, sizeof delPath, "/webhooks/%s/%s/messages/@original", DISCORD_APP_ID, oldToken);
@@ -1223,8 +1204,7 @@ static void onInteraction(cJSON *d) {
       return;
     }
 
-    if (!standing) panelTouchedMs = nowMs();
-    if (DISCORD_APP_ID[0]) ackButton(id, token);
+    if (!standing) panelTouchedMs = nowMs();   // acknowledged already (ackInteraction)
 
     cJSON *jVals = data ? cJSON_GetObjectItem(data, "values") : nullptr;
     cJSON *jVal = (jVals && cJSON_IsArray(jVals)) ? cJSON_GetArrayItem(jVals, 0) : nullptr;
@@ -1253,10 +1233,10 @@ static void onInteraction(cJSON *d) {
     }
     if (fanInteraction(cid, jVal, id, token, standing)) return;
     if (jVal && cJSON_IsString(jVal) && !strncmp(cid, "rgb_", 4)) {
-      // RGB tab picks: PcHwCtl answers within ~3 s (Discord already acked)
+      // RGB tab picks: the footer says whether PcHwCtl took it; the new state
+      // shows on the redraw a few seconds later
       const char *val = jVal->valuestring, *g = RGB_GROUPS[rgbGroup].value;
-      char cmd[64] = "", what[64], expect[16] = "";
-      int bright = -1;
+      char cmd[64] = "", what[64];
       if (!strcmp(cid, "rgb_mode")) {
         if (!strcmp(val, "auto")) {
           snprintf(cmd, sizeof cmd, "rgb release %s", g);
@@ -1264,11 +1244,9 @@ static void onInteraction(cJSON *d) {
         } else if (!strcmp(val, "static") || !strcmp(val, "breathing")) {
           snprintf(cmd, sizeof cmd, "rgb mode %s %s %s", g, val, rgbColor);
           snprintf(what, sizeof what, "RGB %s: %s %s", g, val, rgbColorLabel(rgbColor));
-          snprintf(expect, sizeof expect, "%s", val);
         } else {
           snprintf(cmd, sizeof cmd, "rgb mode %s %.12s", g, val);
           snprintf(what, sizeof what, "RGB %s: %.12s", g, val);
-          snprintf(expect, sizeof expect, "%.12s", val);
         }
         rgbBreathing = !strcmp(val, "breathing");
       } else if (!strcmp(cid, "rgb_color") && val[0] == '#' && strlen(val) == 7) {
@@ -1276,17 +1254,14 @@ static void onInteraction(cJSON *d) {
         const char *mode = rgbBreathing ? "breathing" : "static";
         snprintf(cmd, sizeof cmd, "rgb mode %s %s %s", g, mode, rgbColor);
         snprintf(what, sizeof what, "RGB %s: %s %s", g, mode, rgbColorLabel(rgbColor));
-        snprintf(expect, sizeof expect, "%s", mode);
       } else if (!strcmp(cid, "rgb_bright")) {
-        bright = atoi(val);
+        int bright = atoi(val);
         if (bright < 0) bright = 0;
         if (bright > 100) bright = 100;
         snprintf(cmd, sizeof cmd, "rgb brightness %d", bright);
         snprintf(what, sizeof what, "RGB brightness %d %%", bright);
       }
-      RgbSnap before;
-      rgbSnap(before);
-      if (cmd[0] && rgbCommand(cmd, what)) rgbAwaitState(g, expect[0] ? expect : nullptr, before, bright);
+      if (cmd[0] && rgbCommand(cmd, what)) panelRefreshLater(standing, token);
       sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
       return;
     }
@@ -1399,6 +1374,123 @@ static void heartbeat() {
   gotAck = false;
 }
 
+static void heartbeatService() {
+  if (!heartbeatMs || nowMs() - lastBeat < heartbeatMs) return;
+  if (!gotAck) {
+    logMsg("discord: no heartbeat ACK, reconnecting");
+    if (ws) esp_websocket_client_close(ws, pdMS_TO_TICKS(1000));
+  } else {
+    heartbeat();
+  }
+}
+
+// ---- interaction queue ----
+// Gateway events arrive in the websocket task, which only copies each
+// interaction into ixQueue. The bot task acknowledges it at once (Discord's
+// 3 s deadline), then handles it; while a handler waits on the PC it keeps
+// acknowledging new ones and sending heartbeats (discordWaitTick). So the
+// websocket is never held up by a slow command, and every REST call runs in
+// the bot task on its one TLS client.
+#define IX_QUEUE_DEPTH 6
+static QueueHandle_t ixQueue;             // char * JSON copies in PSRAM
+struct IxPending { char *json; bool handle; };
+static IxPending ixPending[IX_QUEUE_DEPTH];
+static int ixPendingCount;
+
+static void ixEnqueue(cJSON *d) {
+  char *text = cJSON_PrintUnformatted(d);
+  if (!text) return;
+  size_t n = strlen(text) + 1;
+  char *copy = (char *)heap_caps_malloc(n, MALLOC_CAP_SPIRAM);
+  if (copy) memcpy(copy, text, n);
+  free(text);
+  if (!copy || !ixQueue || xQueueSend(ixQueue, &copy, 0) != pdTRUE) {
+    logMsg("discord: interaction dropped (queue full or no memory)");
+    heap_caps_free(copy);
+  }
+}
+
+static const char *ixUser(cJSON *d) {
+  cJSON *member = cJSON_GetObjectItem(d, "member");
+  cJSON *u = member ? cJSON_GetObjectItem(member, "user") : cJSON_GetObjectItem(d, "user");
+  cJSON *uId = u ? cJSON_GetObjectItem(u, "id") : nullptr;
+  return uId && cJSON_IsString(uId) ? uId->valuestring : "";
+}
+
+// The 3 s answer; false when that answer was the whole reply
+static bool ackInteraction(cJSON *d) {
+  cJSON *jId = cJSON_GetObjectItem(d, "id"), *jToken = cJSON_GetObjectItem(d, "token");
+  const char *id = jId && cJSON_IsString(jId) ? jId->valuestring : "";
+  const char *token = jToken && cJSON_IsString(jToken) ? jToken->valuestring : "";
+  if (strcmp(ixUser(d), DISCORD_OWNER_ID) != 0) {
+    replyEphemeralText(id, token, "Not allowed.");
+    return false;
+  }
+  if (!DISCORD_APP_ID[0]) return true;   // no app id, no edits: the handler answers in place
+  cJSON *jType = cJSON_GetObjectItem(d, "type");
+  cJSON *data = cJSON_GetObjectItem(d, "data");
+  int type = jType ? jType->valueint : 0;
+  if (type == 2) {
+    cJSON *jName = data ? cJSON_GetObjectItem(data, "name") : nullptr;
+    if (!jName || !cJSON_IsString(jName) || strcmp(jName->valuestring, "actions")) {
+      replyEphemeralText(id, token, "Unknown command.");
+      return false;
+    }
+    char path[640];
+    snprintf(path, sizeof path, "/interactions/%s/%s/callback", id, token);
+    rest("POST", path, "{\"type\":5,\"data\":{\"flags\":64}}");   // "thinking", ephemeral
+    return true;
+  }
+  if (type == 3) {
+    cJSON *jCid = data ? cJSON_GetObjectItem(data, "custom_id") : nullptr;
+    bool close = jCid && cJSON_IsString(jCid) && !strcmp(jCid->valuestring, "close");
+    if (!close) ackButton(id, token);    // Close answers with its own deferred update
+    return true;
+  }
+  return false;
+}
+
+// Takes new interactions off the queue and acknowledges them (bot task only)
+static void ixPump() {
+  heartbeatService();
+  char *json;
+  while (ixQueue && xQueueReceive(ixQueue, &json, 0) == pdTRUE) {
+    cJSON *d = cJSON_Parse(json);
+    if (ixPendingCount >= IX_QUEUE_DEPTH) {
+      // backlog full: answer now rather than let Discord's 3 s run out
+      cJSON *jId = d ? cJSON_GetObjectItem(d, "id") : nullptr, *jToken = d ? cJSON_GetObjectItem(d, "token") : nullptr;
+      if (jId && cJSON_IsString(jId) && jToken && cJSON_IsString(jToken))
+        replyEphemeralText(jId->valuestring, jToken->valuestring, "Busy, try again in a few seconds.");
+      cJSON_Delete(d);
+      heap_caps_free(json);
+      continue;
+    }
+    bool handle = d && ackInteraction(d);
+    cJSON_Delete(d);
+    ixPending[ixPendingCount++] = {json, handle};
+  }
+}
+
+void discordWaitTick() {
+  if (botTaskHandle && xTaskGetCurrentTaskHandle() == botTaskHandle) ixPump();
+}
+
+static void ixService() {
+  ixPump();
+  while (ixPendingCount) {
+    IxPending p = ixPending[0];
+    memmove(ixPending, ixPending + 1, (ixPendingCount - 1) * sizeof ixPending[0]);
+    ixPendingCount--;
+    if (p.handle) {
+      cJSON *d = cJSON_Parse(p.json);
+      if (d) onInteraction(d);
+      cJSON_Delete(d);
+    }
+    heap_caps_free(p.json);
+    ixPump();
+  }
+}
+
 static void identify() {
   cJSON *d = cJSON_CreateObject();
   cJSON_AddNumberToObject(d, "op", 2);
@@ -1469,7 +1561,7 @@ static void handleGatewayMessage(const char *jsonStr, size_t len) {
           postChannelEmbed(DC_PC, "ESP32 PC Control is online", (netUp() && netIp()[0]) ? netIp() : "Wi-Fi down", 0x57F287);
         }
       } else if (!strcmp(t, "INTERACTION_CREATE")) {
-        if (data) onInteraction(data);
+        if (data) ixEnqueue(data);   // handled in the bot task
       }
       break;
     }
@@ -1547,7 +1639,7 @@ static void botTask(void *) {
   ws_cfg.enable_close_reconnect = true;
   ws_cfg.task_core_id_set = true;
   ws_cfg.task_core_id = 0;
-  ws_cfg.task_stack = 12288;   // gateway handlers run here and make TLS REST calls
+  ws_cfg.task_stack = 8192;    // TLS reads and gateway parsing; interactions run in the bot task
 
   ws = esp_websocket_client_init(&ws_cfg);
   if (ws) {
@@ -1567,14 +1659,8 @@ static void botTask(void *) {
       requestReconnect = false;
       if (ws) esp_websocket_client_close(ws, pdMS_TO_TICKS(1000));
     }
-    if (heartbeatMs && nowMs() - lastBeat >= heartbeatMs) {
-      if (!gotAck) {
-        logMsg("discord: no heartbeat ACK, reconnecting");
-        if (ws) esp_websocket_client_close(ws, pdMS_TO_TICKS(1000));
-      } else {
-        heartbeat();
-      }
-    }
+    ixService();   // heartbeat, then button clicks and slash commands
+    panelLaterService();
     PcState pc = pcState();
     if (pc != lastPc && ready) {
       lastPc = pc;
@@ -1623,6 +1709,7 @@ void discordInit() {
   reqDone = xSemaphoreCreateBinary();
   restMutex[0] = xSemaphoreCreateMutex();
   restMutex[1] = xSemaphoreCreateMutex();
+  ixQueue = xQueueCreate(IX_QUEUE_DEPTH, sizeof(char *));
   notifyQueue = xQueueCreateWithCaps(NOTIFY_QUEUE_DEPTH, sizeof(NotifyMsg), MALLOC_CAP_SPIRAM);
   if (!notifyQueue) notifyQueue = xQueueCreate(NOTIFY_QUEUE_DEPTH, sizeof(NotifyMsg));
   wsBuf = (char *)heap_caps_malloc(WS_BUF_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
