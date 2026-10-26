@@ -421,7 +421,7 @@ static const Command COMMANDS[] = {
   {"layout",  "<show|reload|default|begin|data <b64>|end>",  cmdLayout},
   {"face",    "<1|2|3> <auto|pc|gif|restart|update|media|weather|ai|localai|clock>", cmdFace},
   {"shot",    "<1|2|3>  (panel screenshot, base64 on CDC)",   cmdShot},
-  {"weather", "<show|demo [rain]|clear>",                     cmdWeather},
+  {"weather", "<show|demo [rain|typhoon]|clear|storms>",                    cmdWeather},
 };
 
 static void cmdHelp(const char *, const char *) {

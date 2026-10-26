@@ -16,6 +16,7 @@
 #include <time.h>
 
 #include "board_time.h"
+#include "cyclone.h"
 #include "discord.h"
 #include "log.h"
 #include "net.h"
@@ -29,6 +30,33 @@
 static WeatherNow now_;
 static RainAlert rainHome;
 static RainAlert rainPhone;
+static Cyclone cyclone_;
+
+// Next hours from the forecast: storm signs and the rain's end past the nowcast
+struct HourWx {
+  uint32_t unix;   // end of the hour (UTC); its values cover the hour before
+  float mm;        // precipitation in that hour
+  uint8_t code;    // WMO weather code
+  uint8_t gust;    // km/h, capped at 255
+};
+static HourWx hours_[12];
+static int nHours_;
+static uint32_t forecastAtMs;   // last good forecast
+
+// Cyclone tracks of storms near home (PSRAM), refreshed per GDACS advisory
+static CycloneTrack *tracks_;
+static constexpr int MAX_TRACKS = 3;
+static int trackShown = -1;     // index in tracks_ behind cyclone_
+
+// `weather demo`: polls leave the demo data alone and nothing is posted
+static uint32_t demoUntilMs;
+static bool demoOn() { return demoUntilMs && (int32_t)(demoUntilMs - nowMs()) > 0; }
+
+// Discord colours: approaching > 20 min, close or here, cleared
+static constexpr uint32_t COL_YELLOW = 0xF1C40F;
+static constexpr uint32_t COL_RED = 0xE74C3C;
+static constexpr uint32_t COL_GREEN = 0x2ECC71;
+static constexpr uint32_t COL_BLUE = 0x3498DB;
 
 static SemaphoreHandle_t wxMutex;
 static TaskHandle_t wxTaskHandle;
@@ -67,12 +95,15 @@ enum ErrMask : uint16_t {
   ERR_HOME_PARSE  = 1 << 5,
   ERR_PHONE_HTTP  = 1 << 6,
   ERR_PHONE_PARSE = 1 << 7,
+  ERR_TC_HTTP     = 1 << 8,
+  ERR_TC_TRACK    = 1 << 9,
 };
 static uint16_t loggedErrors;
 static char lastError[96];               // shown by `weather show`
 static esp_err_t lastHttpErr;
 static volatile bool homeChanged;        // new home: poll right away
 static volatile bool testAlertPending;   // sent from the weather task: HTTPS must not block the main loop
+static volatile bool cycloneRefresh;     // `weather storms`: fetch GDACS again now
 
 static void logErrorOnce(uint16_t mask, const char *msg) {
   snprintf(lastError, sizeof lastError, "%s", msg);
@@ -89,6 +120,50 @@ static void clearError(uint16_t mask) {
 const WeatherNow &weatherNow() { return now_; }
 const RainAlert &rainAlertHome() { return rainHome; }
 const RainAlert &rainAlertPhone() { return rainPhone; }
+const Cyclone &weatherCyclone() { return cyclone_; }
+
+const char *wxTierName(WxTier t) {
+  switch (t) {
+    case TIER_LIGHT_RAIN: return "Light Rain";
+    case TIER_HEAVY_SHOWER: return "Heavy Shower";
+    case TIER_STORM: return "Storm";
+    case TIER_TYPHOON: return "Typhoon";
+    case TIER_SUPER_TYPHOON: return "Super Typhoon";
+    default: return "Rain";
+  }
+}
+
+// struct tm read as UTC -> unix (newlib has no timegm)
+static int64_t utcMkTime(const struct tm *t) {
+  int y = t->tm_year + 1900, m = t->tm_mon + 1;
+  y -= m <= 2;
+  int64_t era = (y >= 0 ? y : y - 399) / 400;
+  int64_t yoe = y - era * 400;
+  int64_t doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + t->tm_mday - 1;
+  int64_t days = era * 146097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719468;
+  return days * 86400 + t->tm_hour * 3600 + t->tm_min * 60 + t->tm_sec;
+}
+
+static bool clockValid(time_t *now) {
+  *now = time(nullptr);
+  return *now >= 1700000000;
+}
+
+int rainEtaMin(const RainAlert &a) {
+  if (!a.active && !a.raining) return -1;
+  if (a.raining) return 0;
+  time_t now;
+  if (!a.startUnix || !clockValid(&now)) return a.etaMin;
+  long d = ((long)a.startUnix - (long)now + 59) / 60;
+  return d > 0 ? (int)d : 0;
+}
+
+int rainLeftMin(const RainAlert &a) {
+  time_t now;
+  if (!a.endUnix || !clockValid(&now)) return -1;
+  long d = ((long)a.endUnix - (long)now + 59) / 60;
+  return d > 0 ? (int)d : 0;
+}
 
 static WxIcon wmoToWxIcon(int code) {
   if (code <= 1) return WX_CLEAR;
@@ -112,7 +187,8 @@ static const char *calcDayName(int y, int m, int d) {
   return names[dow];
 }
 
-static void loadDemo(bool rain) {
+// mode: 0 dry, 1 heavy shower in 25 min, 2 typhoon at home
+static void loadDemo(int mode) {
   WeatherNow w = {};
   w.valid = true;
   snprintf(w.place, sizeof(w.place), "%s", homeName[0] ? homeName : "Home");
@@ -131,11 +207,23 @@ static void loadDemo(bool rain) {
   if (wxMutex) xSemaphoreTake(wxMutex, portMAX_DELAY);
   now_ = w;
   rainHome = {};
-  if (rain) {
+  cyclone_ = {};
+  time_t now;
+  bool clock = clockValid(&now);
+  if (mode == 1) {
     rainHome.active = true;
     rainHome.etaMin = 25;
-    rainHome.mmh = 2.1f;
+    rainHome.startUnix = clock ? (uint32_t)now + 25 * 60 : 0;
+    rainHome.endUnix = clock ? (uint32_t)now + 95 * 60 : 0;
+    rainHome.mmh = 9.2f;
+    rainHome.tier = TIER_HEAVY_SHOWER;
     strcpy(rainHome.from, "NW");
+  } else if (mode == 2) {
+    cyclone_.tracked = cyclone_.active = true;
+    strcpy(cyclone_.name, "KAJIKI");
+    cyclone_.distKm = 80;
+    cyclone_.closestKm = 45;
+    cyclone_.windKmh = 150;
   } else {
     rainHome.dryKm = 40;
   }
@@ -270,11 +358,13 @@ static bool checkBudgetForecast() {
 }
 
 static void fetchForecast(char *buf, size_t cap) {
-  char url[256];
+  char url[320];
   snprintf(url, sizeof(url),
            "https://api.open-meteo.com/v1/forecast?latitude=%.5f&longitude=%.5f"
            "&current=temperature_2m,weather_code,is_day,wind_speed_10m,wind_direction_10m"
-           "&daily=weather_code,temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=4",
+           "&daily=weather_code,temperature_2m_max,temperature_2m_min"
+           "&hourly=precipitation,weather_code,wind_gusts_10m&forecast_hours=12"
+           "&timezone=auto&forecast_days=4",
            homeLat, homeLon);
 
   int status = 0;
@@ -296,8 +386,47 @@ static void fetchForecast(char *buf, size_t cap) {
   clearError(ERR_FC_PARSE);
 
   cJSON *tzSec = cJSON_GetObjectItem(root, "utc_offset_seconds");
+  int32_t utcOffset = 0;
   if (tzSec && cJSON_IsNumber(tzSec)) {
-    boardTimeSetUtcOffset(tzSec->valueint);
+    utcOffset = tzSec->valueint;
+    boardTimeSetUtcOffset(utcOffset);
+  }
+
+  // hourly: local "YYYY-MM-DDTHH:MM" stamps, each value covering the hour before
+  cJSON *hourly = cJSON_GetObjectItem(root, "hourly");
+  if (hourly) {
+    cJSON *ht = cJSON_GetObjectItem(hourly, "time");
+    cJSON *hp = cJSON_GetObjectItem(hourly, "precipitation");
+    cJSON *hc = cJSON_GetObjectItem(hourly, "weather_code");
+    cJSON *hg = cJSON_GetObjectItem(hourly, "wind_gusts_10m");
+    int n = ht ? cJSON_GetArraySize(ht) : 0;
+    HourWx hw[12] = {};
+    int k = 0;
+    for (int i = 0; i < n && k < 12; i++) {
+      const char *ts = cJSON_GetArrayItem(ht, i)->valuestring;
+      int y, mo, d, h, mi;
+      if (!ts || sscanf(ts, "%d-%d-%dT%d:%d", &y, &mo, &d, &h, &mi) != 5) continue;
+      struct tm t = {};
+      t.tm_year = y - 1900;
+      t.tm_mon = mo - 1;
+      t.tm_mday = d;
+      t.tm_hour = h;
+      t.tm_min = mi;
+      // the stamps are local: read them as UTC, then take the zone off
+      cJSON *p = hp ? cJSON_GetArrayItem(hp, i) : nullptr;
+      cJSON *c = hc ? cJSON_GetArrayItem(hc, i) : nullptr;
+      cJSON *g = hg ? cJSON_GetArrayItem(hg, i) : nullptr;
+      hw[k].unix = (uint32_t)(utcMkTime(&t) - utcOffset);
+      hw[k].mm = (p && cJSON_IsNumber(p)) ? (float)p->valuedouble : 0.0f;
+      hw[k].code = (c && cJSON_IsNumber(c)) ? (uint8_t)c->valueint : 0;
+      double gv = (g && cJSON_IsNumber(g)) ? g->valuedouble : 0.0;
+      hw[k].gust = (uint8_t)(gv > 255 ? 255 : gv < 0 ? 0 : gv);
+      k++;
+    }
+    if (wxMutex) xSemaphoreTake(wxMutex, portMAX_DELAY);
+    memcpy(hours_, hw, sizeof hw);
+    nHours_ = k;
+    if (wxMutex) xSemaphoreGive(wxMutex);
   }
 
   cJSON *curr = cJSON_GetObjectItem(root, "current");
@@ -363,6 +492,7 @@ static void fetchForecast(char *buf, size_t cap) {
     w.aqi = now_.aqi; // preserve existing AQI until AQI call completes
     now_ = w;
     if (wxMutex) xSemaphoreGive(wxMutex);
+    forecastAtMs = nowMs();
     wxDirty = true;
   }
 
@@ -407,6 +537,32 @@ static void fetchAirQuality(char *buf, size_t cap) {
   cJSON_Delete(root);
 }
 
+static uint32_t homePolls;   // good home nowcasts so far
+
+// Past the nowcast's ~105 min the rain's end comes from the hourly forecast:
+// the first dry hour (under 0.2 mm) starting 30+ min after the rain does
+static uint32_t endFromHourly(uint32_t start) {
+  for (int i = 0; i < nHours_; i++) {
+    uint32_t hStart = hours_[i].unix - 3600;
+    if (hStart >= start + 30 * 60 && hours_[i].mm < 0.2f) return hStart;
+  }
+  return 0;
+}
+
+// Light Rain / Heavy Shower by intensity (7.6 mm/h is "heavy rain"); Storm
+// when the forecast has thunder or 62+ km/h gusts (Beaufort 8) while it rains
+static WxTier rainTier(const RainAlert &a) {
+  uint32_t from = a.startUnix, to = a.endUnix ? a.endUnix : a.startUnix + 2 * 3600;
+  float mm = a.mmh;
+  for (int i = 0; i < nHours_; i++) {
+    uint32_t hEnd = hours_[i].unix, hStart = hEnd - 3600;
+    if (from ? (hEnd <= from || hStart >= to) : i > 1) continue;   // no clock: the next two hours
+    if (hours_[i].code >= 95 || hours_[i].gust >= 62) return TIER_STORM;
+    if (hours_[i].mm > mm) mm = hours_[i].mm;
+  }
+  return mm >= 7.6f ? TIER_HEAVY_SHOWER : TIER_LIGHT_RAIN;
+}
+
 static void runHomeNowcast(char *buf, size_t cap) {
   char url[1024];
   homeNowcast.setLocation(homeLat, homeLon);
@@ -431,19 +587,245 @@ static void runHomeNowcast(char *buf, size_t cap) {
   }
   clearError(ERR_HOME_PARSE);
 
-  bool started = alert.active && !rainHome.active;
+  if ((alert.active || alert.raining) && alert.startUnix && !alert.endUnix) alert.endUnix = endFromHourly(alert.startUnix);
+  if (alert.active || alert.raining) alert.tier = rainTier(alert);
+  if (demoOn()) return;
   if (wxMutex) xSemaphoreTake(wxMutex, portMAX_DELAY);
   rainHome = alert;
+  homePolls++;
   if (wxMutex) xSemaphoreGive(wxMutex);
   wxDirty = true;
+}
 
-  if (started) {
-    char msg[128];
-    snprintf(msg, sizeof msg, "In ~%u min, %.1f mm/h%s%s", (unsigned)alert.etaMin, alert.mmh,
-             alert.from[0] ? ", from " : "", alert.from);
-    char title[80];
-    snprintf(title, sizeof title, "Rain soon at %s", homeName);
-    discordPost(DC_WEATHER, title, msg, 0x3498DB);
+// "35 min", "1 h 10 min", "2 h"
+static void fmtDur(char *out, size_t cap, long min) {
+  if (min < 60) snprintf(out, cap, "%ld min", min);
+  else if (min % 60 == 0 || min >= 600) snprintf(out, cap, "%ld h", (min + 30) / 60);
+  else snprintf(out, cap, "%ld h %ld min", min / 60, min % 60);
+}
+
+// "2 d 6 h" for a day or more, else fmtDur
+static void fmtLong(char *out, size_t cap, long sec) {
+  long min = sec / 60;
+  if (min < 24 * 60) fmtDur(out, cap, min);
+  else snprintf(out, cap, "%ld d %ld h", min / 1440, (min % 1440) / 60);
+}
+
+// local "16:40", or "Tue 16:40"
+static void fmtClock(char *out, size_t cap, uint32_t unixT, bool withDay) {
+  static const char *DAYS[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+  struct tm t;
+  if (!unixT || !boardLocalTimeAt((time_t)unixT, &t)) snprintf(out, cap, "--:--");
+  else if (withDay) snprintf(out, cap, "%s %02d:%02d", DAYS[t.tm_wday], t.tm_hour, t.tm_min);
+  else snprintf(out, cap, "%02d:%02d", t.tm_hour, t.tm_min);
+}
+
+// Rain warnings to #weather-announcement. While rain is on its way: a post
+// whenever the ETA has moved 5+ min from the last one (counting down or
+// re-forecast) or the tier goes up. While it rains: a post when the expected
+// end moves 5+ min. Two dry polls in a row after either: "cleared".
+static struct {
+  WxTier tier;          // tier of the last post; NONE = no warning out
+  bool raining;         // the last post said it rains now
+  int etaPosted;        // ETA in that post, in 5-min steps
+  uint32_t endPosted;   // rain end in that post
+  uint32_t pollsSeen;   // homePolls at the last check
+  uint8_t dryPolls;     // polls without rain since
+} warn;
+
+static void rainWarnTick() {
+  RainAlert a = rainHome;   // this task is the only writer
+  bool newPoll = homePolls != warn.pollsSeen;
+  warn.pollsSeen = homePolls;
+  if (cyclone_.active || demoOn()) return;   // the typhoon posts cover it
+
+  char title[112], desc[256], dur[24], clk[16];
+  if (a.active) {
+    warn.dryPolls = 0;
+    int eta = rainEtaMin(a);
+    int eta5 = (eta + 2) / 5 * 5;
+    if (warn.tier != TIER_NONE && !warn.raining && a.tier <= warn.tier && abs(eta5 - warn.etaPosted) < 5) return;
+    snprintf(title, sizeof title, "%s in ~%d min | %s", wxTierName(a.tier), eta, homeName);
+    int n;
+    if (a.startUnix && a.endUnix) {
+      fmtDur(dur, sizeof dur, (long)(a.endUnix - a.startUnix) / 60);
+      fmtClock(clk, sizeof clk, a.endUnix, false);
+      n = snprintf(desc, sizeof desc, "Lasts ~%s (until ~%s)", dur, clk);
+    } else {
+      n = snprintf(desc, sizeof desc, a.startUnix ? "No end in the 12 h forecast" : "Length unknown (no clock yet)");
+    }
+    snprintf(desc + n, sizeof desc - n, "\n%.1f mm/h%s%s", a.mmh, a.from[0] ? ", moving in from " : "", a.from);
+    discordPost(DC_WEATHER, title, desc, eta > 20 ? COL_YELLOW : COL_RED);
+    logMsg("weather: warning posted: %s", title);
+    warn.tier = a.tier;
+    warn.raining = false;
+    warn.etaPosted = eta5;
+  } else if (a.raining) {
+    warn.dryPolls = 0;
+    long shift = labs((long)a.endUnix - (long)warn.endPosted);
+    bool endKnownChanged = (a.endUnix == 0) != (warn.endPosted == 0);
+    if (warn.raining && a.tier <= warn.tier && !endKnownChanged && shift < 300) return;
+    snprintf(title, sizeof title, "%s now | %s", wxTierName(a.tier), homeName);
+    int left = rainLeftMin(a);
+    int n;
+    if (left >= 0) {
+      fmtDur(dur, sizeof dur, left);
+      fmtClock(clk, sizeof clk, a.endUnix, false);
+      n = snprintf(desc, sizeof desc, "Until ~%s (~%s left)", clk, dur);
+    } else {
+      n = snprintf(desc, sizeof desc, "No end in the 12 h forecast");
+    }
+    snprintf(desc + n, sizeof desc - n, "\n%.1f mm/h", a.mmh);
+    discordPost(DC_WEATHER, title, desc, COL_RED);
+    logMsg("weather: warning posted: %s", title);
+    warn.tier = a.tier;
+    warn.raining = true;
+    warn.endPosted = a.endUnix;
+  } else if (warn.tier != TIER_NONE && newPoll && ++warn.dryPolls >= 2) {
+    snprintf(title, sizeof title, "Weather Warning Cleared | %s", homeName);
+    discordPost(DC_WEATHER, title, warn.raining ? "The rain is over." : "The rain is no longer expected.", COL_GREEN);
+    logMsg("weather: warning cleared");
+    uint32_t seen = warn.pollsSeen;
+    warn = {};
+    warn.pollsSeen = seen;
+  }
+}
+
+// Typhoon posts: one per GDACS advisory while it is more than 6 h out, one a
+// minute in the last 6 h, one an hour while it is here, "cleared" after.
+static struct {
+  uint32_t eventId;        // storm the posts are about
+  char name[20];
+  uint32_t episodePosted;  // advisory of the last "heading here" post
+  uint32_t minutePostMs, hourPostMs;
+  bool warned, activePosted;
+} ty;
+
+static void cycloneTick() {
+  time_t now;
+  if (!tracks_ || !clockValid(&now) || demoOn()) return;
+  Cyclone best = {};
+  int bestIdx = -1;
+  for (int i = 0; i < MAX_TRACKS; i++) {
+    if (!tracks_[i].n) continue;
+    Cyclone c;
+    cycloneJudge(tracks_[i], homeLat, homeLon, now, &c);
+    if (!c.tracked) continue;
+    bool better = bestIdx < 0 || (c.active && !best.active) ||
+                  (!c.active && !best.active && c.arriveUnix < best.arriveUnix);
+    if (better) {
+      best = c;
+      bestIdx = i;
+    }
+  }
+  bool changed = best.tracked != cyclone_.tracked || best.active != cyclone_.active;
+  if (wxMutex) xSemaphoreTake(wxMutex, portMAX_DELAY);
+  cyclone_ = best;
+  trackShown = bestIdx;
+  if (wxMutex) xSemaphoreGive(wxMutex);
+  if (changed) wxDirty = true;
+
+  char title[112], desc[200], when[24], clk[24];
+  uint32_t ms = nowMs();
+  const char *kind = best.superTyphoon ? "Super Typhoon" : "Typhoon";
+  if (bestIdx >= 0) {
+    const CycloneTrack &tr = tracks_[bestIdx];
+    if (ty.eventId != tr.eventId) {
+      ty = {};
+      ty.eventId = tr.eventId;
+      snprintf(ty.name, sizeof ty.name, "%s", tr.name);
+    }
+    if (best.active) {
+      if (ty.activePosted && ms - ty.hourPostMs < 3600 * 1000) return;
+      snprintf(title, sizeof title, "%s %s Active | %s", kind, best.name, homeName);
+      snprintf(desc, sizeof desc, "Centre ~%u km away, peak wind %u km/h", best.distKm, best.windKmh);
+      discordPost(DC_WEATHER, title, desc, COL_RED);
+      ty.activePosted = ty.warned = true;
+      ty.hourPostMs = ms;
+    } else {
+      long left = (long)best.arriveUnix - (long)now;
+      fmtLong(when, sizeof when, left > 0 ? left : 0);
+      fmtClock(clk, sizeof clk, best.arriveUnix, true);
+      if (left <= 6 * 3600) {
+        if (ty.minutePostMs && ms - ty.minutePostMs < 60 * 1000) return;
+        snprintf(title, sizeof title, "%s %s in ~%s | %s", kind, best.name, when, homeName);
+        snprintf(desc, sizeof desc, "Arrives ~%s, closest ~%u km\nPeak wind %u km/h", clk, best.closestKm, best.windKmh);
+        discordPost(DC_WEATHER, title, desc, left > 20 * 60 ? COL_YELLOW : COL_RED);
+        ty.minutePostMs = ms;
+      } else {
+        if (ty.episodePosted == tr.episodeId) return;
+        snprintf(title, sizeof title, "%s %s heading for %s", kind, best.name, homeName);
+        snprintf(desc, sizeof desc, "Arrives ~%s (in ~%s), closest ~%u km\nPeak wind %u km/h (GDACS advisory %u)", clk,
+                 when, best.closestKm, best.windKmh, (unsigned)tr.episodeId);
+        discordPost(DC_WEATHER, title, desc, COL_YELLOW);
+        ty.episodePosted = tr.episodeId;
+        logMsg("weather: %s", title);
+      }
+      ty.warned = true;
+    }
+  } else if (ty.warned) {
+    snprintf(title, sizeof title, "Weather Warning Cleared | %s", homeName);
+    snprintf(desc, sizeof desc, ty.activePosted ? "Typhoon %s has passed." : "Typhoon %s is no longer heading here.", ty.name);
+    discordPost(DC_WEATHER, title, desc, COL_GREEN);
+    logMsg("weather: typhoon %s cleared", ty.name);
+    ty = {};
+  }
+}
+
+// Current cyclones from GDACS; a nearby storm's track is fetched again only
+// when GDACS publishes a new advisory for it (about every 6 h)
+static void pollCyclones(char *buf, size_t cap) {
+  time_t now;
+  if (!clockValid(&now)) return;
+  if (!tracks_) tracks_ = (CycloneTrack *)heap_caps_calloc(MAX_TRACKS, sizeof(CycloneTrack), MALLOC_CAP_SPIRAM);
+  if (!tracks_) return;
+
+  char url[200];
+  cycloneListUrl(url, sizeof url, now);
+  int status = 0;
+  if (!httpGet(url, buf, cap, &status)) {
+    char err[64];
+    snprintf(err, sizeof err, "weather: GDACS list HTTP failed (%d)", status);
+    logErrorOnce(ERR_TC_HTTP, err);
+    return;
+  }
+  clearError(ERR_TC_HTTP);
+  CycloneCandidate cand[MAX_TRACKS];
+  int n = cycloneParseList(buf, homeLat, homeLon, cand, MAX_TRACKS);
+
+  for (int i = 0; i < MAX_TRACKS; i++) {   // storms no longer listed (or no longer near)
+    bool listed = false;
+    for (int k = 0; k < n; k++) listed |= tracks_[i].eventId == cand[k].eventId;
+    if (!listed) memset(&tracks_[i], 0, sizeof(CycloneTrack));
+  }
+  for (int k = 0; k < n; k++) {
+    int slot = -1, freeSlot = -1;
+    for (int i = 0; i < MAX_TRACKS; i++) {
+      if (tracks_[i].eventId == cand[k].eventId) slot = i;
+      else if (!tracks_[i].eventId && freeSlot < 0) freeSlot = i;
+    }
+    if (slot >= 0 && tracks_[slot].episodeId == cand[k].episodeId) continue;   // have this advisory
+    int dst = slot >= 0 ? slot : freeSlot;
+    if (dst < 0) continue;
+    // ~350 KB of GeoJSON: a PSRAM buffer just for this fetch
+    const size_t bigCap = 1024 * 1024;
+    char *big = (char *)heap_caps_malloc(bigCap, MALLOC_CAP_SPIRAM);
+    if (!big) continue;
+    cycloneTrackUrl(url, sizeof url, cand[k].eventId, cand[k].episodeId);
+    bool got = httpGet(url, big, bigCap, &status);
+    size_t len = strlen(big);
+    if (got && cycloneParseTrack(big, len, cand[k], now, &tracks_[dst])) {
+      clearError(ERR_TC_TRACK);
+      logMsg("weather: cyclone %s: %d track points from %u KB, advisory %u, %.0f km away", tracks_[dst].name,
+             tracks_[dst].n, (unsigned)(len / 1024), (unsigned)cand[k].episodeId,
+             cycloneDistKm(homeLat, homeLon, cand[k].lat, cand[k].lon));
+    } else {
+      char err[96];
+      snprintf(err, sizeof err, "weather: GDACS track for %s failed (HTTP %d, %s, %u KB)", cand[k].name, status,
+               esp_err_to_name(lastHttpErr), (unsigned)(len / 1024));
+      logErrorOnce(ERR_TC_TRACK, err);
+    }
+    heap_caps_free(big);
   }
 }
 
@@ -462,22 +844,25 @@ static const char *iconWord(WxIcon i) {
   return "";
 }
 
-// Morning forecast to #weather-announcement: the first good forecast after
-// 06:00, once a day (the day is kept in NVS so a reboot does not repeat it)
-static void postMorningForecast() {
+// Weather update to #weather-announcement every 2 h from 06:00 to 20:00; the
+// 06:00 one adds the 3-day forecast. The slot is kept in NVS so a reboot in
+// the same hour does not post it twice.
+static void postWeatherUpdate() {
   struct tm t;
-  if (!now_.valid || !boardLocalTime(&t) || t.tm_hour < 6) return;
-  uint32_t day = (uint32_t)(t.tm_year + 1900) * 1000 + t.tm_yday;
-  static uint32_t postedDay;
+  if (!now_.valid || !boardLocalTime(&t)) return;
+  if (t.tm_hour < 6 || t.tm_hour > 20 || (t.tm_hour & 1)) return;
+  if (!forecastAtMs || nowMs() - forecastAtMs > 10 * 60 * 1000) return;   // wait for fresh data
+  uint32_t slot = (uint32_t)(t.tm_year + 1900) * 10000 + t.tm_yday * 24 + t.tm_hour;
+  static uint32_t posted;
   nvs_handle_t h;
-  if (!postedDay && nvs_open("wx", NVS_READONLY, &h) == ESP_OK) {
-    nvs_get_u32(h, "fc_day", &postedDay);
+  if (!posted && nvs_open("wx", NVS_READONLY, &h) == ESP_OK) {
+    nvs_get_u32(h, "upd_slot", &posted);
     nvs_close(h);
   }
-  if (postedDay == day) return;
-  postedDay = day;
+  if (posted == slot) return;
+  posted = slot;
   if (nvs_open("wx", NVS_READWRITE, &h) == ESP_OK) {
-    nvs_set_u32(h, "fc_day", day);
+    nvs_set_u32(h, "upd_slot", slot);
     nvs_commit(h);
     nvs_close(h);
   }
@@ -486,17 +871,37 @@ static void postMorningForecast() {
   if (wxMutex) xSemaphoreTake(wxMutex, portMAX_DELAY);
   w = now_;
   if (wxMutex) xSemaphoreGive(wxMutex);
-  char desc[320];
-  int n = snprintf(desc, sizeof desc, "%d\u00b0 / %d\u00b0, %s\nWind %.0f km/h", w.tmax, w.tmin, iconWord(w.icon), w.windKmh);
+  char desc[480], clk[16];
+  int n = snprintf(desc, sizeof desc, "%.0f\u00b0 (%d\u00b0 / %d\u00b0), %s\nWind %.0f km/h", (double)w.temp, w.tmax, w.tmin,
+                   iconWord(w.icon), w.windKmh);
   if (w.aqi >= 0) n += snprintf(desc + n, sizeof desc - n, ", AQI %d", w.aqi);
-  for (int i = 0; i < 3 && n < (int)sizeof desc; i++)
-    if (w.days[i].name[0])
-      n += snprintf(desc + n, sizeof desc - n, "\n%s: %d\u00b0 / %d\u00b0, %s", w.days[i].name, w.days[i].tmax, w.days[i].tmin,
-                    iconWord(w.days[i].icon));
-  char title[80];
-  snprintf(title, sizeof title, "Today in %s", w.place[0] ? w.place : "Home");
-  discordPost(DC_WEATHER, title, desc, 0x3498DB);
-  logMsg("weather: morning forecast posted");
+  const RainAlert &r = rainHome;
+  if (r.raining) {
+    fmtClock(clk, sizeof clk, r.endUnix, false);
+    n += snprintf(desc + n, sizeof desc - n, r.endUnix ? "\n%s now, until ~%s" : "\n%s now", wxTierName(r.tier), clk);
+  } else if (r.active) {
+    n += snprintf(desc + n, sizeof desc - n, "\n%s in ~%d min", wxTierName(r.tier), rainEtaMin(r));
+  } else {
+    n += snprintf(desc + n, sizeof desc - n, "\nNo rain in the next 2 h");
+  }
+  if (cyclone_.tracked && n < (int)sizeof desc) {
+    if (cyclone_.active) {
+      n += snprintf(desc + n, sizeof desc - n, "\nTyphoon %s active", cyclone_.name);
+    } else {
+      fmtClock(clk, sizeof clk, cyclone_.arriveUnix, true);
+      n += snprintf(desc + n, sizeof desc - n, "\nTyphoon %s expected ~%s", cyclone_.name, clk);
+    }
+  }
+  if (t.tm_hour == 6) {
+    for (int i = 0; i < 3 && n < (int)sizeof desc; i++)
+      if (w.days[i].name[0])
+        n += snprintf(desc + n, sizeof desc - n, "\n%s: %d\u00b0 / %d\u00b0, %s", w.days[i].name, w.days[i].tmax,
+                      w.days[i].tmin, iconWord(w.days[i].icon));
+  }
+  char title[96];
+  snprintf(title, sizeof title, "Currently in %s | %02d:%02d", w.place[0] ? w.place : "Home", t.tm_hour, t.tm_min);
+  discordPost(DC_WEATHER, title, desc, COL_BLUE);
+  logMsg("weather: update posted (%02d:%02d)", t.tm_hour, t.tm_min);
 }
 
 static void runPhoneNowcast(char *buf, size_t cap) {
@@ -527,11 +932,13 @@ static void runPhoneNowcast(char *buf, size_t cap) {
   if (wxMutex) xSemaphoreGive(wxMutex);
 
   // Rain notification for away phone
-  if (alert.active) {
+  if (alert.active || alert.raining) {
     phoneDryStartMs = 0;
     if (!phoneAlertSent) {
       char msg[128];
-      if (alert.from[0]) {
+      if (alert.raining) {
+        snprintf(msg, sizeof(msg), "Raining at your location now (%.1f mm/h)", alert.mmh);
+      } else if (alert.from[0]) {
         snprintf(msg, sizeof(msg), "Rain at your location in ~%u min (%.1f mm/h, from %s)",
                  (unsigned)alert.etaMin, alert.mmh, alert.from);
       } else {
@@ -619,6 +1026,9 @@ static void weatherTask(void *) {
   }
 
   uint32_t lastForecastMs = 0;
+  uint32_t lastAqiMs = 0;
+  uint32_t lastCycloneMs = 0;
+  uint32_t lastJudgeMs = 0;
   uint32_t lastHomeNowcastMs = 0;
   uint32_t lastPhoneNowcastMs = 0;
   uint32_t lastNvsSaveMs = nowMs();
@@ -649,18 +1059,28 @@ static void weatherTask(void *) {
 
     uint32_t curMs = nowMs();
 
-    // 1. Forecast & Air Quality: every 30 min, on Wi-Fi connect, or on home location change
-    if (forceImmediate || lastForecastMs == 0 || (curMs - lastForecastMs >= 30 * 60 * 1000)) {
-      if (checkBudgetForecast()) {
-        fetchForecast(httpBuf, httpBufCap);
-        postMorningForecast();
-      }
-      if (checkBudgetForecast()) {
-        fetchAirQuality(httpBuf, httpBufCap);
-      }
+    // 1. Forecast every 5 min, air quality every 30, both at once on Wi-Fi
+    // connect or a home change
+    if (forceImmediate || lastForecastMs == 0 || (curMs - lastForecastMs >= 5 * 60 * 1000)) {
+      if (checkBudgetForecast()) fetchForecast(httpBuf, httpBufCap);
       lastForecastMs = curMs;
-      // failed: try again in a minute, not in 30
-      if (loggedErrors & (ERR_FC_HTTP | ERR_FC_PARSE)) lastForecastMs = curMs - 29 * 60 * 1000;
+      // failed: try again in a minute
+      if (loggedErrors & (ERR_FC_HTTP | ERR_FC_PARSE)) lastForecastMs = curMs - 4 * 60 * 1000;
+    }
+    if (forceImmediate || lastAqiMs == 0 || (curMs - lastAqiMs >= 30 * 60 * 1000)) {
+      if (checkBudgetForecast()) fetchAirQuality(httpBuf, httpBufCap);
+      lastAqiMs = curMs;
+    }
+
+    // 1b. Cyclones near home: GDACS list every 30 min (5 after a failure)
+    if (forceImmediate || cycloneRefresh || lastCycloneMs == 0 || (curMs - lastCycloneMs >= 30 * 60 * 1000)) {
+      if (cycloneRefresh && tracks_) memset(tracks_, 0, MAX_TRACKS * sizeof(CycloneTrack));   // refetch the tracks too
+      cycloneRefresh = false;
+      clearError(ERR_TC_HTTP | ERR_TC_TRACK);   // log this round's errors again
+      pollCyclones(httpBuf, httpBufCap);
+      lastCycloneMs = curMs;
+      if (loggedErrors & ERR_TC_HTTP) lastCycloneMs = curMs - 25 * 60 * 1000;
+      lastJudgeMs = 0;
     }
 
     // 2. Home Nowcast engine
@@ -692,7 +1112,15 @@ static void weatherTask(void *) {
 
     forceImmediate = false;
 
-    // 4. Budget persistence every 15 min
+    // 4. Warnings and the 2-hourly update; storms re-judged every 30 s
+    if (!lastJudgeMs || curMs - lastJudgeMs >= 30 * 1000) {
+      cycloneTick();
+      lastJudgeMs = curMs;
+    }
+    rainWarnTick();
+    postWeatherUpdate();
+
+    // 5. Budget persistence every 15 min
     if (curMs - lastNvsSaveMs >= 15 * 60 * 1000) {
       saveBudgetNvs();
       lastNvsSaveMs = curMs;
@@ -753,6 +1181,14 @@ void weatherPoll() {
     owntracksStart();
   }
 
+  // live countdowns: redraw once a minute while a warning is up
+  static uint32_t lastMinute;
+  time_t now;
+  if ((rainHome.active || rainHome.raining || cyclone_.tracked) && clockValid(&now) && (uint32_t)(now / 60) != lastMinute) {
+    lastMinute = (uint32_t)(now / 60);
+    wxDirty = true;
+  }
+
   if (wxDirty) {
     wxDirty = false;
     viewsMarkDirty(-1);
@@ -761,13 +1197,18 @@ void weatherPoll() {
 
 void weatherCommand(const char *a1, const char *a2) {
   if (a1 && !strcmp(a1, "demo")) {
-    loadDemo(a2 && !strcmp(a2, "rain"));
-    logMsg("weather: demo data loaded%s", rainHome.active ? " (rain incoming)" : "");
+    int mode = !a2 ? 0 : !strcmp(a2, "rain") ? 1 : !strcmp(a2, "typhoon") ? 2 : 0;
+    loadDemo(mode);
+    demoUntilMs = nowMs() + 5 * 60 * 1000;
+    logMsg("weather: demo data loaded%s for 5 min (no Discord posts)",
+           mode == 1 ? " (heavy shower in 25 min)" : mode == 2 ? " (typhoon here)" : "");
   } else if (a1 && !strcmp(a1, "clear")) {
     if (wxMutex) xSemaphoreTake(wxMutex, portMAX_DELAY);
     now_ = {};
     rainHome = {};
     rainPhone = {};
+    cyclone_ = {};
+    demoUntilMs = 0;
     if (wxMutex) xSemaphoreGive(wxMutex);
     wxDirty = true;
     logMsg("weather: cleared");
@@ -807,6 +1248,11 @@ void weatherCommand(const char *a1, const char *a2) {
     }
     setHomeLocation(lat, lon, name);
     logMsg("weather: home set to %s (%.5f, %.5f)", name, lat, lon);
+  } else if (a1 && !strcmp(a1, "storms")) {
+    cycloneRefresh = true;
+    if (wxTaskHandle) xTaskNotifyGive(wxTaskHandle);
+    logMsg("weather: cyclone refresh queued");
+    return;
   } else if (a1 && !strcmp(a1, "test-alert")) {
     testAlertPending = true;
     if (wxTaskHandle) xTaskNotifyGive(wxTaskHandle);
@@ -823,10 +1269,13 @@ void weatherCommand(const char *a1, const char *a2) {
     if (loggedErrors) logMsg("weather: last error: %s [%s]", lastError, esp_err_to_name(lastHttpErr));
 
     // Home engine
-    if (rainHome.active) {
-      logMsg("weather: home engine: rain in ~%u min (%.1f mm/h, from %s) | cadence %u min",
-             (unsigned)rainHome.etaMin, rainHome.mmh, rainHome.from[0] ? rainHome.from : "--",
-             (unsigned)(homeNowcast.cadenceMs() / 60000));
+    if (rainHome.active || rainHome.raining) {
+      char s[16], e[16];
+      fmtClock(s, sizeof s, rainHome.startUnix, false);
+      fmtClock(e, sizeof e, rainHome.endUnix, false);
+      logMsg("weather: home engine: %s %s (%s to %s, %.1f mm/h, from %s) | cadence %u min", wxTierName(rainHome.tier),
+             rainHome.raining ? "now" : "soon", s, rainHome.endUnix ? e : "12 h+", rainHome.mmh,
+             rainHome.from[0] ? rainHome.from : "--", (unsigned)(homeNowcast.cadenceMs() / 60000));
     } else if (rainHome.dryKm > 0) {
       logMsg("weather: home engine: clear, radar dry within %u km | cadence %u min",
              (unsigned)rainHome.dryKm, (unsigned)(homeNowcast.cadenceMs() / 60000));
@@ -863,13 +1312,30 @@ void weatherCommand(const char *a1, const char *a2) {
       }
     }
 
+    // Cyclones (GDACS)
+    int nTracks = 0;
+    for (int i = 0; tracks_ && i < MAX_TRACKS; i++) {
+      if (!tracks_[i].n) continue;
+      nTracks++;
+      Cyclone c;
+      time_t now;
+      if (!clockValid(&now)) break;
+      cycloneJudge(tracks_[i], homeLat, homeLon, now, &c);
+      char a[24];
+      fmtClock(a, sizeof a, c.arriveUnix, true);
+      logMsg("weather: cyclone %s%s: %u km now, closest %u km, peak %u km/h, %s", tracks_[i].name,
+             i == trackShown ? " (shown)" : "", c.distKm, c.closestKm, c.windKmh,
+             c.active ? "TYPHOON HERE" : c.tracked ? a : "not a typhoon threat");
+    }
+    if (!nTracks) logMsg("weather: cyclones: none within %.0f km", CYCLONE_WATCH_KM);
+
     // Budget
     logMsg("weather: budget: %u/9500 calls today (home: %u, phone: %u, forecast: %u)",
            (unsigned)budgetTotalCalls, (unsigned)budgetHomeCalls,
            (unsigned)budgetPhoneCalls, (unsigned)budgetFcCalls);
     return;
   } else {
-    logMsg("weather: usage weather <show|demo [rain]|clear|home <lat>,<lon> [name]|test-alert>");
+    logMsg("weather: usage weather <show|demo [rain|typhoon]|clear|storms|home <lat>,<lon> [name]|test-alert>");
     return;
   }
 

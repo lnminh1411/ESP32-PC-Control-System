@@ -1,6 +1,6 @@
 # Weather & Rain Nowcasting
 
-Firmware integration for live weather, advection-based rain nowcasting, OwnTracks phone location tracking, and mobile rain alerts (Discord + Pushover).
+Firmware integration for live weather, advection-based rain nowcasting, tiered rain and typhoon warnings (GDACS cyclone tracking), OwnTracks phone location tracking, and mobile rain alerts (Discord + Pushover).
 
 Runs on the carrier firmware (ESP-IDF 5.5) in its own FreeRTOS task.
 
@@ -127,8 +127,8 @@ The firmware dynamically balances Home and Phone nowcasting:
     - Discord #weather-announcement (`DISCORD_CH_WEATHER`): "Rain at your location in ~N min (X mm/h, from NW)"
     - Pushover: POST to `https://api.pushover.net/1/messages.json` with title "Rain soon".
   - **Re-arm**: The phone rain alert re-arms only after 60 minutes of continuously dry conditions.
-  - The home engine posts to the same channel when rain starts heading for home, and the
-    first forecast after 06:00 each day is posted there as a morning summary.
+  - The home engine's warnings and the 2-hourly weather updates go to the same channel
+    (sections 8 and 9).
 
 ---
 
@@ -144,9 +144,16 @@ In a single multi-location query to Open-Meteo, 17 coordinates are sampled:
 
 Endpoint:
 ```
-https://api.open-meteo.com/v1/forecast?latitude=..&longitude=..&minutely_15=precipitation&past_minutely_15=2&forecast_minutely_15=8
+https://api.open-meteo.com/v1/forecast?latitude=..&longitude=..&minutely_15=precipitation&past_minutely_15=2&forecast_minutely_15=8&timeformat=unixtime
 ```
 `minutely_15` returns precipitation per 15 min in mm ($\times 4 = \text{mm/h}$) for steps $k = -2..7$ (10 steps total).
+Each value is the rain of the 15 minutes *before* its timestamp, so the engine
+takes it as the rain at timestamp − 7.5 min.
+
+Outside Central Europe and North America, Open-Meteo interpolates these
+15-minute steps from hourly models: in Hanoi the data changes about once an
+hour. Polling faster than every 5 minutes buys nothing, which is why the
+countdowns below run from the clock instead.
 
 ### Advection Tracking Algorithm:
 1. **Precipitation Field**: $F[k][\text{point}]$ stored in mm/h for $k = -2..7$.
@@ -157,29 +164,93 @@ https://api.open-meteo.com/v1/forecast?latitude=..&longitude=..&minutely_15=prec
    - Field values at shifted coordinates are computed using 2D inverse-distance power 2 interpolation from the 17 points.
    - The candidate with the smallest error is selected. If the entire grid is dry, $v = 0$.
    - Direction: `from` is the compass direction of $-v$ (the direction the rain approaches from).
-3. **ETA & Intensity**:
-   - Evaluates steps $t \in [0, 90]$ min in 5-minute increments.
+3. **Start, End & Intensity**:
+   - Time $t$ counts from slot $k = 0$'s midpoint; the search starts at *now*
+     (from the slot timestamps and the clock) and runs to $t = 105$ min in 5-minute steps.
    - At each $t$, checks combined rain rate: $\max(\text{center forecast}(t), F[0](\text{center} - v \cdot t))$.
-   - ETA is the earliest $t$ where combined rain rate exceeds $0.5$ mm/h.
-   - Intensity is the maximum rate over the 30-minute window starting at ETA.
-4. **RainAlert State**:
-   - Active when $\text{ETA} \le 60$ min (or raining now: ETA 0).
+   - Start is the earliest $t$ where the combined rate exceeds $0.5$ mm/h; end is the
+     first step after it under $0.3$ mm/h.
+   - Past the 105-min horizon the end comes from the hourly forecast: the first hour under 0.2 mm.
+   - Intensity is the maximum rate between start and end.
+4. **RainAlert State**: absolute `startUnix` / `endUnix`, so the ETA and the time left count
+   down every minute between polls (`rainEtaMin()`, `rainLeftMin()`).
+   - `active` (a warning) when rain starts within 60 min; `raining` when it rains now.
    - Inactive: `dryKm = 25` when all 17 points are dry for $k = 0..7$, else 0.
 5. **Adaptive Cadence**:
-   - **All dry**: 30 minutes
+   - **All dry**: 15 minutes
    - **Rain anywhere in grid**: 10 minutes
-   - **Alert active**: 5 minutes
+   - **Warning or raining**: 5 minutes (catches an hourly model update soon after it lands)
 
 ---
 
-## 8. Call Budget Management
+## 8. Warnings
+
+Five tiers, mildest first:
+
+| Tier | When |
+|---|---|
+| Light Rain | under 7.6 mm/h |
+| Heavy Shower | 7.6 mm/h or more (nowcast or hourly forecast) |
+| Storm | thunder (WMO 95-99) or gusts of 62+ km/h (Beaufort 8) in the hourly forecast while it rains |
+| Typhoon | a GDACS cyclone of typhoon strength whose centre comes within 300 km |
+| Super Typhoon | the same, with a peak wind of 184+ km/h (Vietnam's *siêu bão*, level 16) |
+
+Rain (home engine) to #weather-announcement:
+
+- **On its way** (starts within 60 min): a post when the warning starts, then whenever the
+  ETA has moved 5+ min from the last post (counting down or re-forecast), or the tier goes up.
+  Title `Heavy Shower in ~25 min | <place>`, with how long it lasts and when it ends.
+  Yellow while more than 20 min out, red from 20 min.
+- **Raining**: one red post `Heavy Shower now | <place>` with the expected end, then a post
+  whenever that end moves 5+ min. The display shows no warning box while it rains; the
+  weather face's rain box shows the end time instead.
+- **Cleared**: two dry polls in a row after a warning: green `Weather Warning Cleared`.
+
+Typhoons:
+
+- More than 6 h out: one yellow post per GDACS advisory (about every 6 h) with the
+  arrival time, closest approach and peak wind.
+- Last 6 h: a post every minute; red warning box on the display.
+- Here (centre within 300 km): red box `TYPHOON <NAME> ACTIVE`, a post every hour. Rain posts
+  pause meanwhile.
+- Gone: green `Weather Warning Cleared`.
+
+## 9. Typhoon Tracking (GDACS)
+
+[GDACS](https://www.gdacs.org) (UN / EU Joint Research Centre, no key) publishes every
+tropical cyclone with its JTWC track and forecast:
+
+- Event list (`geteventlist/SEARCH?eventlist=TC`, ~6 KB) every 30 min. Storms within
+  3000 km of home are tracked, up to three.
+- Each tracked storm's geometry (`polygons/getgeometry`, ~350 KB) is fetched into a 1 MB
+  PSRAM buffer, only when GDACS publishes a new advisory (episode) for it. Both are
+  scanned as text: cJSON would need megabytes, and its nodes would come out of internal RAM.
+- Track points (time, position) come from the `Point_Polygon_Point_N` markers (bbox centre,
+  `key` = MMDDhhmm UTC); the class per point (TD, TS, HU) from the `Line_Line_N` segments.
+- Every 30 s the board places each storm on its track at the current time, walks the
+  forecast in 15-min steps for the first time within 300 km and the closest approach,
+  and keeps the most pressing storm.
+- Limits: GDACS gives the storm's *peak* wind, not the wind at arrival, so "super"
+  can overstate a storm that has weakened; the forecast reaches 3-5 days ahead.
+
+## 10. Weather Updates
+
+Every 2 h from 06:00 to 20:00 local, `Currently in <place> | HH:MM` goes to
+#weather-announcement: temperature, today's range, conditions, wind, AQI, rain status and
+any tracked typhoon. The 06:00 one adds the 3-day forecast. The posted slot is kept in NVS
+(`upd_slot`) so a reboot in the same hour doesn't repeat it.
+
+---
+
+## 11. Call Budget Management
 
 Open-Meteo allows up to 10,000 calls per UTC day. The firmware enforces a conservative hard cap of **9,500 calls/day**.
 
 - **Call Accounting**:
-  - Home forecast: 1 call
-  - Home air quality: 1 call
+  - Home forecast (with 12 hourly steps): 1 call, every 5 min (288/day)
+  - Home air quality: 1 call, every 30 min (48/day)
   - Nowcast poll (multi-location 17 points): 17 calls
+  - GDACS (cyclones) is a separate service and not counted
 - **Daily Allocation**:
   - Reserved for Forecast + AQI: 400 calls/day
   - Available for Nowcast engines: $9,500 - 400 = 9,100$ calls/day
@@ -196,25 +267,28 @@ Open-Meteo allows up to 10,000 calls per UTC day. The firmware enforces a conser
 
 ---
 
-## 9. Console Commands
+## 12. Console Commands
 
 Access commands via USB-UART or Discord `/actions` command:
 
 | Command | Description |
 |---|---|
-| `weather show` | Prints current weather, home engine status, phone engine status (distance, age, alert), and budget usage. |
+| `weather show` | Prints current weather, home engine status (tier, start and end), phone engine status, tracked cyclones, and budget usage. |
 | `weather home <lat>,<lon> [name]` | Sets home coordinates and location name. Persists to NVS and triggers immediate poll. |
-| `weather demo [rain]` | Loads sample mock weather onto the display (with or without rain incoming alert). |
-| `weather clear` | Clears all weather and rain alert buffers. |
+| `weather demo [rain\|typhoon]` | Loads sample weather onto the display for 5 min: dry, a heavy shower in 25 min, or a typhoon at home. Polls leave it alone and nothing is posted. |
+| `weather clear` | Clears all weather, rain alert and cyclone buffers. |
+| `weather storms` | Fetches the GDACS list and every nearby storm's track again now. |
 | `weather test-alert` | Sends an immediate test notification through both Discord and Pushover channels. |
 
 ---
 
-## 10. Sample `weather show` Output
+## 13. Sample `weather show` Output
 
 ```
-weather: Hanoi 28.5 C (32/24) wind 14 km/h from 225 deg, AQI 45 | rain incoming
-weather: home engine: rain in ~20 min (3.2 mm/h, from NW) | cadence 5 min
-weather: phone engine: away (dist 14.20 km, age 45 s) | clear, cadence 10 min
-weather: budget: 188/9500 calls today (home: 136, phone: 51, forecast: 1)
+weather: Tương Mai 28.8 C (31/25) wind 15 km/h from 116 deg, AQI 105 | rain none
+weather: home engine: Light Rain now (14:47 to 17:00, 1.2 mm/h, from E) | cadence 5 min
+weather: phone engine: off (MQTT_URI empty)
+weather: cyclone TWO: 1971 km now, closest 1971 km, peak 120 km/h, not a typhoon threat
+weather: cyclone CHAMPI: 2791 km now, closest 2791 km, peak 296 km/h, not a typhoon threat
+weather: budget: 369/9500 calls today (home: 357, phone: 0, forecast: 12)
 ```

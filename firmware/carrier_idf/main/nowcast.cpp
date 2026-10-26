@@ -4,6 +4,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include "log.h"
 
@@ -65,7 +66,7 @@ int NowcastEngine::buildUrl(char *out, size_t maxLen) const {
     len += snprintf(out + len, maxLen - len, "%s%.5f", (i == 0) ? "" : ",", lons[i]);
   }
   len += snprintf(out + len, maxLen - len,
-                  "&minutely_15=precipitation&past_minutely_15=2&forecast_minutely_15=8");
+                  "&minutely_15=precipitation&past_minutely_15=2&forecast_minutely_15=8&timeformat=unixtime");
   return len;
 }
 
@@ -94,6 +95,17 @@ bool NowcastEngine::processResponse(const char *json, RainAlert *outAlert, uint3
   if (!cJSON_IsArray(root) || cJSON_GetArraySize(root) < N_POINTS) {
     cJSON_Delete(root);
     return false;
+  }
+
+  // Slot times (unix, UTC) from the centre point: the ETA counts from the clock,
+  // not from the slot, or it would sit still for up to 15 min and then jump
+  uint32_t slot2 = 0;
+  {
+    cJSON *item = cJSON_GetArrayItem(root, 0);
+    cJSON *min15 = item ? cJSON_GetObjectItem(item, "minutely_15") : nullptr;
+    cJSON *times = min15 ? cJSON_GetObjectItem(min15, "time") : nullptr;
+    cJSON *t2 = (times && cJSON_GetArraySize(times) > 2) ? cJSON_GetArrayItem(times, 2) : nullptr;
+    if (t2 && cJSON_IsNumber(t2)) slot2 = (uint32_t)t2->valuedouble;
   }
 
   // 1. Populate precipitation field F[k][point] for k = -2..7 (s = 0..9)
@@ -135,12 +147,9 @@ bool NowcastEngine::processResponse(const char *json, RainAlert *outAlert, uint3
   if (allDry) {
     isDry_ = true;
     lastSpeed_ = 0.0f;
-    alert_.active = false;
-    alert_.etaMin = 0;
-    alert_.mmh = 0.0f;
-    alert_.from[0] = '\0';
+    alert_ = {};
     alert_.dryKm = 25;
-    cadenceMs_ = 30 * 60 * 1000; // 30 min cadence when all dry
+    cadenceMs_ = 15 * 60 * 1000; // all dry: the 15-min data can't change faster
     if (outAlert) *outAlert = alert_;
     if (outCadenceMs) *outCadenceMs = cadenceMs_;
     return true;
@@ -211,69 +220,56 @@ bool NowcastEngine::processResponse(const char *json, RainAlert *outAlert, uint3
     snprintf(fromCompass, sizeof(fromCompass), "%s", SECTORS[sector]);
   }
 
-  // 3. ETA: smallest t (5-min steps up to 90 min) where either advected field
-  // F[0](home - v*t) or center forecast at t exceeds 0.5 mm/h
-  bool etaFound = false;
-  uint16_t foundEta = 0;
+  // 3. Timing. A slot's value at time T is the rain of the 15 min before T,
+  // so it stands for T - 7.5 min; t counts minutes from that point of slot 2
+  // (k = 0). Rain at t is the larger of the centre forecast and the k = 0
+  // field advected by the motion vector.
+  time_t nowT = time(nullptr);
+  bool clockOk = nowT >= 1700000000 && slot2 > 0;
+  uint32_t base = clockOk ? slot2 - 450 : 0;
+  float tNow = clockOk ? (float)((double)nowT - (double)base) / 60.0f : 0.0f;
+  if (tNow < 0.0f) tNow = 0.0f;
+  if (tNow > 90.0f) tNow = 90.0f;
 
-  for (int t = 0; t <= 90; t += 5) {
-    int kFloor = t / 15;
-    int kCeil = (kFloor >= 6) ? 6 : (kFloor + 1);
-    float frac = (t % 15) / 15.0f;
-    float centerVal = (1.0f - frac) * F_[kFloor + 2][0] + frac * F_[kCeil + 2][0];
+  auto rainAt = [&](float t) -> float {
+    float k = t / 15.0f;
+    if (k > 7.0f) k = 7.0f;
+    int kf = (int)k;
+    int kc = kf < 7 ? kf + 1 : 7;
+    float frac = k - (float)kf;
+    float centerVal = (1.0f - frac) * F_[kf + 2][0] + frac * F_[kc + 2][0];
+    float advectVal = interpolateField(2, -bestVx * t / 60.0f, -bestVy * t / 60.0f);
+    return (advectVal > centerVal) ? advectVal : centerVal;
+  };
 
-    float advectX = -bestVx * ((float)t / 60.0f);
-    float advectY = -bestVy * ((float)t / 60.0f);
-    float advectVal = interpolateField(2, advectX, advectY); // k=0 is index 2
+  static const float HORIZON = 105.0f;   // slot 9's midpoint
+  bool rainingNow = rainAt(tNow) > 0.5f;
+  float tStart = -1.0f;
+  for (float t = tNow; t <= HORIZON; t += 5.0f)
+    if (rainAt(t) > 0.5f) { tStart = t; break; }
 
-    float comb = (advectVal > centerVal) ? advectVal : centerVal;
-    if (comb > 0.5f) {
-      etaFound = true;
-      foundEta = (uint16_t)t;
-      break;
+  alert_ = {};
+  if (tStart >= 0.0f) {
+    // end: first step under 0.3 mm/h (hysteresis below the 0.5 start)
+    float tEnd = -1.0f, maxInt = 0.0f;
+    for (float t = tStart; t <= HORIZON; t += 5.0f) {
+      float r = rainAt(t);
+      if (r < 0.3f) { tEnd = t; break; }
+      if (r > maxInt) maxInt = r;
     }
-  }
-
-  if (etaFound) {
-    // Intensity = max of the two over the next 30 min after ETA
-    float maxInt = 0.0f;
-    for (int t = (int)foundEta; t <= (int)foundEta + 30 && t <= 90; t += 5) {
-      int kFloor = t / 15;
-      int kCeil = (kFloor >= 6) ? 6 : (kFloor + 1);
-      float frac = (t % 15) / 15.0f;
-      float centerVal = (1.0f - frac) * F_[kFloor + 2][0] + frac * F_[kCeil + 2][0];
-
-      float advectX = -bestVx * ((float)t / 60.0f);
-      float advectY = -bestVy * ((float)t / 60.0f);
-      float advectVal = interpolateField(2, advectX, advectY);
-
-      float comb = (advectVal > centerVal) ? advectVal : centerVal;
-      if (comb > maxInt) maxInt = comb;
-    }
-
-    // 4. RainAlert: active when ETA <= 60 min (or raining now: ETA 0)
-    if (foundEta <= 60) {
-      alert_.active = true;
-      alert_.etaMin = foundEta;
-      alert_.mmh = maxInt;
-      snprintf(alert_.from, sizeof(alert_.from), "%s", fromCompass);
-      alert_.dryKm = 0;
-      cadenceMs_ = 5 * 60 * 1000; // 5 min cadence when alert active
-    } else {
-      alert_.active = false;
-      alert_.etaMin = foundEta;
-      alert_.mmh = maxInt;
-      snprintf(alert_.from, sizeof(alert_.from), "%s", fromCompass);
-      alert_.dryKm = 0;
-      cadenceMs_ = 10 * 60 * 1000; // rain in grid -> 10 min
-    }
+    uint16_t eta = (uint16_t)(tStart - tNow + 0.5f);
+    alert_.raining = rainingNow;
+    alert_.active = !rainingNow && eta <= 60;
+    alert_.etaMin = rainingNow ? 0 : eta;
+    alert_.startUnix = clockOk ? (rainingNow ? (uint32_t)nowT : base + (uint32_t)(tStart * 60.0f)) : 0;
+    alert_.endUnix = (clockOk && tEnd >= 0.0f) ? base + (uint32_t)(tEnd * 60.0f) : 0;
+    alert_.mmh = maxInt;
+    snprintf(alert_.from, sizeof(alert_.from), "%s", fromCompass);
+    // warning or rain: 5 min catches an hourly model update soon after it lands
+    cadenceMs_ = (alert_.active || alert_.raining) ? 5 * 60 * 1000 : 10 * 60 * 1000;
   } else {
-    alert_.active = false;
-    alert_.etaMin = 0;
-    alert_.mmh = 0.0f;
-    alert_.from[0] = '\0';
     alert_.dryKm = anyRainInGrid ? 0 : 25;
-    cadenceMs_ = anyRainInGrid ? (10 * 60 * 1000) : (30 * 60 * 1000);
+    cadenceMs_ = anyRainInGrid ? (10 * 60 * 1000) : (15 * 60 * 1000);
   }
 
   if (outAlert) *outAlert = alert_;

@@ -53,8 +53,10 @@ Notes on what is shown:
   the PC with Windows' fonts and font fallback, then sent to the board as a
   4-bit alpha bitmap. The board caches the last 8 bitmaps.
 - **Cover art** is 144x144, sent as RGB444 (31 KB per cover).
-- **Rain warning:** when rain is less than ~2 hours away, the weather face
-  shows a yellow box with the arrival time, intensity and direction.
+- **Weather warnings:** rain within 60 min puts a box on the media and weather
+  faces (Light Rain / Heavy Shower / Storm, the ETA counting down each minute,
+  how long it lasts); yellow until 20 min out, then red. Typhoons tracked from
+  GDACS get a red box in their last 6 h and while they are here.
 
 ## What it does
 
@@ -184,7 +186,7 @@ sprite; the transport underneath is esp_lcd with RGB444 on the wire.
 | `pcstats`, `textimg`, `art` | Stats the PC sends; PC-rendered text bitmaps; cover art |
 | `pc_state`, `pc_going` | PC power state from USB events; restart/update detection; status LED |
 | `optos`, `power` | Door presses and the reset pulse; Wake-on-LAN and USB power commands |
-| `weather`, `nowcast`, `owntracks`, `pushover` | Open-Meteo forecast and AQI, rain nowcast, phone location over MQTT, rain alerts ([docs/weather.md](docs/weather.md)) |
+| `weather`, `nowcast`, `cyclone`, `owntracks`, `pushover` | Open-Meteo forecast and AQI, rain nowcast and warnings, GDACS typhoon tracking, phone location over MQTT, rain alerts ([docs/weather.md](docs/weather.md)) |
 | `board_time` | Wall clock: SNTP over Wi-Fi, else the time the PC sends |
 | `net`, `discord` | Wi-Fi, mDNS, HTTP OTA and layout upload; Discord bot with an `/actions` panel |
 | `gif_store` | GIF frames pre-packed as RGB444 with per-frame dirty rects, saved to FAT |
@@ -239,7 +241,7 @@ One per line on the USB CDC console or the CH343 UART:
 | `going <restart\|shutdown\|update_restart\|update_shutdown\|sleep\|clear>` | Tell the board what the PC is about to do |
 | `bl <1\|2\|3\|all> <0-100\|on\|off>`, `led <auto\|on\|off\|sweep\|0-100>` | Backlights; status LED |
 | `fps [budget <20-95> \| cap <1\|2\|3> <1-60\|off>]` | SPI budget and per-panel frame caps |
-| `layout <show\|reload\|default\|...>`, `weather <show\|demo [rain]\|clear\|home <lat>,<lon>>` | Dashboard layouts; weather |
+| `layout <show\|reload\|default\|...>`, `weather <show\|demo [rain\|typhoon]\|clear\|storms\|home <lat>,<lon>>` | Dashboard layouts; weather |
 
 ### Build and flash
 
@@ -260,7 +262,7 @@ The Discord bot uses up to four channels, each set by its channel id in
 | Key | Channel | Posts |
 |---|---|---|
 | `DISCORD_CH_PC` | #pc-announcement | Board online, PC on/off, restart and update, power keys, door, reset |
-| `DISCORD_CH_WEATHER` | #weather-announcement | Rain alerts (home and phone), a forecast each morning after 06:00 |
+| `DISCORD_CH_WEATHER` | #weather-announcement | Rain and typhoon warnings, "cleared" posts, phone rain alerts, a weather update every 2 h from 06:00 to 20:00 |
 | `DISCORD_CH_LOG` | #logging | The board's log, timestamped, in batches every 10 s |
 | `DISCORD_CH_CONTROL` | #control | One control panel message with the `/actions` buttons, kept up to date |
 

@@ -2,6 +2,7 @@
 // Ported from .mock/screens_mockup.html to pure ESP-IDF 5.5 C++ with LovyanGFX.
 #include "screens.h"
 
+#include <ctype.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -380,34 +381,86 @@ static void drawWarnBox(LGFX_Sprite &c, const char *title, const char *sub) {
   }
 }
 
-// Rain incoming alert banner.
-static void drawRainBox(LGFX_Sprite &c, int y, bool withTemp) {
+// A typhoon in its last 6 h before arrival gets the box too
+static bool typhoonSoon(const Cyclone &cy) {
+  return cy.tracked && !cy.active && cy.arriveUnix && (long)cy.arriveUnix - (long)time(nullptr) <= 6 * 3600;
+}
+
+// Warning box: typhoon here or close, else rain on its way (not while it
+// rains: then there is nothing left to warn about)
+static bool warnBoxShown() {
+  const Cyclone &cy = weatherCyclone();
+  return cy.active || typhoonSoon(cy) || rainAlertHome().active;
+}
+
+// First of the candidates that fits maxW in the current font
+static const char *fitText(LGFX_Sprite &c, int maxW, const char *a, const char *b, const char *d = nullptr) {
+  if (c.textWidth(a) <= maxW) return a;
+  if (!d || c.textWidth(b) <= maxW) return b;
+  return d;
+}
+
+static void fmtMinutes(char *out, size_t cap, long min) {
+  if (min < 60) snprintf(out, cap, "%ld min", min);
+  else if (min % 60 == 0 || min >= 600) snprintf(out, cap, "%ld h", (min + 30) / 60);
+  else snprintf(out, cap, "%ld h %ld min", min / 60, min % 60);
+}
+
+// Warning banner: red for typhoons and rain within 20 min, yellow before
+static void drawWarnBox(LGFX_Sprite &c, int y) {
+  const Cyclone &cy = weatherCyclone();
   const RainAlert &rain = rainAlertHome();
-  c.fillRoundRect(8, y, 224, 44, 6, C_WARN);
+  bool typhoon = cy.active || typhoonSoon(cy);
+  int eta = rainEtaMin(rain);
+  uint16_t col = (typhoon || eta <= 20) ? C_BAD : C_WARN;
+  c.fillRoundRect(8, y, 224, 44, 6, col);
   c.fillRoundRect(10, y + 2, 220, 40, 5, C_BG);
 
-  char title[32];
-  snprintf(title, sizeof(title), "RAIN IN ~%u MIN", (unsigned)rain.etaMin);
-  c.setFont(fontBody());
-  c.setTextColor(C_WARN);
-  c.setTextDatum(lgfx::textdatum_t::top_left);
-  c.drawString(title, 18, y + 6);
-
-  char sub[64];
-  if (withTemp) {
-    const WeatherNow &w = weatherNow();
-    if (w.valid) {
-      snprintf(sub, sizeof(sub), "%.1f mm/h from %s, %.0f\u00B0" "C now", rain.mmh, rain.from[0] ? rain.from : "?", (double)w.temp);
-    } else {
-      snprintf(sub, sizeof(sub), "%.1f mm/h from %s", rain.mmh, rain.from[0] ? rain.from : "?");
-    }
+  char t1[72], t2[72], t3[48], sub1[64], sub2[64];
+  const char *kind = cy.superTyphoon ? "SUPER TYPHOON" : "TYPHOON";
+  if (cy.active) {
+    snprintf(t1, sizeof t1, "%s %s ACTIVE", kind, cy.name);
+    snprintf(t2, sizeof t2, "%s %s", kind, cy.name);
+    snprintf(t3, sizeof t3, "%s ACTIVE", kind);
+    snprintf(sub1, sizeof sub1, "active, centre ~%u km, %u km/h", cy.distKm, cy.windKmh);
+    snprintf(sub2, sizeof sub2, "centre ~%u km, %u km/h", cy.distKm, cy.windKmh);
+  } else if (typhoon) {
+    long left = (long)cy.arriveUnix - (long)time(nullptr);
+    char dur[24];
+    fmtMinutes(dur, sizeof dur, left > 0 ? left / 60 : 0);
+    snprintf(t1, sizeof t1, "%s %s IN ~%s", kind, cy.name, dur);
+    snprintf(t2, sizeof t2, "%s %s ~%s", kind, cy.name, dur);
+    snprintf(t3, sizeof t3, "%s ~%s", kind, dur);
+    struct tm at;
+    if (boardLocalTimeAt((time_t)cy.arriveUnix, &at))
+      snprintf(sub1, sizeof sub1, "arrives ~%02d:%02d, closest ~%u km", at.tm_hour, at.tm_min, cy.closestKm);
+    else
+      snprintf(sub1, sizeof sub1, "closest ~%u km, %u km/h", cy.closestKm, cy.windKmh);
+    snprintf(sub2, sizeof sub2, "closest ~%u km", cy.closestKm);
   } else {
-    snprintf(sub, sizeof(sub), "%.1f mm/h, moving in from %s", rain.mmh, rain.from[0] ? rain.from : "?");
+    char tier[24];
+    snprintf(tier, sizeof tier, "%s", wxTierName(rain.tier));
+    for (char *p = tier; *p; p++) *p = (char)toupper((unsigned char)*p);
+    snprintf(t1, sizeof t1, "%s IN ~%d MIN", tier, eta);
+    snprintf(t2, sizeof t2, "%s ~%d MIN", tier, eta);
+    snprintf(t3, sizeof t3, "RAIN ~%d MIN", eta);
+    if (rain.startUnix && rain.endUnix) {
+      char dur[24];
+      fmtMinutes(dur, sizeof dur, (long)(rain.endUnix - rain.startUnix) / 60);
+      snprintf(sub1, sizeof sub1, "lasts ~%s, %.1f mm/h%s%s", dur, rain.mmh, rain.from[0] ? " from " : "", rain.from);
+      snprintf(sub2, sizeof sub2, "lasts ~%s, %.1f mm/h", dur, rain.mmh);
+    } else {
+      snprintf(sub1, sizeof sub1, "%.1f mm/h, moving in from %s", rain.mmh, rain.from[0] ? rain.from : "?");
+      snprintf(sub2, sizeof sub2, "%.1f mm/h", rain.mmh);
+    }
   }
+  c.setFont(fontBody());
+  c.setTextColor(col);
+  c.setTextDatum(lgfx::textdatum_t::top_left);
+  c.drawString(fitText(c, 206, t1, t2, t3), 18, y + 6);
   c.setFont(fontSmall());
   c.setTextColor(C_DIM);
-  c.setTextDatum(lgfx::textdatum_t::top_left);
-  c.drawString(sub, 18, y + 25);
+  c.drawString(fitText(c, 206, sub1, sub2), 18, y + 25);
 }
 
 // GPU stat card (RX 6600 or RTX 3050).
@@ -615,10 +668,10 @@ static void drawPcStats(LGFX_Sprite &c) {
 static void drawMedia(LGFX_Sprite &c) {
   c.fillScreen(C_BG);
 
-  bool hasRain = rainAlertHome().active;
+  bool hasRain = warnBoxShown();
   int top = hasRain ? 54 : 0;
   if (hasRain) {
-    drawRainBox(c, 4, true);
+    drawWarnBox(c, 4);
   }
 
   // media.ok from the service only says the helper file is fresh; a session has a title
@@ -862,8 +915,31 @@ static void drawWeather(LGFX_Sprite &c) {
 
   // Rain forecast / radar box
   const RainAlert &rain = rainAlertHome();
-  if (rain.active) {
-    drawRainBox(c, 204, false);
+  if (warnBoxShown()) {
+    drawWarnBox(c, 204);
+  } else if (rain.raining) {
+    // raining: no warning, just how long it lasts
+    c.fillRoundRect(8, 204, 224, 44, 6, C_WX_BOX_BG);
+    c.setFont(fontSmall());
+    c.setTextColor(C_WX_TEXT_MID);
+    c.setTextDatum(lgfx::textdatum_t::top_left);
+    char line[48];
+    struct tm at;
+    if (rain.endUnix && boardLocalTimeAt((time_t)rain.endUnix, &at))
+      snprintf(line, sizeof line, "%s until ~%02d:%02d", wxTierName(rain.tier), at.tm_hour, at.tm_min);
+    else
+      snprintf(line, sizeof line, "%s, no end in sight", wxTierName(rain.tier));
+    c.drawString(line, 18, 210);
+    int left = rainLeftMin(rain);
+    if (left >= 0) {
+      char dur[24];
+      fmtMinutes(dur, sizeof dur, left);
+      snprintf(line, sizeof line, "~%s left, %.1f mm/h", dur, rain.mmh);
+    } else {
+      snprintf(line, sizeof line, "%.1f mm/h", rain.mmh);
+    }
+    c.setTextColor(C_WX_TEXT_DIM);
+    c.drawString(line, 18, 227);
   } else {
     c.fillRoundRect(8, 204, 224, 44, 6, C_WX_BOX_BG);
     c.setFont(fontSmall());
