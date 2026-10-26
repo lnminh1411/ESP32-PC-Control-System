@@ -531,6 +531,8 @@ class PcStats : ServiceBase {
       HandlePowerLine(line);
     } else if (line.StartsWith("!shot", StringComparison.OrdinalIgnoreCase)) {
       HandleShotLine(line);
+    } else if (line.StartsWith("!hw", StringComparison.OrdinalIgnoreCase)) {
+      HandleHwLine(line);
     } else {
       Log("board: unrecognized line '" + line + "'");
     }
@@ -555,6 +557,76 @@ class PcStats : ServiceBase {
       Log("shot: request from board handed to the user half, nonce " + nonce);
     } else {
       Log("shot: user half not running (nobody signed in?), screenshot skipped");
+    }
+  }
+
+  // ---- PC hardware control (PcHwCtl) ----
+  // The board's `!hw <id> <command>` goes to PcHwCtl's named pipe (the fan and
+  // RGB service in E:\PC Hardware Controller, docs/ipc.md). Only rgb commands
+  // and ping pass. The answer goes back as the text stat
+  // hw.reply = "<id> ok" or "<id> err <message>", repeated each tick for 30 s.
+  static readonly Regex HwCmdRegex = new Regex(@"^!hw\s+([0-9a-fA-F]{1,8})\s+(.+)$");
+  static readonly object hwLock = new object();
+  static string hwReply;
+  static DateTime hwReplyExpiresUtc;
+  static int hwBusy;   // one pipe request at a time (Interlocked)
+
+  static void HandleHwLine(string line) {
+    Match m = HwCmdRegex.Match(line.Trim());
+    if (!m.Success) { Log("hw: unrecognized command"); return; }
+    string id = m.Groups[1].Value.ToLowerInvariant();
+    string command = m.Groups[2].Value.Trim();
+    string lower = command.ToLowerInvariant();
+    if (lower != "ping" && !lower.StartsWith("rgb ")) {
+      SetHwReply(id, "err only rgb commands are allowed");
+      Log("hw: #" + id + " refused (not an rgb command)");
+      return;
+    }
+    if (Interlocked.CompareExchange(ref hwBusy, 1, 0) != 0) {
+      SetHwReply(id, "err busy");
+      return;
+    }
+    ThreadPool.QueueUserWorkItem(delegate(object o) {
+      try {
+        string reply = SendToPcHwCtl(command);
+        SetHwReply(id, reply);
+        Log("hw: #" + id + " " + command + " -> " + reply);
+      } finally {
+        Interlocked.Exchange(ref hwBusy, 0);
+      }
+    });
+  }
+
+  static void SetHwReply(string id, string reply) {
+    lock (hwLock) {
+      hwReply = id + " " + reply;
+      hwReplyExpiresUtc = DateTime.UtcNow.AddSeconds(30);
+    }
+    sendNow.Set();   // answer on the next tick, not the one after
+  }
+
+  // One request, one JSON line back: {"ok":true,...} or {"ok":false,"error":"..."}
+  static string SendToPcHwCtl(string command) {
+    try {
+      using (var pipe = new NamedPipeClientStream(".", "PcHwCtl", PipeDirection.InOut)) {
+        pipe.Connect(1000);
+        var w = new StreamWriter(pipe, Utf8NoBom) { AutoFlush = true, NewLine = "\n" };
+        var r = new StreamReader(pipe, Utf8NoBom);
+        w.WriteLine(command);
+        var read = r.ReadLineAsync();
+        if (!read.Wait(2000)) return "err PcHwCtl did not answer";
+        string json = read.Result;
+        if (json == null) return "err PcHwCtl closed the pipe";
+        Dictionary<string, object> o = Json.ParseObject(json);
+        object ok, err;
+        if (o != null && o.TryGetValue("ok", out ok) && ok is bool && (bool)ok) return "ok";
+        if (o != null && o.TryGetValue("error", out err) && err != null) return "err " + Convert.ToString(err, CultureInfo.InvariantCulture);
+        return "err unexpected answer";
+      }
+    } catch (System.TimeoutException) {
+      return "err PcHwCtl not running";
+    } catch (Exception ex) {
+      return "err " + ex.GetType().Name;
     }
   }
 
@@ -3720,6 +3792,14 @@ class PcStats : ServiceBase {
         if (!string.IsNullOrEmpty(currentMac)) {
           texts.Add(new KeyValuePair<string, string>("pc.mac", currentMac));
           texts.Add(new KeyValuePair<string, string>("pc.mac_if", currentMacIf));
+        }
+
+        // Answer to the board's last !hw request
+        lock (hwLock) {
+          if (hwReply != null) {
+            if (DateTime.UtcNow < hwReplyExpiresUtc) texts.Add(new KeyValuePair<string, string>("hw.reply", hwReply));
+            else hwReply = null;
+          }
         }
 
         // Power ack

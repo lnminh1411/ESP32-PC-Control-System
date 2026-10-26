@@ -10,6 +10,7 @@
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
+#include <math.h>
 #include <nvs.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,10 +22,12 @@
 #include "commands.h"
 #include "config.h"
 #include "display.h"
+#include "hwctl.h"
 #include "log.h"
 #include "net.h"
 #include "optos.h"
 #include "pc_state.h"
+#include "pcstats.h"
 #include "screens.h"
 #include "secrets_or_example.h"
 #include "sys.h"
@@ -391,9 +394,9 @@ enum PanelView {
 };
 
 // Panel tabs; the #control panel and the /actions panel each remember theirs
-enum PanelCat : uint8_t { CAT_DOOR, CAT_PC, CAT_BOARD, CAT_DISPLAY, CAT_COUNT };
-static const char *const CAT_LABEL[CAT_COUNT] = {"Door", "PC Control", "Board", "Display"};
-static const char *const CAT_ID[CAT_COUNT] = {"tab_door", "tab_pc", "tab_board", "tab_display"};
+enum PanelCat : uint8_t { CAT_DOOR, CAT_PC, CAT_RGB, CAT_BOARD, CAT_DISPLAY, CAT_COUNT };
+static const char *const CAT_LABEL[CAT_COUNT] = {"Door", "PC Control", "PC Case RGB LEDs", "Board", "Display"};
+static const char *const CAT_ID[CAT_COUNT] = {"tab_door", "tab_pc", "tab_rgb", "tab_board", "tab_display"};
 static uint8_t catStanding = CAT_PC, catEphemeral = CAT_PC;
 static uint8_t &panelCat(bool standing) { return standing ? catStanding : catEphemeral; }
 
@@ -475,6 +478,99 @@ static void addBrightnessSelect(cJSON *comps) {
   cJSON_AddItemToArray(addRow(comps), sel);
 }
 
+// RGB tab (PcHwCtl via the PC, hwctl.h). Commands go to one group, PcHwCtl's
+// names: all, main (motherboard + ARGB headers) or ram. A pick here holds
+// until "Auto" hands the group back to PcHwCtl's own rules.
+struct RgbOpt { const char *value, *label; };
+static const RgbOpt RGB_GROUPS[] = {{"all", "All"}, {"main", "Motherboard"}, {"ram", "RAM"}};
+static const RgbOpt RGB_MODES[] = {
+  {"auto", "Auto (PcHwCtl rules)"}, {"off", "Off"}, {"static", "Static color"},
+  {"breathing", "Breathing"}, {"rainbow", "Rainbow"}, {"gradient", "Gradient"}};
+static const RgbOpt RGB_COLORS[] = {
+  {"#ff0000", "Red"}, {"#ff6000", "Orange"}, {"#ffd000", "Yellow"}, {"#00ff00", "Green"},
+  {"#00ffd0", "Cyan"}, {"#0040ff", "Blue"}, {"#8000ff", "Purple"}, {"#ff00a0", "Pink"},
+  {"#ffffff", "White"}, {"#ffb070", "Warm white"}};
+static const RgbOpt RGB_BRIGHT[] = {{"0", "LEDs dark (0 %)"}, {"10", "Brightness 10 %"}, {"20", "Brightness 20 %"},
+  {"30", "Brightness 30 %"}, {"40", "Brightness 40 %"}, {"50", "Brightness 50 %"}, {"60", "Brightness 60 %"},
+  {"70", "Brightness 70 %"}, {"80", "Brightness 80 %"}, {"90", "Brightness 90 %"}, {"100", "Brightness 100 %"}};
+#define RGB_N(a) ((int)(sizeof(a) / sizeof((a)[0])))
+static uint8_t rgbGroup = 0;             // index into RGB_GROUPS
+static char rgbColor[8] = "#ffffff";     // last color picked here
+static bool rgbBreathing = false;        // a color pick keeps breathing going
+
+static const char *rgbColorLabel(const char *hex) {
+  for (const RgbOpt &o : RGB_COLORS)
+    if (!strcmp(o.value, hex)) return o.label;
+  return hex;
+}
+
+static void addRgbSelect(cJSON *comps, const char *id, const char *placeholder, const RgbOpt *opts, int n) {
+  cJSON *sel = cJSON_CreateObject();
+  cJSON_AddNumberToObject(sel, "type", 3);
+  cJSON_AddStringToObject(sel, "custom_id", id);
+  cJSON_AddStringToObject(sel, "placeholder", placeholder);
+  cJSON *arr = cJSON_AddArrayToObject(sel, "options");
+  for (int i = 0; i < n; i++) {
+    cJSON *op = cJSON_CreateObject();
+    cJSON_AddStringToObject(op, "label", opts[i].label);
+    cJSON_AddStringToObject(op, "value", opts[i].value);
+    cJSON_AddItemToArray(arr, op);
+  }
+  cJSON_AddItemToArray(addRow(comps), sel);
+}
+
+// Mode, color and brightness pickers; no option marked, so picking the same
+// one again re-sends it
+static void addRgbRows(cJSON *comps) {
+  const char *g = RGB_GROUPS[rgbGroup].label;
+  char ph[64];
+  snprintf(ph, sizeof ph, "Mode for %s", g);
+  addRgbSelect(comps, "rgb_mode", ph, RGB_MODES, RGB_N(RGB_MODES));
+  snprintf(ph, sizeof ph, "Color for %s (last: %s)", g, rgbColorLabel(rgbColor));
+  addRgbSelect(comps, "rgb_color", ph, RGB_COLORS, RGB_N(RGB_COLORS));
+  float b = pcStat("hw.rgb.bright");   // one setting for every group in PcHwCtl
+  if (isnan(b)) snprintf(ph, sizeof ph, "Brightness (all groups)");
+  else snprintf(ph, sizeof ph, "Brightness: %d %% (all groups)", (int)lroundf(b));
+  addRgbSelect(comps, "rgb_bright", ph, RGB_BRIGHT, RGB_N(RGB_BRIGHT));
+}
+
+// One rgb command from a panel pick; the footer gets PcHwCtl's answer
+static bool rgbCommand(const char *cmd, const char *what) {
+  char reply[96];
+  bool ok = hwRun(cmd, 3000, reply, sizeof reply);
+  if (ok) snprintf(lastPanelResult, sizeof lastPanelResult, "%s", what);
+  else snprintf(lastPanelResult, sizeof lastPanelResult, "%.56s failed: %.56s", what, !strncmp(reply, "err ", 4) ? reply + 4 : reply);
+  logMsg("discord: %s -> %s", cmd, reply);
+  return ok;
+}
+
+// PcHwCtl's state file reaches the board 1-3 s after it took a command (file,
+// then the PC's next poll and tick), so the panel waits for the new state
+// before redrawing. mode: the rule type the group(s) should show, or nullptr
+// for "auto" (any change from before); bright: the expected %, or -1.
+struct RgbSnap { char main[24], ram[24]; };
+static void rgbSnap(RgbSnap &s) {
+  snprintf(s.main, sizeof s.main, "%s", pcText("hw.rgb.main"));
+  snprintf(s.ram, sizeof s.ram, "%s", pcText("hw.rgb.ram"));
+}
+
+static bool rgbShows(const char *g, const char *mode, const RgbSnap &before, int bright) {
+  if (bright >= 0) {
+    float b = pcStat("hw.rgb.bright");
+    return !isnan(b) && (int)lroundf(b) == bright;
+  }
+  RgbSnap now;
+  rgbSnap(now);
+  bool doMain = strcmp(g, "ram") != 0, doRam = strcmp(g, "main") != 0;
+  if (mode) return (!doMain || !strcmp(now.main, mode)) && (!doRam || !strcmp(now.ram, mode));
+  return (doMain && strcmp(now.main, before.main)) || (doRam && strcmp(now.ram, before.ram));
+}
+
+static void rgbAwaitState(const char *g, const char *mode, const RgbSnap &before, int bright) {
+  uint32_t t0 = nowMs();
+  while (!rgbShows(g, mode, before, bright) && (uint32_t)(nowMs() - t0) < 4000) vTaskDelay(pdMS_TO_TICKS(100));
+}
+
 static void addField(cJSON *fields, const char *name, const char *value) {
   cJSON *f = cJSON_CreateObject();
   cJSON_AddStringToObject(f, "name", name);
@@ -502,6 +598,16 @@ static void buildEmbed(cJSON *embed, const char *footerText, bool standing) {
     if (netUp() && netIp()[0]) snprintf(v, sizeof v, "%s (%d dBm)", netIp(), netRssi());
     else snprintf(v, sizeof v, "down");
     addField(fields, "Board Wi-Fi", v);
+  } else if (cat == CAT_RGB) {
+    const char *mainRule = pcText("hw.rgb.main"), *ramRule = pcText("hw.rgb.ram");
+    addField(fields, "PcHwCtl", pcStat("hw.ok") >= 1 ? "state feed live" : "no state (not running?)");
+    addField(fields, "Motherboard + ARGB", *mainRule ? mainRule : "?");
+    addField(fields, "RAM", *ramRule ? ramRule : "?");
+    float b = pcStat("hw.rgb.bright");
+    if (isnan(b)) snprintf(v, sizeof v, "?");
+    else snprintf(v, sizeof v, "%d %%", (int)lroundf(b));
+    addField(fields, "Brightness", v);
+    addField(fields, "Panel targets", RGB_GROUPS[rgbGroup].label);
   } else if (cat == CAT_BOARD) {
     uint32_t s = nowMs() / 1000;
     snprintf(v, sizeof v, "%lu:%02lu:%02lu", (unsigned long)(s / 3600), (unsigned long)((s / 60) % 60), (unsigned long)(s % 60));
@@ -584,6 +690,16 @@ static void buildComponents(cJSON *data, PanelView view, bool standing) {
     addButton(r, "PC reset", "reset", 4);
     r = addRow(comps);
     addButton(r, "Screenshot", "shot", 2);   // Refresh/Close share this row
+  } else if (cat == CAT_RGB) {
+    // 5 rows: tabs, mode, color, brightness, then target group + Refresh/Close
+    cJSON_DeleteItemFromArray(comps, cJSON_GetArraySize(comps) - 1);
+    addRgbRows(comps);
+    r = addRow(comps);
+    for (int i = 0; i < RGB_N(RGB_GROUPS); i++) {
+      char bid[16];
+      snprintf(bid, sizeof bid, "rgbg_%s", RGB_GROUPS[i].value);
+      addButton(r, RGB_GROUPS[i].label, bid, i == rgbGroup ? 1 : 2);
+    }
   } else if (cat == CAT_BOARD) {
     addButton(r, "Restart board", "reboot", 4);
     addButton(r, "Refresh weather", "wx_refresh", 2);
@@ -833,6 +949,44 @@ static void onInteraction(cJSON *d) {
       sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
       return;
     }
+    if (jVal && cJSON_IsString(jVal) && !strncmp(cid, "rgb_", 4)) {
+      // RGB tab picks: PcHwCtl answers within ~3 s (Discord already acked)
+      const char *val = jVal->valuestring, *g = RGB_GROUPS[rgbGroup].value;
+      char cmd[64] = "", what[64], expect[16] = "";
+      int bright = -1;
+      if (!strcmp(cid, "rgb_mode")) {
+        if (!strcmp(val, "auto")) {
+          snprintf(cmd, sizeof cmd, "rgb release %s", g);
+          snprintf(what, sizeof what, "RGB %s back to PcHwCtl rules", g);
+        } else if (!strcmp(val, "static") || !strcmp(val, "breathing")) {
+          snprintf(cmd, sizeof cmd, "rgb mode %s %s %s", g, val, rgbColor);
+          snprintf(what, sizeof what, "RGB %s: %s %s", g, val, rgbColorLabel(rgbColor));
+          snprintf(expect, sizeof expect, "%s", val);
+        } else {
+          snprintf(cmd, sizeof cmd, "rgb mode %s %.12s", g, val);
+          snprintf(what, sizeof what, "RGB %s: %.12s", g, val);
+          snprintf(expect, sizeof expect, "%.12s", val);
+        }
+        rgbBreathing = !strcmp(val, "breathing");
+      } else if (!strcmp(cid, "rgb_color") && val[0] == '#' && strlen(val) == 7) {
+        snprintf(rgbColor, sizeof rgbColor, "%s", val);
+        const char *mode = rgbBreathing ? "breathing" : "static";
+        snprintf(cmd, sizeof cmd, "rgb mode %s %s %s", g, mode, rgbColor);
+        snprintf(what, sizeof what, "RGB %s: %s %s", g, mode, rgbColorLabel(rgbColor));
+        snprintf(expect, sizeof expect, "%s", mode);
+      } else if (!strcmp(cid, "rgb_bright")) {
+        bright = atoi(val);
+        if (bright < 0) bright = 0;
+        if (bright > 100) bright = 100;
+        snprintf(cmd, sizeof cmd, "rgb brightness %d", bright);
+        snprintf(what, sizeof what, "RGB brightness %d %%", bright);
+      }
+      RgbSnap before;
+      rgbSnap(before);
+      if (cmd[0] && rgbCommand(cmd, what)) rgbAwaitState(g, expect[0] ? expect : nullptr, before, bright);
+      sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
+      return;
+    }
     if (jVal && cJSON_IsString(jVal) && !strcmp(cid, "cat") && !strcmp(jVal->valuestring, "refresh")) {
       snprintf(lastPanelResult, sizeof lastPanelResult, "Refreshed");
       sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, "Refreshed");
@@ -847,7 +1001,12 @@ static void onInteraction(cJSON *d) {
       }
     }
 
-    if (!strcmp(cid, "refresh")) {
+    if (!strncmp(cid, "rgbg_", 5)) {
+      for (int i = 0; i < RGB_N(RGB_GROUPS); i++)
+        if (!strcmp(cid + 5, RGB_GROUPS[i].value)) rgbGroup = (uint8_t)i;
+      snprintf(lastPanelResult, sizeof lastPanelResult, "RGB picks now go to %s", RGB_GROUPS[rgbGroup].label);
+      sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
+    } else if (!strcmp(cid, "refresh")) {
       snprintf(lastPanelResult, sizeof lastPanelResult, "Refreshed");
       sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, "Refreshed");
     } else if (!strcmp(cid, "lock")) {

@@ -118,6 +118,9 @@ if (-not $service) {
     exit 1
   }
   & sc.exe description ESP32PcStats $description | Out-Null
+  # Automatic, not delayed: the board's PC stats should come up with Windows
+  Set-Service -Name "ESP32PcStats" -StartupType Automatic
+  Remove-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\ESP32PcStats" -Name DelayedAutostart -ErrorAction SilentlyContinue
 }
 
 # Set failure recovery
