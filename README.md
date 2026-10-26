@@ -270,10 +270,19 @@ empty. Only `DISCORD_OWNER_ID` can use the buttons.
 `WAKE_DIM_BACKLIGHTS` (secrets.h, default false) is for motherboards that drag
 the USB 5 V rail down while the PC powers on from shutdown: the board browns
 out and restarts (`boot: last reset: brownout` in the log). With it on, a wake
-turns the backlights off for 500 ms while the WoL / USB wake goes out. Seen on
+turns the backlights off while the WoL / USB wake goes out, for
+`WAKE_DIM_MS` after it (default 100 ms; 500 and 100 both tested fine). Seen on
 the author's board, both with Wake PC and with the PC's own power button;
-waking from sleep is not affected. Treated as fixed here: two of two
-shutdown-then-wake tests passed with it on.
+waking from sleep is not affected. Two of two shutdown-then-wake tests passed
+with it on.
+
+Status: not reproducible. Since 2026-10-26 the brownout no longer happens on
+the author's board, with the setting on or off, by Wake PC or by the PC's
+power button. The firmware changes in between don't touch what the board draws
+at power-on, so the cause is unknown. At power-on the status LED's slow blink
+now stalls for a few milliseconds and carries on, with no reset. A dip that
+no longer reaches the brownout threshold would look like that. The settings
+stay in as a safety measure.
 
 It does not cover a power-on from the PC's own power button, which never goes
 through the board. The real fix is a supply that the PC's power-on cannot pull

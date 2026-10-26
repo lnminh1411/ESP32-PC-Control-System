@@ -159,12 +159,12 @@ const char *powerWake() {
   if (!WAKE_DIM_BACKLIGHTS) return powerWakeSend();
   // Motherboard quirk (WAKE_DIM_BACKLIGHTS in secrets.h): the PC's power-on
   // drags the USB 5 V rail down and the board browns out. Backlights off while
-  // the wake goes out, back 500 ms later.
+  // the wake goes out, back WAKE_DIM_MS later.
   bool wasIdle = backlightIsIdle();
   backlightIdle(true);
   logMsg("wake: backlights off for the wake");
   const char *err = powerWakeSend();
-  sleepMs(500);
+  sleepMs(WAKE_DIM_MS);
   backlightIdle(wasIdle);
   logMsg("wake: backlights restored");
   return err;
