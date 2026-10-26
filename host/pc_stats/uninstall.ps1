@@ -12,17 +12,14 @@ if (-not $isAdmin) {
 
 $installDir = "C:\Program Files\ESP32 PC Controller\pc_stats"
 
-# Stop and unregister scheduled task "ESP32 AGY Quota"
+# Scheduled task from installs before the merge into ESP32-Helper.exe
 $taskName = "ESP32 AGY Quota"
 $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
 if ($task) {
-  Write-Host "Stopping and unregistering scheduled task $taskName..."
+  Write-Host "Stopping and unregistering old scheduled task $taskName..."
   Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
   Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
 }
-
-# Kill esp32-agyquota process if running
-Write-Host "Stopping esp32-agyquota process..."
 Get-Process -Name "esp32-agyquota" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 
 # Stop service if it exists

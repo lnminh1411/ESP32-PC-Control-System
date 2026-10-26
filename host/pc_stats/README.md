@@ -1,6 +1,23 @@
-# ESP32 PC Stats Service
+# ESP32-Helper
 
 Windows service that reads hardware sensors via LibreHardwareMonitor (`lhwm-wrapper.dll`, OpenRGB build) and streams configured stats to the ESP32-S3 carrier board over a vendor-defined USB HID interface (with CDC serial fallback).
+
+## Two processes, one exe
+
+`ESP32-Helper.exe` runs as two processes, each with its own worker threads:
+- **Service** (`ESP32PcStats`, SYSTEM, session 0): sensors, the HID/serial link, power actions, shutdown announcements, `@source` and `@claude` polling, text rendering, cover-art streaming. It runs before sign-in and after sign-out.
+- **User-session half** (`ESP32-Helper.exe --user`): Antigravity quota, Claude Code token refresh, media session and cover art, screenshots. Windows keeps session 0 away from the desktop and the user's media sessions, so this part has to run in the user's session. The service starts it there with the signed-in user's token (normal user rights, not elevated) once someone signs in. It restarts the half if it dies (after 2 s, or 30 s if it died within 15 s of starting) and moves it on a user switch. In `--console` mode it starts the half as the current user (`--no-user` skips it).
+
+The two talk over a pair of anonymous pipes (UTF-8 lines):
+
+| Direction | Line | Meaning |
+|---|---|---|
+| user half to service | `F <feed> <n>` + n `key=value` lines | feed `agy` or `media`, read by `@source <name> helper:<feed> <ms>` |
+| user half to service | `A <base64>` | cover art, 144x144 RGB565 big-endian (41,472 bytes) |
+| user half to service | `L <text>` | log line, written to `log.txt` as `user: <text>` |
+| service to user half | `S <nonce> <webhook>` | take a screenshot |
+
+The user half exits as soon as the pipes break, so it never outlives the service. A `helper:` source counts as up while the user half is connected.
 
 ## Transport
 
@@ -14,33 +31,37 @@ Run `build.cmd` from Command Prompt:
 ```cmd
 host\pc_stats\build.cmd
 ```
-Builds `build\esp32-pcstats.exe` using Microsoft .NET Framework 4 `csc.exe` (ships with Windows). On the first run, it automatically downloads `lhwm-wrapper.dll` into `vendor\`.
+Builds `build\ESP32-Helper.exe` using Microsoft .NET Framework 4 `csc.exe` (ships with Windows). On the first run, it automatically downloads `lhwm-wrapper.dll` into `vendor\`.
 
 ## Installation & Removal
 
 Run PowerShell as Administrator:
 - **Install**: `.\install.ps1` (or `.\install.ps1 -ForceConfig` to overwrite existing `stats.ini`).
-  Installs files to `C:\Program Files\ESP32 PC Controller\pc_stats\` and creates/starts service `ESP32PcStats` with automatic restart on failure.
+  Installs files to `C:\Program Files\ESP32 PC Controller\pc_stats\` and creates/starts service `ESP32PcStats` with automatic restart on failure. Over an install from before the merge, it points the existing service at `ESP32-Helper.exe` and removes the old `ESP32 AGY Quota` scheduled task, the old `esp32-pcstats.exe` / `esp32-agyquota.exe`, and the files they used to pass data through in `C:\ProgramData\ESP32PcStats` (`media.txt`, `media_art.bin`, `shot_request.txt`).
 - **Uninstall**: `.\uninstall.ps1`
   Stops and deletes the service and removes the installation directory (preserving `C:\ProgramData\ESP32PcStats\log.txt`). The log rotates at 4 MB into `log.old.txt`, so the two stay under 8 MB together.
 
 ## Command-Line Usage
 
 ```cmd
-esp32-pcstats.exe                      # Run as Windows Service
-esp32-pcstats.exe --console            # Run interactively, printing stats each tick
-esp32-pcstats.exe --list               # Print all available hardware sensors and exit
-esp32-pcstats.exe --bench              # Benchmark sensor update latencies
-esp32-pcstats.exe --transport auto     # Transport mode: auto (default), hid, or serial
-esp32-pcstats.exe --port COM4          # Manually specify COM port instead of VID_303A auto-detect
-esp32-pcstats.exe --claude <dir>        # Test Claude live fetch & local token totals and exit
-esp32-pcstats.exe --going               # Test restart/update detection and exit
-esp32-pcstats.exe --render-text <px> <bold> <out.png> <text...> # Test non-ASCII GDI text rendering
+ESP32-Helper.exe                     # Run as Windows Service
+ESP32-Helper.exe --console           # Run interactively, printing stats each tick (starts the user half too)
+ESP32-Helper.exe --console --no-user # Same, without the user half
+ESP32-Helper.exe --list              # Print all available hardware sensors and exit
+ESP32-Helper.exe --bench             # Benchmark sensor update latencies
+ESP32-Helper.exe --transport auto    # Transport mode: auto (default), hid, or serial
+ESP32-Helper.exe --port COM4         # Manually specify COM port instead of VID_303A auto-detect
+ESP32-Helper.exe --claude <dir>      # Test Claude live fetch & local token totals and exit
+ESP32-Helper.exe --going             # Test restart/update detection and exit
+ESP32-Helper.exe --agy-once          # Poll Antigravity quota once, print the keys and exit
+ESP32-Helper.exe --media             # Sample media sessions for 5 s, print the keys and exit
+ESP32-Helper.exe --render-text <px> <bold> <out.png> <text...>  # Test non-ASCII GDI text rendering
+ESP32-Helper.exe --user <in> <out>   # The user-session half (started by the service, not by hand)
 ```
 
 ## stats.ini Format
 
-`stats.ini` lives alongside `esp32-pcstats.exe` and is monitored for changes every tick (hot-reloaded on write):
+`stats.ini` lives alongside `ESP32-Helper.exe` and is monitored for changes every tick (hot-reloaded on write):
 ```ini
 # Comments with '#', blank lines allowed. Keys: [a-z0-9_.] max 23 chars.
 key = <hardware> | <sensor type> | <sensor name> [| first|avg|sum|max|min]
@@ -61,8 +82,8 @@ key = @counter <category> | <counter> | <instance> [| scale]   (Windows perf cou
 - Reduction (`first|avg|sum|max|min`): Defaults to `first`. Empty/null sensor readings are skipped.
 - `@ecore_load`: Average "% Processor Time" across E-core logical processors identified via `GetSystemCpuSetInformation` (lowest `EfficiencyClass` on hybrid CPUs; falls back to overall CPU load on non-hybrid CPUs). Counters created once at startup.
 - `@proc_mb <name>`: Summed working set (`WorkingSet64`) in MB across all running processes matching `<name>` (e.g. `@proc_mb llama-server`), or `0` if none are running.
-- `@source <name> <url> <ms>`: Spawns a background thread to poll an HTTP or `file:///` endpoint returning `key=value` lines (e.g. `@source media file:///C:/ProgramData/ESP32PcStats/media.txt 1000`). Numeric values join the `@s` stream; text values stream as `@t` lines. Generates `<name>.ok` (1 if updated within 3 x interval, 0 on timeout/error, dropping other source keys when down).
-- Run `esp32-pcstats.exe --list` to inspect the exact hardware type/name and sensor names available on your system.
+- `@source <name> <url> <ms>`: Spawns a background thread to poll an HTTP or `file:///` endpoint returning `key=value` lines, or a `helper:<feed>` feed from the user-session half (e.g. `@source media helper:media 250`). `file:///` URLs ending in `ESP32PcStats/agy_quota.txt` or `ESP32PcStats/media.txt` (stats.ini from before the merge) are read as `helper:agy` / `helper:media`. Numeric values join the `@s` stream; text values stream as `@t` lines. Generates `<name>.ok` (1 if updated within 3 x interval, 0 on timeout/error, dropping other source keys when down).
+- Run `ESP32-Helper.exe --list` to inspect the exact hardware type/name and sensor names available on your system.
 
 ## Claude Usage
 
@@ -74,7 +95,7 @@ The service can stream Claude Code live utilization and local spend totals to th
 ```
 
 ### What It Reads
-- **Live Usage**: Reads the OAuth access token from `<claude_dir>\.credentials.json` (`claudeAiOauth.accessToken`) and polls Anthropic's OAuth usage API (`https://api.anthropic.com/api/oauth/usage`). It only uses the access token that Claude Code itself keeps fresh (never refreshes it, never uses the refresh token, and never writes to the credentials file). If the token is expired (`claudeAiOauth.expiresAt`), polling pauses with error `token_expired`. The per-user helper `esp32-agyquota.exe` prevents that: when less than 10 minutes are left it runs `claude auth status`, which makes the Claude Code CLI refresh its own token (no model call, no usage). It reads only the expiry times, and logs to `agy_quota.log` when the refresh token itself nears expiry (then run `claude auth login`).
+- **Live Usage**: Reads the OAuth access token from `<claude_dir>\.credentials.json` (`claudeAiOauth.accessToken`) and polls Anthropic's OAuth usage API (`https://api.anthropic.com/api/oauth/usage`). It only uses the access token that Claude Code itself keeps fresh (never refreshes it, never uses the refresh token, and never writes to the credentials file). If the token is expired (`claudeAiOauth.expiresAt`), polling pauses with error `token_expired`. The user-session half prevents that: when less than 10 minutes are left it runs `claude auth status`, which makes the Claude Code CLI refresh its own token (no model call, no usage). It reads only the expiry times, and logs (`user: claude: ...` in `log.txt`) when the refresh token itself nears expiry (then run `claude auth login`).
 - **Local Spend & Token Totals**: Incrementally scans session transcripts in `<claude_dir>\projects\**\*.jsonl` modified in the last 31 days using an in-memory per-file byte cache. Tokens are calculated as `input_tokens + output_tokens + cache_creation_input_tokens + cache_read_input_tokens`, de-duplicated by `message.id`. Cost is estimated at standard list rates (Opus, Sonnet, Haiku).
 
 ### Keys Streamed
@@ -107,10 +128,11 @@ Usage logic ported from aiusage (MIT, Ahsan Habib Akik).
 
 ## Antigravity Quota
 
-The companion helper `esp32-agyquota.exe` runs in the user's interactive session and queries the local language server exposed by running Antigravity clients (the IDE, or an `agy` CLI session for another account) over Connect-JSON API on `127.0.0.1`. It writes quota metrics to `C:\ProgramData\ESP32PcStats\agy_quota.txt`, which `esp32-pcstats.exe` polls and forwards via directive:
+The user-session half queries the local language server exposed by running Antigravity clients (the IDE, or an `agy` CLI session for another account) over Connect-JSON API on `127.0.0.1`. It sends quota metrics to the service as the `agy` feed, which the service forwards via directive:
 ```ini
-@source agy file:///C:/ProgramData/ESP32PcStats/agy_quota.txt 5000
+@source agy helper:agy 5000
 ```
+It also keeps the last values in `C:\ProgramData\ESP32PcStats\agy_quota.txt` (the `output` setting in `agy_quota.ini`) and reloads them on start, so a client that closed keeps its numbers.
 
 ### How It Works
 - **Running Client Required:** The helper cannot retrieve credentials directly from LocalSystem service context; it discovers running `language_server.exe` (IDE) and `agy.exe` (CLI) processes via WMI, finds their listening localhost TCP ports via `GetExtendedTcpTable`, and queries `GetUserStatus` with the CSRF token extracted from the process command line (tokens are never logged or written). A running Antigravity client logged into an account is required to refresh that account's quota. When a client closes, its last-known quota values are preserved while `age_s` increments.
@@ -120,7 +142,7 @@ The companion helper `esp32-agyquota.exe` runs in the user's interactive session
   - `flash = flash`
   - `pro = \bpro\b|argon|ultra`
   For each family, the lowest remaining quota fraction and earliest reset time among active models are tracked. A family without quota models omits numeric keys and sends only its display name (e.g. disabled Argon).
-- **Scheduled Task:** `install.ps1` registers a scheduled task `ESP32 AGY Quota` that runs `esp32-agyquota.exe` at logon of the installing user with Limited privileges, no execution time limit, and automatic restart on failure.
+- **Who runs it:** the service starts the user-session half in whoever is signed in at the console (see "Two processes, one exe").
 
 ### Keys Streamed
 - **Global:**
@@ -138,11 +160,11 @@ The companion helper `esp32-agyquota.exe` runs in the user's interactive session
 
 ## Media Playback & Cover Art
 
-The companion helper `esp32-agyquota.exe` runs in the user's interactive session (session 1+) and polls `GlobalSystemMediaTransportControlsSessionManager` every 1 second to read active media sessions (Spotify, browsers, media players). It writes `C:\ProgramData\ESP32PcStats\media.txt` and cover art `C:\ProgramData\ESP32PcStats\media_art.bin` atomically.
+The user-session half polls `GlobalSystemMediaTransportControlsSessionManager` every 250 ms to read active media sessions (Spotify, browsers, media players). It sends the keys as the `media` feed and the cover art as an `A` line, the art before the feed that names its id.
 
-The service polls `media.txt` via:
+The service reads the feed via:
 ```ini
-@source media file:///C:/ProgramData/ESP32PcStats/media.txt 1000
+@source media helper:media 250
 ```
 
 ### Keys Streamed
@@ -159,7 +181,7 @@ The service polls `media.txt` via:
   - `media.source`: Friendly app name (`Spotify`, `Chrome`, `Edge`, `Firefox`, `Brave`, `Opera`, `Vivaldi`, `VLC`, `foobar2000`, or executable / AUMID tail)
 
 ### Cover Art Push Protocol (`@a`)
-When `media.art_id` transitions to a non-zero value and `media_art.bin` is 41,472 bytes with matching CRC32:
+When `media.art_id` transitions to a non-zero value and the latest art from the user-session half has a matching CRC32:
 1. Cover art is center-cropped to a square, bicubic-scaled to 144x144, converted to RGB565 big-endian (2 bytes/pixel = 41,472 bytes), and Base64-encoded (55,296 characters).
 2. The service streams art across sample ticks:
    - Header: `@a begin <id> 144 144`
@@ -169,7 +191,7 @@ When `media.art_id` transitions to a non-zero value and `media_art.bin` is 41,47
 4. If the ESP32 carrier board requests art retransmission via `!art <id>` (received over HID input report or serial), the service immediately restarts streaming that art from the beginning.
 
 ### Console Testing
-Run `esp32-agyquota.exe --media` to sample media sessions for 5 seconds, print the keys to the console, and save the current cover art decoded back from the RGB565 buffer to `K:\scratch\media_art.png`.
+Run `ESP32-Helper.exe --media` to sample media sessions for 5 seconds, print the keys to the console, and save the current cover art decoded back from the RGB565 buffer to `K:\scratch\media_art.png`.
 
 ## Wire Protocol
 
@@ -223,11 +245,11 @@ Text transfers share a combined per-tick budget of 4,000 base64 characters with 
 #### 4. Test Mode
 Inspect font rendering and Uniscribe fallback directly from the command line:
 ```cmd
-esp32-pcstats.exe --render-text <px> <bold> <out.png> <text...>
+ESP32-Helper.exe --render-text <px> <bold> <out.png> <text...>
 ```
 Example:
 ```cmd
-esp32-pcstats.exe --render-text 20 1 K:\scratch\t.png "Atena ア テ ナ"
+ESP32-Helper.exe --render-text 20 1 K:\scratch\t.png "Atena ア テ ナ"
 ```
 Renders the text using the identical GDI pipeline, exports a 4x nearest-neighbor scaled PNG with alpha mapped to brightness for visual inspection, and prints:
 ```
@@ -294,7 +316,7 @@ When a System event 1074 (`User32`) occurs:
 
 Run with `--going` to inspect historical 1074 events and verified classification:
 ```cmd
-esp32-pcstats.exe --going
+ESP32-Helper.exe --going
 ```
 Prints the last 15 event 1074 entries (`time | process | type | code | reason -> kind`), followed by the computed `pc.last_down` / `pc.last_down_at` and `pc.update_pending`.
 

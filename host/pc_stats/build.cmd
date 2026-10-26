@@ -1,5 +1,5 @@
 @echo off
-rem Builds build\esp32-pcstats.exe. Fetches the lhwm-wrapper CI artifact
+rem Builds build\ESP32-Helper.exe. Fetches the lhwm-wrapper CI artifact
 rem (OpenRGB's LibreHardwareMonitor build) into vendor\ on first run.
 rem Needs only the .NET Framework 4 compiler that ships with Windows.
 setlocal
@@ -19,12 +19,8 @@ if not exist vendor\lhwm-wrapper.dll (
 )
 
 if not exist build mkdir build
-"%CSC%" /nologo /optimize+ /platform:x64 /target:exe /out:build\esp32-pcstats.exe ^
-  /r:vendor\lhwm-wrapper.dll /r:System.ServiceProcess.dll /r:System.Management.dll ^
-  /r:System.Web.Extensions.dll ^
-  PcStats.cs || goto :fail
-copy /y vendor\lhwm-wrapper.dll build\ >nul
-echo OK: build\esp32-pcstats.exe
+rem the two exes this one replaced; install.ps1 copies all of build\
+del /q build\esp32-pcstats.exe build\esp32-agyquota.exe 2>nul
 
 set "WINMD="
 set "KITS=%ProgramFiles(x86)%\Windows Kits\10\UnionMetadata"
@@ -44,13 +40,17 @@ if not defined WINMD (
   set WINMD="/r:%WINDIR%\System32\WinMetadata\Windows.Media.winmd" "/r:%WINDIR%\System32\WinMetadata\Windows.Foundation.winmd" "/r:%WINDIR%\System32\WinMetadata\Windows.Storage.winmd"
 )
 
-"%CSC%" /nologo /optimize+ /platform:x64 /target:winexe /out:build\esp32-agyquota.exe ^
-  /r:System.Management.dll /r:System.Web.Extensions.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll ^
+rem One exe: the service (PcStats.cs) and its user-session half (AgyQuota.cs,
+rem AgyUsage.cs, started by the service with --user)
+"%CSC%" /nologo /optimize+ /platform:x64 /target:exe /out:build\ESP32-Helper.exe ^
+  /r:vendor\lhwm-wrapper.dll /r:System.ServiceProcess.dll /r:System.Management.dll ^
+  /r:System.Web.Extensions.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.Core.dll ^
   /r:"%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\System.Runtime.WindowsRuntime.dll" ^
   /r:"%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\System.Runtime.dll" ^
   %WINMD% ^
-  AgyQuota.cs AgyUsage.cs || goto :fail
-echo OK: build\esp32-agyquota.exe
+  PcStats.cs AgyQuota.cs AgyUsage.cs || goto :fail
+copy /y vendor\lhwm-wrapper.dll build\ >nul
+echo OK: build\ESP32-Helper.exe
 
 exit /b 0
 

@@ -344,17 +344,20 @@ elevated shell).
 
 ## PC side
 
-`host/pc_stats` builds two programs with the .NET Framework 4 compiler that
-ships with Windows:
+`host/pc_stats` builds one program, `ESP32-Helper.exe`, with the .NET
+Framework 4 compiler that ships with Windows. It runs as two processes:
 
-- **`esp32-pcstats.exe`** (Windows service): reads sensors through
+- **The Windows service** (SYSTEM, session 0): reads sensors through
   LibreHardwareMonitor and Windows performance counters, polls the local AI
   status hub and Claude's usage, and streams everything to the board over a
   vendor HID interface (no driver; the COM port stays free). It also renders
   non-Latin text for the board and sends cover art.
-- **`esp32-agyquota.exe`** (per-user helper, a scheduled task): media info
-  from Windows' media session (Spotify, browsers), Antigravity quota, and
-  the Claude Code login refresh.
+- **The user-session half** (`--user`, started and restarted by the service
+  in the signed-in user's session, as that user): media info from Windows'
+  media session (Spotify, browsers), Antigravity quota, the Claude Code login
+  refresh, and board-requested screenshots. Session 0 can't see the desktop
+  or media sessions, hence the second process. The two talk over anonymous
+  pipes.
 
 Details worth knowing:
 - **CPU load** uses `% Processor Time`. `% Processor Utility` (what Task

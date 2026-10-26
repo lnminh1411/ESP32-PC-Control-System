@@ -13,23 +13,21 @@ if (-not $isAdmin) {
 }
 
 $scriptDir = $PSScriptRoot
-$buildExe = Join-Path -Path $scriptDir -ChildPath "build\esp32-pcstats.exe"
-$buildAgyExe = Join-Path -Path $scriptDir -ChildPath "build\esp32-agyquota.exe"
+$buildExe = Join-Path -Path $scriptDir -ChildPath "build\ESP32-Helper.exe"
 $buildCmd = Join-Path -Path $scriptDir -ChildPath "build.cmd"
 $buildDir = Join-Path -Path $scriptDir -ChildPath "build"
 $statsIni = Join-Path -Path $scriptDir -ChildPath "stats.ini"
 $agyIni = Join-Path -Path $scriptDir -ChildPath "agy_quota.ini"
 $installDir = "C:\Program Files\ESP32 PC Controller\pc_stats"
-$targetExe = Join-Path -Path $installDir -ChildPath "esp32-pcstats.exe"
-$targetAgyExe = Join-Path -Path $installDir -ChildPath "esp32-agyquota.exe"
+$targetExe = Join-Path -Path $installDir -ChildPath "ESP32-Helper.exe"
 $targetIni = Join-Path -Path $installDir -ChildPath "stats.ini"
 $targetAgyIni = Join-Path -Path $installDir -ChildPath "agy_quota.ini"
 
-# Run build.cmd if build\esp32-pcstats.exe or build\esp32-agyquota.exe is missing
-if (-not (Test-Path -LiteralPath $buildExe) -or -not (Test-Path -LiteralPath $buildAgyExe)) {
+# Run build.cmd if build\ESP32-Helper.exe is missing
+if (-not (Test-Path -LiteralPath $buildExe)) {
   Write-Host "Build artifacts missing. Running build.cmd..."
   & cmd.exe /c "`"$buildCmd`""
-  if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $buildExe) -or -not (Test-Path -LiteralPath $buildAgyExe)) {
+  if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $buildExe)) {
     Write-Error "Build failed."
     exit 1
   }
@@ -45,14 +43,32 @@ if ($service) {
   }
 }
 
-# Stop existing scheduled task / process if running so file copy succeeds
+# Before the merge the user-session half was a separate exe run by a scheduled
+# task; the service now starts it itself. Remove the task and the old exes.
 $taskName = "ESP32 AGY Quota"
 $existingTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
 if ($existingTask) {
-  Write-Host "Stopping existing scheduled task $taskName..."
+  Write-Host "Removing old scheduled task $taskName..."
   Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+  Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
 }
-Get-Process -Name "esp32-agyquota" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+$procs = Get-Process -Name "esp32-agyquota", "esp32-pcstats", "ESP32-Helper" -ErrorAction SilentlyContinue
+$procs | Stop-Process -Force -ErrorAction SilentlyContinue
+$procs | Wait-Process -Timeout 10 -ErrorAction SilentlyContinue   # the exe stays locked until the process is gone
+foreach ($old in "esp32-pcstats.exe", "esp32-agyquota.exe") {
+  $oldPath = Join-Path -Path $installDir -ChildPath $old
+  if (Test-Path -LiteralPath $oldPath) { Remove-Item -LiteralPath $oldPath -Force }
+}
+# Files the two halves used to pass data through; the pipe replaced them.
+# shot_request.txt holds a webhook URL, so it must not linger.
+# Kept: log.txt, agy_quota.txt (last-known quota), shot_pending.txt (deletes still due).
+$dataDir = "C:\ProgramData\ESP32PcStats"
+if (Test-Path -LiteralPath $dataDir) {
+  Get-ChildItem -LiteralPath $dataDir -File | Where-Object {
+    $_.Name -in @("media.txt", "media_art.bin", "shot_request.txt") -or
+    $_.Name -like "*.tmp.*" -or $_.Name -like "*~RF*.TMP"
+  } | Remove-Item -Force -ErrorAction SilentlyContinue
+}
 
 # Copy build\* to "C:\Program Files\ESP32 PC Controller\pc_stats\"
 if (-not (Test-Path -LiteralPath $installDir)) {
@@ -79,16 +95,28 @@ if ($ForceConfig -or -not (Test-Path -LiteralPath $targetAgyIni)) {
   Write-Host "Preserved existing agy_quota.ini in $installDir (use -ForceConfig to overwrite)"
 }
 
-# Create service "ESP32PcStats" if missing
+# Create service "ESP32PcStats" if missing; an existing one is pointed at the new exe
+$binPath = "`"$targetExe`""
+$displayName = "ESP32 PC Controller - Helper"
+$description = "Streams hardware sensor statistics to the ESP32-S3 carrier board and runs its user-session half (media, quota, screenshots)"
 $service = Get-Service -Name "ESP32PcStats" -ErrorAction SilentlyContinue
 if (-not $service) {
   Write-Host "Creating service ESP32PcStats..."
-  $binPath = "`"$targetExe`""
   New-Service -Name "ESP32PcStats" `
               -BinaryPathName $binPath `
-              -DisplayName "ESP32 PC Controller - PC stats" `
-              -Description "Streams hardware sensor statistics to the ESP32-S3 carrier board" `
+              -DisplayName $displayName `
+              -Description $description `
               -StartupType Automatic | Out-Null
+} else {
+  # WMI, not sc.exe: PowerShell 5 drops the inner quotes of a quoted path with spaces
+  Write-Host "Pointing service ESP32PcStats at $targetExe..."
+  $res = Get-CimInstance -ClassName Win32_Service -Filter "Name='ESP32PcStats'" |
+    Invoke-CimMethod -MethodName Change -Arguments @{ PathName = $binPath; DisplayName = $displayName }
+  if ($res.ReturnValue -ne 0) {
+    Write-Error "Could not update the service path (Win32_Service.Change returned $($res.ReturnValue))."
+    exit 1
+  }
+  & sc.exe description ESP32PcStats $description | Out-Null
 }
 
 # Set failure recovery
@@ -98,18 +126,6 @@ Write-Host "Configuring failure recovery..."
 # Start service
 Write-Host "Starting ESP32PcStats service..."
 Start-Service -Name "ESP32PcStats"
-
-# Register Scheduled Task "ESP32 AGY Quota"
-Write-Host "Registering scheduled task $taskName..."
-$currentUser = $env:USERNAME
-$action = New-ScheduledTaskAction -Execute $targetAgyExe -WorkingDirectory $installDir
-$trigger = New-ScheduledTaskTrigger -AtLogOn -User $currentUser
-$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
-$principal = New-ScheduledTaskPrincipal -UserId $currentUser -LogonType Interactive -RunLevel Limited
-
-Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
-Start-ScheduledTask -TaskName $taskName
-Write-Host "Scheduled task $taskName started."
 
 # Print status + log path
 $service = Get-Service -Name "ESP32PcStats"

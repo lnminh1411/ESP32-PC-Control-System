@@ -1,7 +1,11 @@
-// ESP32 PC Stats: Windows service that reads configured hardware sensors
+// ESP32-Helper: Windows service that reads configured hardware sensors
 // through LibreHardwareMonitor (lhwm-wrapper.dll, OpenRGB build) and streams
 // them to the carrier board over a vendor HID interface (report ID 6) with
 // native USB CDC fallback (Espressif VID 303A).
+//
+// The same exe is also the user-session half (AgyQuota.cs): the service starts
+// it with --user in the signed-in user's session and talks to it over two
+// anonymous pipes (see "User-session half" below).
 //
 // Sensor mapping is defined in stats.ini (in the executable's directory):
 //   key = <hardware> | <sensor type> | <sensor name> [| first|avg|sum|max|min]
@@ -17,12 +21,15 @@
 //   @t key text                  (text stats, UTF-8, up to 120 bytes)
 //   @e <seq>                     end of one sample (every @interval ms, default 500)
 //
-// Usage: esp32-pcstats.exe            run as service (installed by install.ps1)
-//        esp32-pcstats.exe --console  run in console, print stats each tick
-//        esp32-pcstats.exe --list     print every sensor once and exit
-//        esp32-pcstats.exe --bench    time one Update() of each hardware
+// Usage: ESP32-Helper.exe             run as service (installed by install.ps1)
+//        ESP32-Helper.exe --console   run in console, print stats each tick
+//        ESP32-Helper.exe --list      print every sensor once and exit
+//        ESP32-Helper.exe --bench     time one Update() of each hardware
+//        ESP32-Helper.exe --agy-once  poll Antigravity quota once, print it
+//        ESP32-Helper.exe --media     sample media sessions for 5 s
 //        --transport auto|hid|serial  transport mode (default: auto)
 //        --port COMn                  skip VID auto-detect, force serial COMn
+//        --no-user                    with --console: don't start the user half
 using System;
 using System.Collections.Generic;
 using System.Diagnostics.Eventing.Reader;
@@ -31,6 +38,7 @@ using System.Drawing.Imaging;
 using System.Drawing.Text;
 using System.Globalization;
 using System.IO;
+using System.IO.Pipes;
 using System.IO.Ports;
 using System.Management;
 using System.Net;
@@ -205,6 +213,22 @@ class PcStats : ServiceBase {
   [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
   static extern bool CreateProcessAsUser(IntPtr hToken, string app, string cmdLine, IntPtr procAttr, IntPtr threadAttr,
       bool inherit, uint flags, IntPtr env, string dir, ref STARTUPINFO si, out PROCESS_INFORMATION pi);
+
+  [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+  static extern bool CreateProcess(string app, string cmdLine, IntPtr procAttr, IntPtr threadAttr,
+      bool inherit, uint flags, IntPtr env, string dir, ref STARTUPINFO si, out PROCESS_INFORMATION pi);
+
+  [DllImport("userenv.dll", SetLastError = true)]
+  static extern bool CreateEnvironmentBlock(out IntPtr env, IntPtr token, bool inherit);
+
+  [DllImport("userenv.dll", SetLastError = true)]
+  static extern bool DestroyEnvironmentBlock(IntPtr env);
+
+  [DllImport("kernel32.dll", SetLastError = true)]
+  static extern bool TerminateProcess(IntPtr process, uint exitCode);
+
+  [DllImport("kernel32.dll", SetLastError = true)]
+  static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
 
   [DllImport("powrprof.dll", SetLastError = true)]
   static extern bool GetPwrCapabilities(IntPtr lpSystemPowerCapabilities);
@@ -518,10 +542,10 @@ class PcStats : ServiceBase {
 
   // The board asked for a screenshot and handed us the webhook from its
   // secrets.h. The service runs as SYSTEM in session 0 and cannot see the
-  // user's desktop, so we pass the request (nonce + webhook) to the
-  // user-session helper (esp32-agyquota.exe) via a trigger file; it captures,
-  // posts to the webhook, and auto-deletes after 5 min. If nobody is logged in
-  // there is nothing to capture, so just log and move on (never throw).
+  // user's desktop, so we pass the request (nonce + webhook) to the user half
+  // over its pipe; it captures, posts to the webhook, and auto-deletes after
+  // 5 min. If nobody is signed in there is nothing to capture, so just log and
+  // move on (never throw).
   static void HandleShotLine(string line) {
     if (line == null) return;
     Match m = ShotCmdRegex.Match(line.Trim());
@@ -529,19 +553,206 @@ class PcStats : ServiceBase {
     string nonce = m.Groups[1].Value.ToLowerInvariant();
     string webhook = m.Groups[2].Value;
 
-    uint session = WTSGetActiveConsoleSessionId();
-    if (session == 0xFFFFFFFF) {
-      Log("shot: no console session (PC at lock/login screen), screenshot skipped");
-      return;
+    if (SendToUserHalf("S " + nonce + " " + webhook)) {
+      Log("shot: request from board handed to the user half, nonce " + nonce);
+    } else {
+      Log("shot: user half not running (nobody signed in?), screenshot skipped");
     }
+  }
+
+  // ---- User-session half ----
+  // Session 0 cannot see the user's desktop or media sessions, so the service
+  // starts this exe again with --user in the active console session (the
+  // signed-in user's token, so it runs with that user's normal rights) and
+  // keeps one running there. --console mode starts it as the current user.
+  // Two anonymous pipes, UTF-8 lines. User half to service:
+  //   F <feed> <n>   then n key=value lines (feeds: agy, media; @source helper:<feed>)
+  //   A <base64>     cover art, 144x144 RGB565 big-endian (41,472 bytes)
+  //   L <text>       log line, written to this log as "user: <text>"
+  // Service to user half:
+  //   S <nonce> <webhook>   take a screenshot
+  // The user half exits as soon as its pipes break, so it never outlives us.
+  class HelperFeed {
+    public string[] Lines;
+    public DateTime ReceivedUtc;
+  }
+
+  static readonly object helperLock = new object();
+  static readonly Dictionary<string, HelperFeed> helperFeeds = new Dictionary<string, HelperFeed>(StringComparer.OrdinalIgnoreCase);
+  static byte[] helperArt;           // latest cover art from the user half
+  static StreamWriter helperOut;     // pipe to the user half, null while none is connected
+  static Thread helperThread;
+  static volatile bool helperStop;
+  static bool noUserHalf;            // --no-user
+
+  static bool SendToUserHalf(string line) {
+    lock (helperLock) {
+      if (helperOut == null) return false;
+      try { helperOut.Write(line + "\n"); return true; }
+      catch (Exception) { helperOut = null; return false; }
+    }
+  }
+
+  // Feed lines for HttpSource ("helper:<feed>"); null while no user half is connected
+  static string[] GetHelperFeed(string feed) {
+    lock (helperLock) {
+      HelperFeed f;
+      if (helperOut == null || !helperFeeds.TryGetValue(feed, out f)) return null;
+      return f.Lines;
+    }
+  }
+
+  // stats.ini files from before the merge still point at the files the old
+  // esp32-agyquota.exe wrote; those now arrive over the pipe
+  static string MapLegacySourceUrl(string url) {
+    string u = url.Replace('\\', '/').ToLowerInvariant();
+    if (!u.StartsWith("file:")) return url;
+    if (u.EndsWith("/esp32pcstats/agy_quota.txt")) return "helper:agy";
+    if (u.EndsWith("/esp32pcstats/media.txt")) return "helper:media";
+    return url;
+  }
+
+  static void StartUserHalf() {
+    if (noUserHalf || helperThread != null) return;
+    helperStop = false;
+    helperThread = new Thread(SuperviseUserHalf) { IsBackground = true, Name = "user_half" };
+    helperThread.Start();
+  }
+
+  static void StopUserHalf() {
+    helperStop = true;
+    if (helperThread != null) helperThread.Join(3000);
+    helperThread = null;
+  }
+
+  // Keeps one user half running in the active console session: starts it when
+  // someone signs in, restarts it if it dies, moves it on a user switch.
+  static void SuperviseUserHalf() {
+    IntPtr proc = IntPtr.Zero;
+    uint procSession = 0;
+    DateTime startedUtc = DateTime.MinValue, nextTryUtc = DateTime.MinValue;
+    string lastWait = null;
+    while (!helperStop) {
+      uint session = consoleMode ? 0 : WTSGetActiveConsoleSessionId();
+      if (proc != IntPtr.Zero) {
+        bool alive = WaitForSingleObject(proc, 0) == 0x102;   // WAIT_TIMEOUT
+        if (alive && !consoleMode && session != procSession) {
+          Log("user half: console session " + procSession + " -> " + session + ", moving");
+          TerminateProcess(proc, 0);
+          WaitForSingleObject(proc, 2000);
+          alive = false;
+        }
+        if (!alive) {
+          uint code;
+          GetExitCodeProcess(proc, out code);
+          CloseHandle(proc);
+          proc = IntPtr.Zero;
+          lock (helperLock) { helperOut = null; helperFeeds.Clear(); helperArt = null; }
+          // a quick exit is usually another copy holding the per-session mutex
+          bool quick = (DateTime.UtcNow - startedUtc).TotalSeconds < 15;
+          Log("user half: exited, code " + code + (quick ? ", retry in 30 s" : ""));
+          nextTryUtc = DateTime.UtcNow.AddSeconds(quick ? 30 : 2);
+        }
+      }
+      if (proc == IntPtr.Zero && DateTime.UtcNow >= nextTryUtc) {
+        string why;
+        proc = SpawnUserHalf(session, out why);
+        if (proc != IntPtr.Zero) {
+          procSession = session;
+          startedUtc = DateTime.UtcNow;
+          lastWait = null;
+          Log("user half: started in session " + session);
+        } else {
+          if (why != lastWait) Log("user half: waiting, " + why);
+          lastWait = why;
+          nextTryUtc = DateTime.UtcNow.AddSeconds(5);
+        }
+      }
+      for (int i = 0; i < 20 && !helperStop; i++) Thread.Sleep(100);
+    }
+    lock (helperLock) {
+      if (helperOut != null) { try { helperOut.Dispose(); } catch (Exception) { } }
+      helperOut = null;
+    }
+    if (proc != IntPtr.Zero) {
+      if (WaitForSingleObject(proc, 1000) != 0) TerminateProcess(proc, 0);   // it exits on its own when the pipe closes
+      CloseHandle(proc);
+    }
+  }
+
+  static IntPtr SpawnUserHalf(uint session, out string why) {
+    why = null;
+    IntPtr token = IntPtr.Zero, env = IntPtr.Zero;
+    if (!consoleMode && (session == 0xFFFFFFFF || !WTSQueryUserToken(session, out token))) {
+      why = "nobody signed in at the console";
+      return IntPtr.Zero;
+    }
+    var toChild = new AnonymousPipeServerStream(PipeDirection.Out, HandleInheritability.Inheritable);
+    var fromChild = new AnonymousPipeServerStream(PipeDirection.In, HandleInheritability.Inheritable);
     try {
-      string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ESP32PcStats");
-      Directory.CreateDirectory(dir);
-      // nonce \n utc-ticks \n webhook (webhook last: it is the only field that can contain odd chars)
-      File.WriteAllText(Path.Combine(dir, "shot_request.txt"), nonce + "\n" + DateTime.UtcNow.Ticks + "\n" + webhook);
-      Log("shot: request from board handed to the user-session helper, nonce " + nonce);
+      string exe = System.Reflection.Assembly.GetExecutingAssembly().Location;
+      string cmd = "\"" + exe + "\" --user " + toChild.GetClientHandleAsString() + " " + fromChild.GetClientHandleAsString();
+      STARTUPINFO si = new STARTUPINFO();
+      si.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+      PROCESS_INFORMATION pi;
+      bool ok;
+      const uint CREATE_NO_WINDOW = 0x08000000, CREATE_UNICODE_ENVIRONMENT = 0x00000400;
+      if (consoleMode) {
+        ok = CreateProcess(exe, cmd, IntPtr.Zero, IntPtr.Zero, true, CREATE_NO_WINDOW, IntPtr.Zero,
+            Path.GetDirectoryName(exe), ref si, out pi);
+      } else {
+        si.lpDesktop = @"winsta0\default";
+        if (!CreateEnvironmentBlock(out env, token, false)) env = IntPtr.Zero;   // USERPROFILE etc. of that user
+        ok = CreateProcessAsUser(token, exe, cmd, IntPtr.Zero, IntPtr.Zero, true, CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
+            env, Path.GetDirectoryName(exe), ref si, out pi);
+      }
+      if (!ok) {
+        why = "CreateProcess failed (" + Marshal.GetLastWin32Error() + ")";
+        toChild.Dispose();
+        fromChild.Dispose();
+        return IntPtr.Zero;
+      }
+      CloseHandle(pi.hThread);
+      toChild.DisposeLocalCopyOfClientHandle();
+      fromChild.DisposeLocalCopyOfClientHandle();
+      StreamWriter w = new StreamWriter(toChild, Utf8NoBom) { AutoFlush = true };
+      lock (helperLock) { helperOut = w; }
+      new Thread(delegate() { ReadUserHalf(fromChild, w); }) { IsBackground = true, Name = "user_half_reader" }.Start();
+      return pi.hProcess;
+    } finally {
+      if (env != IntPtr.Zero) DestroyEnvironmentBlock(env);
+      if (token != IntPtr.Zero) CloseHandle(token);
+    }
+  }
+
+  static void ReadUserHalf(Stream fromChild, StreamWriter toChild) {
+    try {
+      using (var r = new StreamReader(fromChild, Utf8NoBom)) {
+        string line;
+        while ((line = r.ReadLine()) != null) {
+          if (line.StartsWith("F ")) {
+            string[] p = line.Split(' ');
+            int n;
+            if (p.Length != 3 || !int.TryParse(p[2], out n) || n < 0 || n > 1000) { Log("user half: bad feed header"); break; }
+            string[] lines = new string[n];
+            for (int i = 0; i < n; i++) {
+              lines[i] = r.ReadLine();
+              if (lines[i] == null) return;
+            }
+            lock (helperLock) { helperFeeds[p[1]] = new HelperFeed { Lines = lines, ReceivedUtc = DateTime.UtcNow }; }
+          } else if (line.StartsWith("A ")) {
+            byte[] art = Convert.FromBase64String(line.Substring(2));
+            if (art.Length == 41472) lock (helperLock) { helperArt = art; }
+          } else if (line.StartsWith("L ")) {
+            Log("user: " + line.Substring(2));
+          }
+        }
+      }
     } catch (Exception ex) {
-      Log("shot: could not write request file: " + ex.Message);
+      Log("user half: pipe read: " + ex.Message);
+    } finally {
+      lock (helperLock) { if (helperOut == toChild) helperOut = null; }
+      try { toChild.Dispose(); } catch (Exception) { }
     }
   }
 
@@ -1153,7 +1364,11 @@ class PcStats : ServiceBase {
     void Run() {
       while (!Stop) {
         DateTime t0 = DateTime.UtcNow;
-        try {
+        if (Url.StartsWith("helper:", StringComparison.OrdinalIgnoreCase)) {
+          // fed by the user half over its pipe; fresh as long as it is connected
+          string[] feed = GetHelperFeed(Url.Substring(7));
+          if (feed != null) Apply(new StringReader(string.Join("\n", feed)));
+        } else try {
           WebRequest req = WebRequest.Create(Url);
           HttpWebRequest httpReq = req as HttpWebRequest;
           if (httpReq != null) {
@@ -1166,36 +1381,7 @@ class PcStats : ServiceBase {
           using (WebResponse resp = req.GetResponse())
           using (Stream stream = resp.GetResponseStream())
           using (StreamReader reader = new StreamReader(stream, Encoding.UTF8)) {
-            var newNumbers = new Dictionary<string, double>();
-            var newTexts = new Dictionary<string, string>();
-            string line;
-            while ((line = reader.ReadLine()) != null) {
-              line = line.Trim();
-              if (line.Length == 0) continue;
-              int eq = line.IndexOf('=');
-              if (eq < 0) continue;
-              string k = line.Substring(0, eq).Trim();
-              string v = line.Substring(eq + 1).Trim();
-
-              // Valid key: [a-z0-9_.], max 23 chars; skip others.
-              if (k.Length == 0 || k.Length > 23 || !Regex.IsMatch(k, @"^[a-z0-9_.]+$", RegexOptions.IgnoreCase))
-                continue;
-
-              double num;
-              if (double.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out num) && !double.IsNaN(num) && !double.IsInfinity(num)) {
-                newNumbers[k] = num;
-              } else {
-                string text = CleanText(v);
-                text = TruncateUtf8(text, 120);
-                newTexts[k] = text;
-              }
-            }
-
-            lock (Lock) {
-              Numbers = newNumbers;
-              Texts = newTexts;
-              LastSuccessUtc = DateTime.UtcNow;
-            }
+            Apply(reader);
           }
         } catch (Exception) {
           // Hub might be sleeping or unreachable, keep going
@@ -1211,6 +1397,39 @@ class PcStats : ServiceBase {
           Thread.Sleep(Math.Min(100, wait - slept));
           slept += 100;
         }
+      }
+    }
+
+    void Apply(TextReader reader) {
+      var newNumbers = new Dictionary<string, double>();
+      var newTexts = new Dictionary<string, string>();
+      string line;
+      while ((line = reader.ReadLine()) != null) {
+        line = line.Trim();
+        if (line.Length == 0) continue;
+        int eq = line.IndexOf('=');
+        if (eq < 0) continue;
+        string k = line.Substring(0, eq).Trim();
+        string v = line.Substring(eq + 1).Trim();
+
+        // Valid key: [a-z0-9_.], max 23 chars; skip others.
+        if (k.Length == 0 || k.Length > 23 || !Regex.IsMatch(k, @"^[a-z0-9_.]+$", RegexOptions.IgnoreCase))
+          continue;
+
+        double num;
+        if (double.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out num) && !double.IsNaN(num) && !double.IsInfinity(num)) {
+          newNumbers[k] = num;
+        } else {
+          string text = CleanText(v);
+          text = TruncateUtf8(text, 120);
+          newTexts[k] = text;
+        }
+      }
+
+      lock (Lock) {
+        Numbers = newNumbers;
+        Texts = newTexts;
+        LastSuccessUtc = DateTime.UtcNow;
       }
     }
 
@@ -1988,8 +2207,13 @@ class PcStats : ServiceBase {
 
   static void Main(string[] args) {
     try { ServicePointManager.SecurityProtocol |= (SecurityProtocolType)3072; } catch (Exception) { }
+    // the user-session half and its test modes (AgyQuota.cs) want an STA thread
+    if (args.Length == 3 && args[0] == "--user") { RunSta(delegate() { AgyQuota.RunUser(args[1], args[2]); }); return; }
+    if (args.Length == 1 && args[0] == "--agy-once") { RunSta(AgyQuota.RunOnceTest); return; }
+    if (args.Length == 1 && args[0] == "--media") { RunSta(AgyQuota.RunMediaTest); return; }
     for (int i = 0; i < args.Length; i++) {
       if (args[i] == "--console") consoleMode = true;
+      else if (args[i] == "--no-user") noUserHalf = true;
       else if (args[i] == "--port" && i + 1 < args.Length) fixedPort = args[++i];
       else if (args[i] == "--transport" && i + 1 < args.Length) transportMode = args[++i].ToLowerInvariant();
       else if (args[i] == "--list") { List(); return; }
@@ -2013,10 +2237,19 @@ class PcStats : ServiceBase {
     if (consoleMode) {
       var s = new PcStats();
       Console.CancelKeyPress += delegate(object o, ConsoleCancelEventArgs e) { e.Cancel = true; s.stop = true; };
+      StartUserHalf();
       s.Run();
+      StopUserHalf();
     } else {
       ServiceBase.Run(new PcStats());
     }
+  }
+
+  static void RunSta(ThreadStart body) {
+    Thread t = new Thread(body) { Name = "user_main" };
+    t.SetApartmentState(ApartmentState.STA);
+    t.Start();
+    t.Join();
   }
 
   public PcStats() { ServiceName = "ESP32PcStats"; CanStop = true; CanShutdown = true; CanHandlePowerEvent = true; }
@@ -2028,9 +2261,10 @@ class PcStats : ServiceBase {
     }
     worker = new Thread(Run) { IsBackground = true, Name = "pcstats" };
     worker.Start();
+    StartUserHalf();
   }
 
-  protected override void OnStop() { stop = true; sendNow.Set(); if (worker != null) worker.Join(5000); }
+  protected override void OnStop() { stop = true; sendNow.Set(); StopUserHalf(); if (worker != null) worker.Join(5000); }
   protected override void OnShutdown() {
     bool hasRecent1074 = false;
     lock (goingLock) {
@@ -2311,37 +2545,28 @@ class PcStats : ServiceBase {
       }
 
       if (trigger && !string.IsNullOrEmpty(targetId) && targetId != "0") {
-        string artPath = @"C:\ProgramData\ESP32PcStats\media_art.bin";
-        if (File.Exists(artPath)) {
-          try {
-            FileInfo fi = new FileInfo(artPath);
-            if (fi.Length == 41472) {
-              byte[] bytes = File.ReadAllBytes(artPath);
-              if (bytes.Length == 41472) {
-                uint crc = ComputeCrc32(bytes);
-                string crcDec = crc.ToString(CultureInfo.InvariantCulture);
-                if (crcDec == targetId || crc.ToString("x8").Equals(targetId, StringComparison.OrdinalIgnoreCase)) {
-                  // the panels are 12-bit: send RGB444 (2 px in 3 bytes), 25% less to move
-                  byte[] packed = new byte[144 * 144 * 3 / 2];
-                  for (int px = 0, o = 0; px < 144 * 144; px += 2, o += 3) {
-                    int a = (bytes[2 * px] << 8) | bytes[2 * px + 1], b = (bytes[2 * px + 2] << 8) | bytes[2 * px + 3];
-                    packed[o] = (byte)(((a >> 12) << 4) | ((a >> 7) & 15));
-                    packed[o + 1] = (byte)((((a >> 1) & 15) << 4) | (b >> 12));
-                    packed[o + 2] = (byte)((((b >> 7) & 15) << 4) | ((b >> 1) & 15));
-                  }
-                  activeArtTransfer = new ArtTransfer {
-                    Id = targetId,
-                    CrcHex = ComputeCrc32(packed).ToString("x8"),
-                    Base64 = Convert.ToBase64String(packed),
-                    CharsSent = 0,
-                    SentBegin = false,
-                    Done = false
-                  };
-                }
-              }
+        byte[] bytes;
+        lock (helperLock) { bytes = helperArt; }   // latest cover from the user half
+        if (bytes != null) {
+          uint crc = ComputeCrc32(bytes);
+          string crcDec = crc.ToString(CultureInfo.InvariantCulture);
+          if (crcDec == targetId || crc.ToString("x8").Equals(targetId, StringComparison.OrdinalIgnoreCase)) {
+            // the panels are 12-bit: send RGB444 (2 px in 3 bytes), 25% less to move
+            byte[] packed = new byte[144 * 144 * 3 / 2];
+            for (int px = 0, o = 0; px < 144 * 144; px += 2, o += 3) {
+              int a = (bytes[2 * px] << 8) | bytes[2 * px + 1], b = (bytes[2 * px + 2] << 8) | bytes[2 * px + 3];
+              packed[o] = (byte)(((a >> 12) << 4) | ((a >> 7) & 15));
+              packed[o + 1] = (byte)((((a >> 1) & 15) << 4) | (b >> 12));
+              packed[o + 2] = (byte)((((b >> 7) & 15) << 4) | ((b >> 1) & 15));
             }
-          } catch (Exception ex) {
-            Log("art read error: " + ex.Message);
+            activeArtTransfer = new ArtTransfer {
+              Id = targetId,
+              CrcHex = ComputeCrc32(packed).ToString("x8"),
+              Base64 = Convert.ToBase64String(packed),
+              CharsSent = 0,
+              SentBegin = false,
+              Done = false
+            };
           }
         }
       }
@@ -2954,7 +3179,7 @@ class PcStats : ServiceBase {
         if (sp.Length >= 4 && int.TryParse(sp[3], out ms) && ms > 0) {
           var src = new HttpSource();
           src.Name = sp[1].Trim();
-          src.Url = sp[2].Trim();
+          src.Url = MapLegacySourceUrl(sp[2].Trim());
           src.IntervalMs = ms;
           sources.Add(src);
         } else {

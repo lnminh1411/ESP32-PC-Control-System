@@ -1,6 +1,8 @@
-// esp32-agyquota: Per-user helper querying Google Antigravity local language servers
-// and writing model quota statistics to C:\ProgramData\ESP32PcStats\agy_quota.txt
-// for consumption by esp32-pcstats.exe via @source.
+// ESP32-Helper user-session half (ESP32-Helper.exe --user, started by the
+// service in the signed-in user's session; see PcStats.cs). Queries Google
+// Antigravity local language servers for model quota, reads the media session
+// and cover art, and takes board-requested screenshots. Results go to the
+// service over its pipe as the "agy" and "media" feeds (@source helper:<feed>).
 //
 // Also keeps the Claude Code OAuth token fresh: shortly before it expires it
 // does the same refresh Claude Code does and writes the new token back to
@@ -16,6 +18,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.IO.Pipes;
 using System.Management;
 using System.Net;
 using System.Runtime.InteropServices;
@@ -536,7 +539,13 @@ static class AgyQuota {
     return null;
   }
 
+  // Under the service, log lines go over the pipe into its log.txt; the
+  // standalone test modes (--agy-once, --media) keep agy_quota.log.
   static void Log(string message) {
+    if (serviceOut != null) {
+      SendToService("L " + message.Replace('\r', ' ').Replace('\n', ' ') + "\n");
+      return;
+    }
     try {
       string logDir = @"C:\ProgramData\ESP32PcStats";
       if (!Directory.Exists(logDir)) Directory.CreateDirectory(logDir);
@@ -1203,9 +1212,6 @@ static class AgyQuota {
     }
   }
 
-  const string MediaOutputPath = @"C:\ProgramData\ESP32PcStats\media.txt";
-  const string MediaArtPath = @"C:\ProgramData\ESP32PcStats\media_art.bin";
-
   static uint lastArtId = 0;
   static string lastTrackKey = null;
   // Windows often swaps the title first and the thumbnail a moment later:
@@ -1341,44 +1347,6 @@ static class AgyQuota {
     }
   }
 
-  static void WriteOutputFileBytes(string outputPath, byte[] data) {
-    string dir = Path.GetDirectoryName(outputPath);
-    if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir)) {
-      try { Directory.CreateDirectory(dir); } catch { }
-    }
-    string tempPath = outputPath + ".tmp." + Guid.NewGuid().ToString("N");
-    try {
-      File.WriteAllBytes(tempPath, data);
-      for (int i = 0; i < 5; i++) {
-        try {
-          if (File.Exists(outputPath)) {
-            try {
-              File.Replace(tempPath, outputPath, null);
-              return;
-            } catch {
-              File.Delete(outputPath);
-              File.Move(tempPath, outputPath);
-              return;
-            }
-          } else {
-            File.Move(tempPath, outputPath);
-            return;
-          }
-        } catch (Exception ex) {
-          if (i == 4) {
-            Log("WriteOutputFileBytes failed: " + ex.Message);
-          } else {
-            Thread.Sleep(50);
-          }
-        }
-      }
-    } finally {
-      if (File.Exists(tempPath)) {
-        try { File.Delete(tempPath); } catch { }
-      }
-    }
-  }
-
   static List<string> PollMedia(GlobalSystemMediaTransportControlsSessionManager mgr) {
     var lines = new List<string>();
     GlobalSystemMediaTransportControlsSession session = PickSession(mgr);
@@ -1387,7 +1355,7 @@ static class AgyQuota {
       lastTrackKey = null;
       currentArtBytes = null;
       lines.Add("media.ok=0");
-      WriteOutputFile(MediaOutputPath, lines);
+      SendFeed("media", lines);
       return lines;
     }
 
@@ -1460,9 +1428,8 @@ static class AgyQuota {
         if (rgb565 != null && rgb565.Length == 41472) {
           uint crc = ComputeCrc32(rgb565);
           if (crc != 0) {
-            if (crc != lastArtId || !File.Exists(MediaArtPath)) {
-              WriteOutputFileBytes(MediaArtPath, rgb565);
-            }
+            // before the media lines that name it, so the service has it by then
+            if (crc != lastArtId) SendToService("A " + Convert.ToBase64String(rgb565) + "\n");
             lastArtId = crc;
             currentArtBytes = rgb565;
           }
@@ -1482,20 +1449,12 @@ static class AgyQuota {
     lines.Add("media.len_s=" + len_s);
     lines.Add("media.art_id=" + lastArtId.ToString(CultureInfo.InvariantCulture));
 
-    WriteOutputFile(MediaOutputPath, lines);
+    SendFeed("media", lines);
     return lines;
   }
 
   static void SaveCurrentArtToPng(string pngPath) {
     byte[] rgb565 = currentArtBytes;
-    if (rgb565 == null || rgb565.Length != 41472) {
-      if (File.Exists(MediaArtPath)) {
-        try {
-          byte[] disk = File.ReadAllBytes(MediaArtPath);
-          if (disk.Length == 41472) rgb565 = disk;
-        } catch { }
-      }
-    }
     if (rgb565 == null || rgb565.Length != 41472) {
       rgb565 = new byte[41472];
     }
@@ -1531,7 +1490,7 @@ static class AgyQuota {
     }
   }
 
-  static void RunMediaTest() {
+  internal static void RunMediaTest() {
     AttachConsole(ATTACH_PARENT_PROCESS);
     IntPtr stdHandle = GetStdHandle(STD_OUTPUT_HANDLE);
     if (stdHandle != IntPtr.Zero && stdHandle.ToInt64() != -1) {
@@ -1573,33 +1532,22 @@ static class AgyQuota {
   // cannot reach the user's desktop); this user-session helper captures the
   // screen, posts it to the #logging Discord webhook, and deletes the post
   // after 5 minutes. Every step is caught so the media loop never dies. ----
-  static readonly string ShotRequestPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), @"ESP32PcStats\shot_request.txt");
   static readonly string ShotPendingPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), @"ESP32PcStats\shot_pending.txt");
   const double ShotDeleteMinutes = 5.0;
   const int ShotBorderSeconds = 5;
-  static string lastShotNonce = null;   // the service rewrites the file per request; we never delete its file
   static int shotBusy = 0;              // 0/1 guard so overlapping requests are coalesced (Interlocked)
 
-  // Called from the media loop; cheap when idle. Claims a new request and runs
-  // the slow work (capture, upload) on its own thread so the media loop never
-  // stalls, and so a second request that lands mid-capture is simply dropped.
+  // Called from the media loop; cheap when idle. Claims the request the
+  // service sent over the pipe and runs the slow work (capture, upload) on its
+  // own thread so the media loop never stalls, and so a second request that
+  // lands mid-capture is simply dropped.
   static void CheckScreenshotRequest() {
-    string nonce, webhook = "";
-    try {
-      if (!File.Exists(ShotRequestPath)) return;
-      string[] parts = File.ReadAllText(ShotRequestPath).Split('\n');
-      nonce = parts[0].Trim();
-      if (nonce.Length == 0 || nonce == lastShotNonce) return;   // nothing new
-      long ticks;
-      if (parts.Length > 1 && long.TryParse(parts[1].Trim(), out ticks)) {
-        if ((DateTime.UtcNow - new DateTime(ticks, DateTimeKind.Utc)).TotalSeconds > 30) {
-          lastShotNonce = nonce;   // stale (e.g. seen at startup): mark handled, skip
-          return;
-        }
-      }
-      if (parts.Length > 2) webhook = parts[2].Trim();
-      lastShotNonce = nonce;   // claim it; the service owns the file, so we don't delete
-    } catch { return; }
+    string req;
+    lock (serviceLock) { req = pendingShot; pendingShot = null; }
+    if (req == null) return;
+    int sp = req.IndexOf(' ');
+    string nonce = sp > 0 ? req.Substring(0, sp) : req;
+    string webhook = sp > 0 ? req.Substring(sp + 1).Trim() : "";
 
     if (webhook.Length == 0) { Log("shot: request carried no webhook, skipped"); return; }
     if (Interlocked.CompareExchange(ref shotBusy, 1, 0) != 0) {
@@ -1807,6 +1755,62 @@ static class AgyQuota {
     }
   }
 
+  // ---- Pipe to the service (protocol: "User-session half" in PcStats.cs) ----
+  static StreamWriter serviceOut;      // null in the standalone test modes
+  static readonly object serviceLock = new object();
+  static string pendingShot;           // "<nonce> <webhook>", claimed by CheckScreenshotRequest
+
+  static void ConnectService(string inHandle, string outHandle) {
+    var fromService = new AnonymousPipeClientStream(PipeDirection.In, inHandle);
+    var toService = new AnonymousPipeClientStream(PipeDirection.Out, outHandle);
+    serviceOut = new StreamWriter(toService, new UTF8Encoding(false)) { AutoFlush = true };
+    Thread reader = new Thread(delegate() {
+      try {
+        using (var r = new StreamReader(fromService, new UTF8Encoding(false))) {
+          string line;
+          while ((line = r.ReadLine()) != null) {
+            if (line.StartsWith("S ")) lock (serviceLock) { pendingShot = line.Substring(2); }
+          }
+        }
+      } catch { }
+      Environment.Exit(0);   // the service is gone: never outlive it
+    });
+    reader.IsBackground = true;
+    reader.Name = "esp32_service_reader";
+    reader.Start();
+  }
+
+  static void SendToService(string text) {
+    lock (serviceLock) {
+      if (serviceOut == null) return;
+      try { serviceOut.Write(text); }
+      catch { Environment.Exit(0); }   // broken pipe: the service is gone
+    }
+  }
+
+  static void SendFeed(string feed, List<string> lines) {
+    if (serviceOut == null) return;
+    var sb = new StringBuilder();
+    sb.Append("F ").Append(feed).Append(' ').Append(lines.Count).Append('\n');
+    for (int i = 0; i < lines.Count; i++) sb.Append(lines[i].Replace('\r', ' ').Replace('\n', ' ')).Append('\n');
+    SendToService(sb.ToString());   // one write, so a feed never interleaves with a log line
+  }
+
+  // ESP32-Helper.exe --user <in> <out>: started by the service in the user's
+  // session with the client ends of its two pipes.
+  internal static void RunUser(string inHandle, string outHandle) {
+    bool createdNew;
+    using (Mutex mutex = new Mutex(true, @"Local\ESP32HelperUser", out createdNew)) {
+      if (!createdNew) return;   // another copy already serves this session
+      ConnectService(inHandle, outHandle);
+      RunLoop(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "agy_quota.ini"));
+    }
+  }
+
+  internal static void RunOnceTest() {
+    RunOnce(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "agy_quota.ini"));
+  }
+
   static void RunOnce(string configPath) {
     AttachConsole(ATTACH_PARENT_PROCESS);
     IntPtr stdHandle = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -1884,7 +1888,8 @@ static class AgyQuota {
 
       try {
         List<string> lines = GenerateOutputLines(liveClients, cfg.Families, cfg.Accounts, accountsData);
-        WriteOutputFile(cfg.OutputPath, lines);
+        SendFeed("agy", lines);
+        WriteOutputFile(cfg.OutputPath, lines);   // last-known values for ReloadPreviousFile on the next start
       } catch (Exception ex) {
         Log("Write output error: " + ex.Message);
       }
@@ -1902,40 +1907,4 @@ static class AgyQuota {
     }
   }
 
-  [STAThread]
-  static void Main(string[] args) {
-    bool once = false;
-    bool media = false;
-    for (int i = 0; i < args.Length; i++) {
-      if (string.Equals(args[i], "--once", StringComparison.OrdinalIgnoreCase)) {
-        once = true;
-        break;
-      }
-      if (string.Equals(args[i], "--media", StringComparison.OrdinalIgnoreCase)) {
-        media = true;
-        break;
-      }
-    }
-
-    if (media) {
-      RunMediaTest();
-      return;
-    }
-
-    string exeDir = AppDomain.CurrentDomain.BaseDirectory;
-    string configPath = Path.Combine(exeDir, "agy_quota.ini");
-
-    if (once) {
-      RunOnce(configPath);
-      return;
-    }
-
-    bool createdNew;
-    using (Mutex mutex = new Mutex(true, @"Local\ESP32AgyQuota", out createdNew)) {
-      if (!createdNew) {
-        return;
-      }
-      RunLoop(configPath);
-    }
-  }
 }
