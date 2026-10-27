@@ -100,9 +100,10 @@ def upload_ota(host, password, bin_path):
                     break
                 conn.send(chunk)
                 sent += len(chunk)
-                pct = (sent / file_size) * 100
-                sys.stdout.write(f"\rUploading: {sent}/{file_size} bytes ({pct:.1f}%)")
-                sys.stdout.flush()
+                if sent % 65536 < chunk_size or sent == file_size:   # progress every 64 KB, not every chunk
+                    pct = (sent / file_size) * 100
+                    sys.stdout.write(f"\rUploading: {sent}/{file_size} bytes ({pct:.1f}%)")
+                    sys.stdout.flush()
 
         elapsed = time.time() - start_time
         speed_kb = (sent / 1024.0) / elapsed if elapsed > 0 else 0

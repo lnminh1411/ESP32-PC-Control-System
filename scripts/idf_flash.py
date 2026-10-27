@@ -29,8 +29,22 @@ JTAG_PID = 0x1001
 JTAG_INTERFACE = "MI_00"   # ROM's CDC is interface 0; the app's CDC is MI_01
 
 
+def service_state():
+    """'RUNNING', 'STOPPED', ... from a non-elevated sc query; None when not installed."""
+    r = subprocess.run(["sc", "query", SERVICE], capture_output=True, text=True, check=False)
+    for line in r.stdout.splitlines():
+        if "STATE" in line:
+            return line.split()[-1]
+    return None
+
+
 def service(action):
-    """sc start/stop elevated; returns once sc has finished."""
+    """sc start/stop elevated; returns once sc has finished. Skips the UAC prompt
+    when the service is missing or already in the wanted state."""
+    state = service_state()
+    if state is None or (action == "stop" and state == "STOPPED") or \
+            (action == "start" and state in ("RUNNING", "START_PENDING")):
+        return
     subprocess.run(["powershell", "-NoProfile", "-Command",
                     f"Start-Process sc.exe -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '{action}','{SERVICE}'"],
                    check=False)
@@ -70,11 +84,11 @@ def main():
         except serial.SerialException as e:
             print(f"1200-baud touch on {args.port} failed ({e}); looking for a board already in download mode")
         port = None
-        for _ in range(40):
-            time.sleep(0.5)
+        for _ in range(200):   # up to 20 s
             port = rom_port({args.port})
             if port:
                 break
+            time.sleep(0.1)
         if not port:
             sys.exit("no download-mode port appeared")
         print(f"ROM downloader on {port}")

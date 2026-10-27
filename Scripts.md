@@ -43,7 +43,7 @@ Validates firmware GPIO definitions against the atopile hardware pin map. Helps 
 Streams RGB565 GIF frames over USB-UART to the ESP32-S3 for storage in FAT and playback. Validates transmission integrity using per-frame checksums. Located at `scripts/gif_stream.py`.
 
 ### idf_flash.py
-Builds and flashes `firmware` over the native USB port hands-off: stops the ESP32PcStats service, does a 1200-baud touch on COM12, waits for the ROM downloader port and runs `idf.py flash`. Run it with the ESP-IDF Python (`C:\Espressif\python_env\idf5.5_py3.12_env\Scripts\python.exe scripts\idf_flash.py [--no-build]`). Located at `scripts/idf_flash.py`.
+Builds and flashes `firmware` over the native USB port hands-off: stops the ESP32PcStats service (no UAC prompt when it is already stopped), does a 1200-baud touch on COM12, waits for the ROM downloader port and runs `idf.py flash`. Run it with the ESP-IDF Python (`C:\Espressif\python_env\idf5.5_py3.12_env\Scripts\python.exe scripts\idf_flash.py [--no-build]`). Located at `scripts/idf_flash.py`.
 
 ### ota_upload.py
 Uploads `firmware/build/carrier.bin` to the board over Wi-Fi (HTTP POST /ota, password from secrets.h). Located at `scripts/ota_upload.py`.
