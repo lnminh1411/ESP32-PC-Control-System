@@ -2,6 +2,7 @@
 
 #include <cJSON.h>
 #include <esp_crt_bundle.h>
+#include <esp_rom_crc.h>
 #include <esp_heap_caps.h>
 #include <esp_http_client.h>
 #include <esp_random.h>
@@ -767,6 +768,70 @@ static void addField(cJSON *fields, const char *name, const char *value) {
   cJSON_AddItemToArray(fields, f);
 }
 
+// "--" for a stat the PC has not sent
+static const char *orDash(double v, char *buf, size_t cap, const char *fmt, double scale = 1.0) {
+  if (isnan(v)) return "--";
+  snprintf(buf, cap, fmt, v * scale);
+  return buf;
+}
+
+// Network rate in bytes/s: "850 KB/s", "1.2 MB/s"
+static void fmtRate(double b, char *buf, size_t cap) {
+  if (isnan(b)) { snprintf(buf, cap, "--"); return; }
+  bool mb = b >= 1048576.0;
+  double v = mb ? b / 1048576.0 : b / 1024.0;
+  snprintf(buf, cap, v >= 100.0 ? "%.0f %s" : "%.1f %s", v, mb ? "MB/s" : "KB/s");
+}
+
+// The PC's components, from the stats service: what the PC stats face shows
+static void addPcStatsFields(cJSON *fields) {
+  if (!pcStatsFresh()) {
+    addField(fields, "Components", pcState() == PC_ON ? "no data (stats service not running?)" : "no data (PC asleep or off)");
+    return;
+  }
+  char v[112], a[24], b[24], c[24], d[24];
+  snprintf(v, sizeof v, "%s | %s | %s | %s", orDash(pcStat("cpu_load"), a, sizeof a, "%.0f %%"),
+           orDash(pcStat("cpu_clock"), b, sizeof b, "%.2f GHz", 0.001), orDash(pcStat("cpu_temp"), c, sizeof c, "%.0f \u00b0C"),
+           orDash(pcStat("cpu_power"), d, sizeof d, "%.0f W"));
+  addField(fields, "CPU", v);
+
+  double used = pcStat("ram_used"), freeGb = pcStat("ram_free");
+  snprintf(v, sizeof v, "%s | %s", orDash(pcStat("ram_load"), a, sizeof a, "%.0f %%"),
+           isnan(used) || isnan(freeGb) ? "--" : (snprintf(b, sizeof b, "%.1f / %.1f GB", used, used + freeGb), b));
+  addField(fields, "RAM", v);
+
+  static const char *const GPU_KEY[2] = {"gpu1", "gpu2"};
+  static const char *const GPU_LABEL[2] = {PC_GPU1_LABEL, PC_GPU2_LABEL};
+  for (int g = 0; g < 2; g++) {
+    char key[16];
+    snprintf(key, sizeof key, "%s_load", GPU_KEY[g]);
+    double load = pcStat(key);
+    snprintf(key, sizeof key, "%s_temp", GPU_KEY[g]);
+    double temp = pcStat(key);
+    snprintf(key, sizeof key, "%s_vram", GPU_KEY[g]);
+    double vram = pcStat(key);
+    snprintf(key, sizeof key, "%s_vramt", GPU_KEY[g]);
+    double vramT = pcStat(key);
+    snprintf(v, sizeof v, "%s | %s | %s", orDash(load, a, sizeof a, "%.0f %%"), orDash(temp, b, sizeof b, "%.0f \u00b0C"),
+             isnan(vram) || isnan(vramT) ? "--" : (snprintf(c, sizeof c, "%.1f / %.0f GB", vram / 1024.0, vramT / 1024.0), c));
+    addField(fields, GPU_LABEL[g], v);
+  }
+
+  double cUsed = pcStat("c_used"), cTotal = pcStat("c_total");
+  if (isnan(cUsed) || isnan(cTotal) || cTotal <= 0) snprintf(v, sizeof v, "--");
+  else snprintf(v, sizeof v, "%.0f %% | %.0f GB free", cUsed / cTotal * 100.0, cTotal - cUsed);
+  addField(fields, "Drive " PC_DRIVE_LABEL, v);
+
+  snprintf(v, sizeof v, "CPU %s | SYS %s", orDash(pcStat("cpu_fan"), a, sizeof a, "%.0f rpm"),
+           orDash(pcStat("sys_fan"), b, sizeof b, "%.0f rpm"));
+  addField(fields, "Fans", v);
+
+  fmtRate(pcStat("net_down"), a, sizeof a);
+  fmtRate(pcStat("net_up"), b, sizeof b);
+  snprintf(v, sizeof v, "\u2193 %s | \u2191 %s", a, b);
+  addField(fields, "Network", v);
+}
+
 static void buildEmbed(cJSON *embed, const char *footerText, bool standing) {
   uint8_t cat = panelCat(standing);
   char title[48];
@@ -788,6 +853,7 @@ static void buildEmbed(cJSON *embed, const char *footerText, bool standing) {
     addField(fields, "Board Wi-Fi", v);
     nightStatus(v, sizeof v);
     addField(fields, "Night mode", v);
+    addPcStatsFields(fields);
   } else if (cat == CAT_RGB) {
     const char *mainRule = pcText("hw.rgb.main"), *ramRule = pcText("hw.rgb.ram");
     addField(fields, "PcHwCtl", pcStat("hw.ok") >= 1 ? "state feed live" : "no state (not running?)");
@@ -1100,12 +1166,28 @@ static void panelLaterService() {
   sendPanelResponse("", panelLater.token, 7, panelLater.standing, PANEL_NORMAL, lastPanelResult);
 }
 
-// Post the standing panel in #control, or bring the one there up to date
-static void controlPanelSync() {
+static uint32_t ctlLastCrc;      // the panel last sent, its clock left out
+static uint32_t ctlRetryAtMs;    // after a rate limit (429): no edits until then
+
+// The panel's text without the footer's clock, which changes every time
+static uint32_t panelCrc(const char *body) {
+  const char *t = strstr(body, "updated ");
+  if (!t) return esp_rom_crc32_le(0, (const uint8_t *)body, strlen(body));
+  uint32_t crc = esp_rom_crc32_le(0, (const uint8_t *)body, t - body);
+  t += 8 + 8;   // "updated " + "HH:MM:SS"
+  return esp_rom_crc32_le(crc, (const uint8_t *)t, strlen(t));
+}
+
+// Post the standing panel in #control, or bring the one there up to date.
+// Called every CONTROL_PANEL_REFRESH_MS; skips the edit when only the
+// clock would change, unless force.
+static void controlPanelSync(bool force) {
   if (!DISCORD_CH_CONTROL[0]) return;
+  if (!force && ctlRetryAtMs && (int32_t)(nowMs() - ctlRetryAtMs) < 0) return;
   char footer[48] = "Owner only";
   struct tm t;
-  if (boardLocalTime(&t)) snprintf(footer, sizeof footer, "Owner only | updated %02d:%02d", t.tm_hour, t.tm_min);
+  if (boardLocalTime(&t))
+    snprintf(footer, sizeof footer, "Owner only | updated %02d:%02d:%02d", t.tm_hour, t.tm_min, t.tm_sec);
   cJSON *root = cJSON_CreateObject();
   cJSON *embeds = cJSON_AddArrayToObject(root, "embeds");
   cJSON *embed = cJSON_CreateObject();
@@ -1115,12 +1197,19 @@ static void controlPanelSync() {
   char *body = cJSON_PrintUnformatted(root);
   cJSON_Delete(root);
   if (!body) return;
+  uint32_t crc = panelCrc(body);
+  if (!force && ctlMsgId[0] && crc == ctlLastCrc) {
+    free(body);
+    return;
+  }
 
   char path[128];
   if (ctlMsgId[0]) {
     snprintf(path, sizeof path, "/channels/%s/messages/%s", DISCORD_CH_CONTROL, ctlMsgId);
     int code = rest("PATCH", path, body);
     if (code == 404) ctlMsgId[0] = 0;   // deleted: post a new one
+    if (code >= 200 && code < 300) ctlLastCrc = crc;
+    ctlRetryAtMs = code == 429 ? nowMs() + 30000 : 0;
   }
   if (!ctlMsgId[0]) {
     const size_t respCap = 8192;
@@ -1945,11 +2034,15 @@ static void botTask(void *) {
       lastLogPostMs = nowMs();
       postLogBatch();
     }
-    // #control: posted once online, refreshed every 10 min and on PC changes
-    if (ready && DISCORD_CH_CONTROL[0] && (!ctlSynced || nowMs() - lastCtlSyncMs >= 10 * 60 * 1000)) {
+    // #control: posted once online, then brought up to date every
+    // CONTROL_PANEL_REFRESH_MS (only when something changed; every 10 min regardless)
+    if (ready && DISCORD_CH_CONTROL[0] && (!ctlSynced || nowMs() - lastCtlSyncMs >= CONTROL_PANEL_REFRESH_MS)) {
+      static uint32_t lastForcedMs;
+      bool force = !ctlSynced || !lastCtlSyncMs || nowMs() - lastForcedMs >= 10 * 60 * 1000;
+      if (force) lastForcedMs = nowMs();
       ctlSynced = true;
       lastCtlSyncMs = nowMs();
-      controlPanelSync();
+      controlPanelSync(force);
     }
     if (panelActive && panelToken[0] &&
         (nowMs() - panelTouchedMs >= ACTIONS_PANEL_TTL_MS || nowMs() - panelOpenedMs >= PANEL_TOKEN_LIFE_MS)) {

@@ -194,6 +194,9 @@
 #ifndef PCSTATS_STALE_MS
 #define PCSTATS_STALE_MS 5000                     // values older than this read as missing (NAN / "")
 #endif
+#ifndef CONTROL_PANEL_REFRESH_MS
+#define CONTROL_PANEL_REFRESH_MS 5000             // #control panel: edited this often while something on it changes
+#endif
 
 // ---- PC warnings (pcwarn.cpp; `pcwarn set` overrides per metric in NVS) ----
 #ifndef PCWARN_AVG_MS

@@ -115,6 +115,7 @@
 // ---- PC stats link ----
 #define PCSTATS_FRESH_MS 3000                     // a sample newer than this counts as "PC helper talking"
 #define PCSTATS_STALE_MS 5000                     // values older than this read as missing (NAN / "")
+#define CONTROL_PANEL_REFRESH_MS 5000             // #control panel: edited this often while something on it changes
 
 // ---- PC warnings (pcwarn.cpp; `pcwarn set` overrides per metric in NVS) ----
 #define PCWARN_AVG_MS 2000                        // averaging window before a level triggers
