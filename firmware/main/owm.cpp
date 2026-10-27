@@ -179,31 +179,25 @@ bool owmFetchAlert(const char *id, char *buf, size_t cap, OwmAlert *out) {
   return true;
 }
 
-void owmMergeRain(RainAlert *a, const OwmMinutely &m, uint32_t nowUnix) {
-  if (!m.valid || !m.n) return;
+bool owmRainSummary(const OwmMinutely &m, uint32_t nowUnix, OwmRain *out) {
+  *out = {};
+  if (!m.valid || !m.n) return false;
   // minutes already past drop off the front
   int skip = nowUnix > m.dt0 ? (int)((nowUnix - m.dt0) / 60) : 0;
-  if (skip >= m.n) return;
-  int first = -1, last = -1;
-  float peak = 0;
+  if (skip >= m.n) return false;
+  out->coversUntil = m.dt0 + (uint32_t)m.n * 60;
+  int first = -1, last = -1, run = 0;
   for (int i = skip; i < m.n; i++) {
-    if (m.mm[i] < RAIN_MMH) continue;
+    if (m.mm[i] < RAIN_MMH) { run = 0; continue; }
     if (first < 0) first = i;
     last = i;
-    if (m.mm[i] > peak) peak = m.mm[i];
+    if (++run > out->run) out->run = (uint8_t)run;
+    if (m.mm[i] > out->peak) out->peak = m.mm[i];
   }
-  if (first < 0) return;   // OpenWeather dry: Open-Meteo's verdict stands
-  a->src |= RAIN_SRC_OPENWEATHER;
-  if (peak > a->mmh) a->mmh = peak;
-  uint32_t start = m.dt0 + (uint32_t)first * 60;
-  if (first == skip) {
-    a->raining = true;     // raining now
-    a->active = false;
-  } else if (!a->raining) {
-    a->active = true;
-    a->startUnix = start;  // the minute-by-minute start wins
-    a->etaMin = (uint16_t)((start - nowUnix + 30) / 60);
-  }
-  // an end inside the hour, with 10+ dry minutes after it, when Open-Meteo has none
-  if (!a->endUnix && last + 10 < m.n) a->endUnix = m.dt0 + (uint32_t)(last + 1) * 60;
+  if (first < 0) return true;   // dry for the rest of the hour
+  out->sees = true;
+  out->rainingNow = first == skip;
+  out->startUnix = out->rainingNow ? nowUnix : m.dt0 + (uint32_t)first * 60;
+  if (last + 10 < m.n) out->endUnix = m.dt0 + (uint32_t)(last + 1) * 60;
+  return true;
 }

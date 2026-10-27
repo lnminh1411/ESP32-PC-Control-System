@@ -39,8 +39,9 @@ bool discordUp();                    // gateway session ready
 void discordNotify(const char *what); // post action notification from main loop (non-blocking)
 
 enum DiscordChannel { DC_PC, DC_WEATHER };
-// Queue an embed for a channel (non-blocking, any task)
-void discordPost(DiscordChannel ch, const char *title, const char *desc, uint32_t color);
+// Queue an embed for a channel (non-blocking, any task). prio: the Pushover
+// copy's priority (-1 = quiet)
+void discordPost(DiscordChannel ch, const char *title, const char *desc, uint32_t color, int prio = 0);
 // log.cpp hands every log line here for DISCORD_CH_LOG
 void discordLog(const char *line, size_t len);
 // While a Discord handler waits on the PC (hwctl/aictl), keeps the bot

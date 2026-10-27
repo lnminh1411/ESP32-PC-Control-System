@@ -32,6 +32,7 @@ static void urlEncode(const char *src, char *dst, size_t dstSize) {
 struct PushMsg {
   char title[96];
   char message[320];
+  int8_t priority;
 };
 static QueueHandle_t pushQueue;   // storage in PSRAM: only the weather task reads it
 
@@ -41,20 +42,21 @@ void pushoverInit() {
     pushQueue = xQueueCreateWithCaps(6, sizeof(PushMsg), MALLOC_CAP_SPIRAM);
 }
 
-void pushoverQueue(const char *title, const char *message) {
+void pushoverQueue(const char *title, const char *message, int priority) {
   if (!pushQueue || !title) return;
   PushMsg m = {};
   snprintf(m.title, sizeof m.title, "%s", title);
   snprintf(m.message, sizeof m.message, "%s", message && message[0] ? message : title);
+  m.priority = (int8_t)priority;
   if (xQueueSend(pushQueue, &m, 0) != pdTRUE) logMsg("pushover: queue full, dropped \"%s\"", m.title);
 }
 
 void pushoverService() {
   static PushMsg m;   // 416 B: off the weather task's stack
-  if (pushQueue && xQueueReceive(pushQueue, &m, 0) == pdTRUE) pushoverSend(m.title, m.message);
+  if (pushQueue && xQueueReceive(pushQueue, &m, 0) == pdTRUE) pushoverSend(m.title, m.message, m.priority);
 }
 
-bool pushoverSend(const char *title, const char *message) {
+bool pushoverSend(const char *title, const char *message, int priority) {
   if (!PUSHOVER_TOKEN[0] || !PUSHOVER_USER[0] || !message || !message[0]) {
     return false;
   }
@@ -65,8 +67,8 @@ bool pushoverSend(const char *title, const char *message) {
   urlEncode(message, encMsg, sizeof(encMsg));
 
   char body[768];
-  int bodyLen = snprintf(body, sizeof(body), "token=%s&user=%s&title=%s&message=%s",
-                         PUSHOVER_TOKEN, PUSHOVER_USER, encTitle, encMsg);
+  int bodyLen = snprintf(body, sizeof(body), "token=%s&user=%s&title=%s&message=%s&priority=%d",
+                         PUSHOVER_TOKEN, PUSHOVER_USER, encTitle, encMsg, priority);
 
   esp_http_client_config_t cfg = {};
   cfg.url = "https://api.pushover.net/1/messages.json";

@@ -184,6 +184,10 @@
 // ---- Weather (board) ----
 #define WEATHER_HOME_NAME "Home"                  // place name until WEATHER_HOME or `weather home` gives one
 #define WEATHER_RAIN_URGENT_MIN 20                // rain ETA at or under this: red banner / red Discord post
+#define WEATHER_RAIN_SURE_MIN 30                  // rain one source alone sees: a warning at this ETA or closer (else a quiet watch)
+#define WEATHER_RAIN_SURE_MMH 2.0f                // ...or at this mm/h and up, whatever the other source says
+#define OWM_RAIN_SOLID_MMH 0.8f                   // OpenWeather alone: needs this peak mm/h...
+#define OWM_RAIN_SOLID_MIN 3                      // ...or this many rain minutes in a row to be more than a watch
 #define WEATHER_TYPHOON_NEAR_S (6 * 3600)         // a typhoon arriving within this shows on the screens and gets per-minute posts
 #define WEATHER_AQI_MODERATE 50                   // air quality index above this: Moderate
 #define WEATHER_AQI_HIGH 100                      // above this: High

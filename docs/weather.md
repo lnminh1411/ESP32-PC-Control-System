@@ -106,6 +106,8 @@ EMQX Cloud's Serverless broker is free up to a monthly allowance of session minu
 
 Pushover sends every #pc-announcement and #weather-announcement post to your phone as a push notification: rain heading your way, weather alerts, cyclones, PC on/off, night mode, board restarts. The Discord title becomes the notification title, and the embed text the message (or the title when there is none). Posts are queued (6 at most) and sent one per second by the weather task. Without a Discord token, only the phone rain alert goes out, straight to Pushover.
 
+Priority: Light Rain warnings, their "cleared" and the 2-hourly "Currently" updates go out quiet (Pushover priority -1: no sound or vibration); everything else is normal (0).
+
 1. Create an account at [Pushover](https://pushover.net/) and install the mobile app.
 2. Copy your **User Key** (`PUSHOVER_USER`).
 3. Under **Your Applications**, click **Create an Application / API Token** (e.g. name "Desk Controller Rain Alert").
@@ -206,14 +208,22 @@ Five tiers, mildest first:
 
 Rain (home engine) to #weather-announcement:
 
-- **On its way** (starts within 60 min): a post when the warning starts, then whenever the
-  ETA has moved 5+ min from the last post (counting down or re-forecast), or the tier goes up.
-  Title `Heavy Shower in ~25 min | <place>`, with how long it lasts and when it ends.
+- **On its way** (starts within 60 min): a post when the warning starts, then only when the
+  ETA drops to 20 min or less (one red heads-up), the tier goes up, or the start time moves
+  10+ min. A plain countdown posts nothing.
+  Title `Heavy Shower in ~25 min | <place>`, with how long it lasts and when it ends, the
+  intensity, and who sees it (`Seen by OpenWeather only (Open-Meteo: dry)`).
   Yellow while more than 20 min out, red from 20 min.
 - **Raining**: one red post `Heavy Shower now | <place>` with the expected end, then a post
-  whenever that end moves 5+ min. The display shows no warning box while it rains; the
-  weather face's rain box shows the end time instead.
-- **Cleared**: two dry polls in a row after a warning: green `Weather Warning Cleared`.
+  when the tier goes up or that end moves 10+ min. The display shows no warning box while
+  it rains; the weather face's rain box shows the end time instead.
+- **Cleared**: two polls in a row without a warning after one: green `Weather Warning Cleared`.
+- **Watch**: rain only one source sees, and not convincingly (see 11b), is shown on the
+  weather face (`Rain possible ~19:31`, `OpenWeather only, 0.6 mm/h`), in `weather show`
+  and in the "Currently" update, but never posted as a warning.
+- **Length**: the end comes from the nowcasts, else from the hourly forecast, but only when
+  the hourly forecast has rain at that time. When it has none (a shower it misses), the
+  post says the length is unknown instead of making one up.
 
 Typhoons:
 
@@ -290,12 +300,17 @@ A second rain source next to Open-Meteo: `timeline/1min` gives precipitation (mm
 
 **Cadence and budget**: one call every 2 min; every 90 s while rain is expected or falling at that place, or a weather alert is in force. At most **960 calls per UTC day**, counted on the board (NVS `o_day`, `o_calls`, saved every 10 calls and with the Open-Meteo counters). At 960 it stops until 00:00 UTC. A rejected key (401) pauses it for 30 min, a rate limit (429) for 15. The key is in the URL, so URLs are never logged.
 
-**Merging** (`owmMergeRain`): rain counts from 0.5 mm/h, Open-Meteo's nowcast threshold.
+**Merging** (`owmRainSummary` in owm.cpp, `mergeRain` in weather.cpp): rain counts from 0.5 mm/h, Open-Meteo's nowcast threshold. A source counts as *fresh and dry* when its last answer saw no rain: OpenWeather for 5 min after a fetch (its 60 minutes), Open-Meteo for 20 min after a nowcast (its next 60 minutes).
 
-- Rain anywhere in OpenWeather's hour makes the alert active, or raining when it is the current minute. Its start time wins, and the intensity is the higher of the two sources.
-- With OpenWeather dry, Open-Meteo's verdict stands. "Cleared" therefore needs both sources dry.
+- **Both see rain**: a warning. OpenWeather's start time wins, the intensity is the higher of the two.
+- **One sees rain** (thresholds in settings.h):
+  - 2 mm/h or more (`WEATHER_RAIN_SURE_MMH`): a warning, whatever the other says.
+  - OpenWeather alone with a peak under 0.8 mm/h and fewer than 3 rain minutes in a row (`OWM_RAIN_SOLID_*`): a watch.
+  - The other source fresh and dry over that time: a watch; a warning only once it rains and the lone source has seen it for 3 polls in a row.
+  - Otherwise: a warning when it starts within 30 min (`WEATHER_RAIN_SURE_MIN`) or the lone source has seen it for 2 polls in a row; a watch before that.
+- **Neither**: dry. "Cleared" follows two polls without a warning.
 - An end inside the hour (10+ dry minutes after the rain) fills in when Open-Meteo has none.
-- An OpenWeather hour counts for 5 min after it was fetched.
+- During a watch OpenWeather polls at the rain cadence, to confirm or drop it sooner.
 
 Discord rain posts and the media screen's rain box say who saw it: Open-Meteo, OpenWeather or both.
 
@@ -314,7 +329,7 @@ Access commands via USB-UART or Discord `/actions` command:
 | `weather demo [rain\|typhoon]` | Loads sample weather onto the display for 5 min: dry, a heavy shower in 25 min, or a typhoon at home. Polls leave it alone and nothing is posted. |
 | `weather clear` | Clears all weather, rain alert and cyclone buffers. |
 | `weather storms` | Fetches the GDACS list and every nearby storm's track again now. |
-| `weather owm-check [minute]` | Runs the OpenWeather merge on a made-up hour with rain from that minute against home's Open-Meteo result and prints the outcome. Nothing is stored or posted. |
+| `weather owm-check [minute][L]` | Runs the merge on a made-up OpenWeather hour, 20 min of rain from that minute (4 mm/h; `L` = 0.6 mm/h), against home's Open-Meteo result, and prints the verdict (warning, watch, raining, dry), start, end and sources. Nothing is stored or posted. |
 | `weather test-alert` | Sends an immediate test notification through both Discord and Pushover channels. |
 
 ---

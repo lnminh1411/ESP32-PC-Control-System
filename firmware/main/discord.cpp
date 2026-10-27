@@ -99,6 +99,7 @@ static void runAndGetFirstLine(const char *cmd, char *out, size_t outSize) {
 struct NotifyMsg {
   uint8_t ch;            // DiscordChannel
   bool plain;            // from discordNotify: title picked by the bot task
+  int8_t prio;           // Pushover priority
   uint32_t color;
   char text[NOTIFY_MSG_LEN];
   char desc[320];
@@ -115,11 +116,12 @@ void discordNotify(const char *what) {
   xQueueSend(notifyQueue, &msg, 0);
 }
 
-void discordPost(DiscordChannel ch, const char *title, const char *desc, uint32_t color) {
+void discordPost(DiscordChannel ch, const char *title, const char *desc, uint32_t color, int prio) {
   if (!DISCORD_TOKEN[0] || !notifyQueue || !title) return;
   NotifyMsg msg = {};
   msg.ch = ch;
   msg.color = color;
+  msg.prio = (int8_t)prio;
   snprintf(msg.text, sizeof msg.text, "%s", title);
   snprintf(msg.desc, sizeof msg.desc, "%s", desc ? desc : "");
   xQueueSend(notifyQueue, &msg, 0);
@@ -285,9 +287,9 @@ static int rest(const char *method, const char *path, const char *body, char *ou
   return code;
 }
 
-static void postChannelEmbed(DiscordChannel ch, const char *title, const char *desc, uint32_t color) {
+static void postChannelEmbed(DiscordChannel ch, const char *title, const char *desc, uint32_t color, int prio = 0) {
   // #pc-announcement and #weather-announcement go to the phone too
-  if (ch == DC_PC || ch == DC_WEATHER) pushoverQueue(title, desc);
+  if (ch == DC_PC || ch == DC_WEATHER) pushoverQueue(title, desc, prio);
   const char *chId = channelId(ch);
   if (!chId[0]) return;
   cJSON *root = cJSON_CreateObject();
@@ -1926,7 +1928,7 @@ static void botTask(void *) {
     while (ready && notifyQueue && xQueueReceive(notifyQueue, &nmsg, 0) == pdTRUE) {
       DiscordChannel ch = (DiscordChannel)nmsg.ch;
       if (!nmsg.plain) {
-        postChannelEmbed(ch, nmsg.text, nmsg.desc, nmsg.color);
+        postChannelEmbed(ch, nmsg.text, nmsg.desc, nmsg.color, nmsg.prio);
       } else if (!strcmp(nmsg.text, "PC reset")) {
         postChannelEmbed(ch, "PC reset", nullptr, 0xED4245);
       } else if (!strncmp(nmsg.text, "door B", 6)) { // from cmdDoor: "door Bn"

@@ -41,12 +41,18 @@ struct RainAlert {
   float mmh;             // expected intensity
   char from[3];          // compass direction it moves in from ("NW")
   uint16_t dryKm;        // when inactive: radius known to be dry (0 = unknown)
-  WxTier tier;           // home only: LIGHT_RAIN..STORM while active or raining
+  WxTier tier;           // home only: LIGHT_RAIN..STORM while active, raining or watch
   uint8_t src;           // RAIN_SRC_* bits: who sees the rain
+  uint8_t dry;           // RAIN_SRC_* bits: fresh sources that see none
+  bool watch;            // rain possible but unconfirmed (one source, light or far off):
+                         // shown, never posted; active and raining stay false
+  bool endUnknown;       // no end, and the hourly forecast has no rain then (a shower)
 };
 
 enum : uint8_t { RAIN_SRC_OPEN_METEO = 1, RAIN_SRC_OPENWEATHER = 2 };
 const char *rainSrcName(const RainAlert &a);   // "Open-Meteo", "OpenWeather", "both"
+// "Seen by OpenWeather (Open-Meteo: dry)"; returns the length written
+int rainSrcLine(char *out, int cap, const RainAlert &a);
 
 // Tropical cyclone near home (GDACS track + forecast)
 struct Cyclone {

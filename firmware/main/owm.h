@@ -43,8 +43,16 @@ bool owmFetchMinutely(double lat, double lon, char *buf, size_t cap, OwmMinutely
 bool owmFetchAlert(const char *id, char *buf, size_t cap, OwmAlert *out);
 void owmSaveCount();                     // persist today's count (every few calls is enough)
 
-// Folds the minutely rain into a RainAlert built by Open-Meteo's nowcast:
-// rain anywhere in the hour makes it active (or raining), OpenWeather's start
-// time wins, the intensity is the higher of the two; dry only when both are.
-// Sets the source bits (RAIN_SRC_*).
-void owmMergeRain(RainAlert *a, const OwmMinutely &m, uint32_t nowUnix);
+// What the hour says about rain (OWM_RAIN_MMH and up), minutes already past
+// dropped. weather.cpp weighs it against Open-Meteo's nowcast.
+struct OwmRain {
+  bool sees;                // rain somewhere in the rest of the hour
+  bool rainingNow;          // ...in the current minute
+  uint32_t startUnix;       // first rain minute
+  uint32_t endUnix;         // end inside the hour with 10+ dry minutes after; 0 = none seen
+  float peak;               // mm/h
+  uint8_t run;              // longest stretch of rain minutes
+  uint32_t coversUntil;     // the hour's last minute (UTC)
+};
+// false when no minute of the hour is left
+bool owmRainSummary(const OwmMinutely &m, uint32_t nowUnix, OwmRain *out);

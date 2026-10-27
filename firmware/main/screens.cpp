@@ -1057,7 +1057,7 @@ static void drawWeather(LGFX_Sprite &c) {
     if (rain.endUnix && boardLocalTimeAt((time_t)rain.endUnix, &at))
       snprintf(line, sizeof line, "%s until ~%02d:%02d", wxTierName(rain.tier), at.tm_hour, at.tm_min);
     else
-      snprintf(line, sizeof line, "%s, no end in sight", wxTierName(rain.tier));
+      snprintf(line, sizeof line, rain.endUnknown ? "%s, length unknown" : "%s, no end in sight", wxTierName(rain.tier));
     c.drawString(line, 18, 210);
     int left = rainLeftMin(rain);
     if (left >= 0) {
@@ -1067,6 +1067,22 @@ static void drawWeather(LGFX_Sprite &c) {
     } else {
       snprintf(line, sizeof line, "%.1f mm/h", rain.mmh);
     }
+    c.setTextColor(C_WX_TEXT_DIM);
+    c.drawString(line, 18, 227);
+  } else if (rain.watch) {
+    // one source alone sees light or far-off rain: shown, not warned about
+    c.fillRoundRect(8, 204, 224, 44, 6, C_WX_BOX_BG);
+    c.setFont(fontSmall());
+    c.setTextColor(C_WX_TEXT_MID);
+    c.setTextDatum(lgfx::textdatum_t::top_left);
+    char line[48];
+    struct tm at;
+    if (rain.startUnix && boardLocalTimeAt((time_t)rain.startUnix, &at))
+      snprintf(line, sizeof line, "Rain possible ~%02d:%02d", at.tm_hour, at.tm_min);
+    else
+      snprintf(line, sizeof line, "Rain possible");
+    c.drawString(line, 18, 210);
+    snprintf(line, sizeof line, "%s only, %.1f mm/h", rainSrcName(rain), rain.mmh);
     c.setTextColor(C_WX_TEXT_DIM);
     c.drawString(line, 18, 227);
   } else {
