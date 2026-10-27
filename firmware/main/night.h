@@ -13,7 +13,15 @@
 // travel or 3 presses, pc.in_px / pc.in_press); a bumped mouse turns the
 // displays off again. No automatic start while a process keeps the display on
 // (pc.disp_req: a video playing). Engaged/ended also goes to the PC service as
-// `!night 1|0` (every 30 s too): Process Lasso's E-core night config.
+// `!night 1|0` (every 30 s too, and at once when the PC comes back): Process
+// Lasso's E-core night config with efficiency mode, heavy exes left alone.
+// In the window, NIGHT_SLEEP_S (1 h) after the last real input (false wakes
+// don't count) it sleeps the PC, NIGHT_HIBERNATE_S (2 h) hibernates it; both
+// wait while an exe is heavy (pc.heavy), a power request holds the PC
+// (pc.disp_req / sys_req / exec_req, minus NIGHT_REQ_IGNORE) or the network is
+// busy (NIGHT_NET_HOLD_BPS). A PC it put to sleep is woken and hibernated an
+// hour later, after 06:00 too, unless someone powers it on first; powering on
+// a PC night mode sent down ends the night.
 
 #include <stdint.h>
 

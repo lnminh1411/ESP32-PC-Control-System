@@ -1777,7 +1777,6 @@ static partial class AgyQuota {
           string line;
           while ((line = r.ReadLine()) != null) {
             if (line.StartsWith("S ")) lock (serviceLock) { pendingShot = line.Substring(2); }
-            else if (line.StartsWith("M ")) HandleMonitorRequest(line.Substring(2));
           }
         }
       } catch { }
@@ -1873,7 +1872,6 @@ static partial class AgyQuota {
     // media runs on its own 250 ms loop; the quota loop below polls every minute
     Thread mediaThread = new Thread(MediaLoop) { IsBackground = true, Name = "esp32_media" };
     mediaThread.Start();
-    new Thread(MonitorLoop) { IsBackground = true, Name = "esp32_monitors" }.Start();
     new Thread(IdleLoop) { IsBackground = true, Name = "esp32_idle" }.Start();
 
     while (true) {

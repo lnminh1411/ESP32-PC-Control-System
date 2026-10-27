@@ -839,7 +839,7 @@ static void buildEmbed(cJSON *embed, const char *footerText, bool standing) {
   cJSON_AddStringToObject(embed, "title", title);
   cJSON_AddNumberToObject(embed, "color", 0x5865F2);
   cJSON *fields = cJSON_AddArrayToObject(embed, "fields");
-  char v[64];
+  char v[128];
 
   addField(fields, "PC", (pcState() == PC_ON) ? "on" : (pcState() == PC_OFF) ? "asleep" : "no host");
   if (cat == CAT_DOOR) {

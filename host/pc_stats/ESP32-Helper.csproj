@@ -23,11 +23,10 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="PcStats.cs;AgyQuota.cs;AgyUsage.cs;Monitors.cs;Net.cs;Night.cs;HostSettings.cs;Settings.g.cs" />
+    <Compile Include="PcStats.cs;Feed.cs;AgyQuota.cs;AgyUsage.cs;Idle.cs;Net.cs;Night.cs;HostSettings.cs;Settings.g.cs" />
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.6" />
     <PackageReference Include="System.IO.Ports" Version="10.0.14" />
     <PackageReference Include="System.Management" Version="10.0.14" />
     <PackageReference Include="System.ServiceProcess.ServiceController" Version="10.0.14" />

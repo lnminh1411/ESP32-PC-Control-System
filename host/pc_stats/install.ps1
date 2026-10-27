@@ -80,8 +80,18 @@ Get-ChildItem -LiteralPath $buildDir | Where-Object { $_.Name -ne "stats.ini" -a
   Copy-Item -LiteralPath $_.FullName -Destination $installDir -Force
 }
 
+# A stats.ini from before the PcHwCtl sensor feed (LibreHardwareMonitor rules
+# "key = Cpu | Temperature | ...", @every) gives the new helper no sensors:
+# replace it, keeping the old one as stats.ini.old
+$oldFormat = (Test-Path -LiteralPath $targetIni) -and
+  (Select-String -LiteralPath $targetIni -Pattern '^\s*(@every\s|[a-z0-9_.]+\s*=\s*[^@#\s][^#]*\|)' -Quiet)
+if ($oldFormat -and -not $ForceConfig) {
+  Copy-Item -LiteralPath $targetIni -Destination "$targetIni.old" -Force
+  Write-Host "stats.ini in $installDir used LibreHardwareMonitor rules: replaced, old copy kept as stats.ini.old"
+}
+
 # Copy stats.ini there ONLY if not already present (keep user edits) -- with a -ForceConfig switch to overwrite
-if ($ForceConfig -or -not (Test-Path -LiteralPath $targetIni)) {
+if ($ForceConfig -or $oldFormat -or -not (Test-Path -LiteralPath $targetIni)) {
   Copy-Item -LiteralPath $statsIni -Destination $targetIni -Force
   Write-Host "Installed stats.ini to $installDir"
 } else {

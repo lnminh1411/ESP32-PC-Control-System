@@ -1,18 +1,18 @@
 # ESP32-Helper
 
-Windows service that reads hardware sensors via LibreHardwareMonitorLib and streams configured stats to the ESP32-S3 carrier board over a WinUSB bulk pipe (with vendor HID and CDC serial fallbacks).
+Windows service that collects configured PC stats (hardware sensors from [PcHwCtl](#pchwctl-sensors-monitors-process-lasso)'s sensor feed) and streams them to the ESP32-S3 carrier board over a WinUSB bulk pipe (with vendor HID and CDC serial fallbacks).
 
 ## Two processes, one exe
 
 `ESP32-Helper.exe` runs as two processes, each with its own worker threads:
-- **Service** (`ESP32PcStats`, SYSTEM, session 0): sensors, the HID/serial link, power actions, shutdown announcements, `@source` and `@claude` polling, text rendering, cover-art streaming. It runs before sign-in and after sign-out.
+- **Service** (`ESP32PcStats`, SYSTEM, session 0): stats, the HID/serial link, power actions, shutdown announcements, `@source` and `@claude` polling, text rendering, cover-art streaming. It runs before sign-in and after sign-out.
 - **User-session half** (`ESP32-Helper.exe --user`): Antigravity quota, Claude Code token refresh, media session and cover art, screenshots. Windows keeps session 0 away from the desktop and the user's media sessions, so this part has to run in the user's session. The service starts it there with the signed-in user's token (normal user rights, not elevated) once someone signs in. It restarts the half if it dies (after 2 s, or 30 s if it died within 15 s of starting) and moves it on a user switch. In `--console` mode it starts the half as the current user (`--no-user` skips it).
 
 The two talk over a pair of anonymous pipes (UTF-8 lines):
 
 | Direction | Line | Meaning |
 |---|---|---|
-| user half to service | `F <feed> <n>` + n `key=value` lines | feed `agy` or `media`, read by `@source <name> helper:<feed> <ms>` |
+| user half to service | `F <feed> <n>` + n `key=value` lines | feed `agy`, `media` or `idle`, read by `@source <name> helper:<feed> <ms>` |
 | user half to service | `A <base64>` | cover art, 144x144 RGB565 big-endian (41,472 bytes) |
 | user half to service | `L <text>` | log line, written to `log.txt` as `user: <text>` |
 | service to user half | `S <nonce> <webhook>` | take a screenshot |
@@ -35,14 +35,14 @@ Run `build.cmd` from Command Prompt:
 ```cmd
 host\pc_stats\build.cmd
 ```
-First `gen_settings.ps1` writes `Settings.g.cs` (gitignored) from the `HOST_*` keys of `firmware\main\settings.h` (defaults in `settings_or_example.h`, `settings_example.h` when there is no `settings.h`); it reads no other key, so no secret ends up in the exe. Then it runs `dotnet publish` on `ESP32-Helper.csproj` and leaves one self-contained, single-file `build\ESP32-Helper.exe` (~58 MB, .NET 10 runtime included, nothing to install on the PC that runs it). Building needs the .NET 10 SDK; packages come from nuget.org through the repo's `nuget.config`.
+First `gen_settings.ps1` writes `Settings.g.cs` (gitignored) from the `HOST_*` keys of `firmware\main\settings.h` (defaults in `settings_or_example.h`, `settings_example.h` when there is no `settings.h`); it reads no other key, so no secret ends up in the exe. Then it runs `dotnet publish` on `ESP32-Helper.csproj` and leaves one self-contained, single-file `build\ESP32-Helper.exe` (~56 MB, .NET 10 runtime included, nothing to install on the PC that runs it). Building needs the .NET 10 SDK; packages come from nuget.org through the repo's `nuget.config`.
 
-Sensors come from the `LibreHardwareMonitorLib` package, which reads low-level hardware (Super I/O, CPU MSRs) through the **PawnIO** driver. Install PawnIO once (`winget install namazso.PawnIO`); without it those sensors read empty. `--list` shows what is available.
+Hardware sensors come from PcHwCtl (`E:\PC Hardware Controller`, service `PcHwCtl`), the only LibreHardwareMonitor reader on the PC; the helper has no LibreHardwareMonitor or PawnIO dependency of its own. `--list` shows what the feed carries.
 
 ## Installation & Removal
 
 Run PowerShell as Administrator:
-- **Install**: `.\install.ps1` (or `.\install.ps1 -ForceConfig` to overwrite existing `stats.ini`).
+- **Install**: `.\install.ps1` (or `.\install.ps1 -ForceConfig` to overwrite existing `stats.ini`). An installed `stats.ini` that still has LibreHardwareMonitor rules (`key = Cpu | Temperature | ...`, `@every`) is replaced anyway, the old one kept as `stats.ini.old`.
   Installs files to `C:\Program Files\ESP32 PC Controller\pc_stats\` and creates/starts service `ESP32PcStats` with automatic restart on failure. Over an install from before the merge, it points the existing service at `ESP32-Helper.exe` and removes the old `ESP32 AGY Quota` scheduled task, the old `esp32-pcstats.exe` / `esp32-agyquota.exe`, and the files they used to pass data through in `C:\ProgramData\ESP32PcStats` (`media.txt`, `media_art.bin`, `shot_request.txt`).
 - **Uninstall**: `.\uninstall.ps1`
   Stops and deletes the service and removes the installation directory (preserving `C:\ProgramData\ESP32PcStats\log.txt`). The log rotates at 4 MB into `log.old.txt`, so the two stay under 8 MB together.
@@ -53,8 +53,9 @@ Run PowerShell as Administrator:
 ESP32-Helper.exe                     # Run as Windows Service
 ESP32-Helper.exe --console           # Run interactively, printing stats each tick (starts the user half too)
 ESP32-Helper.exe --console --no-user # Same, without the user half
-ESP32-Helper.exe --list              # Print all available hardware sensors and exit
-ESP32-Helper.exe --bench             # Benchmark sensor update latencies
+                                     # (in --console, typed lines starting with ! act as board lines,
+                                     #  e.g. "!mon 1 bright all 50", "!night 0")
+ESP32-Helper.exe --list              # Print one PcHwCtl sensor feed snapshot and exit
 ESP32-Helper.exe --transport auto    # Transport mode: auto (default), winusb, hid, or serial
 ESP32-Helper.exe --port COM4         # Manually specify COM port instead of VID_303A auto-detect
 ESP32-Helper.exe --claude <dir>      # Test Claude live fetch & local token totals and exit
@@ -70,7 +71,9 @@ ESP32-Helper.exe --user <in> <out>   # The user-session half (started by the ser
 `stats.ini` lives alongside `ESP32-Helper.exe` and is monitored for changes every tick (hot-reloaded on write):
 ```ini
 # Comments with '#', blank lines allowed. Keys: [a-z0-9_.] max 23 chars.
-key = <hardware> | <sensor type> | <sensor name> [| first|avg|sum|max|min]
+key = @feed [<feed key>]                     (PcHwCtl sensor feed key, default the same key)
+key = @ram load|used|free                    (physical memory: used %, GB, via GlobalMemoryStatusEx)
+key = @net down|up <adapter,...>             (bytes/s summed over adapters by name, '*' wildcards)
 key = @uptime                                (PC uptime in seconds via GetTickCount64)
 key = @drive <letter>: used|free|total|load  (GB, load = used %, via DriveInfo)
 key = @cpu_mhz                               (Task Manager's CPU speed, free)
@@ -78,18 +81,15 @@ key = @ecore_load                            (average % Processor Time on E-core
 key = @proc_mb <name>                        (summed WorkingSet64 in MB, 0 if none)
 key = @counter <category> | <counter> | <instance> [| scale]   (Windows perf counter)
 @interval <ms>                               (sample interval, 200-10000, default 500)
-@every <hardware> <ms>                       (update slow hardware at most every ms)
 @source <name> <url> <ms>                    (poll HTTP key=value stream on background thread)
 @claude <claude_dir> <live_ms>              (poll Claude live usage & scan local token spend)
 ```
-- `<hardware>`: Comma-separated list of hardware type (e.g. `Cpu`, `GpuAmd`, `GpuNvidia`, `GpuIntel`, `Memory`, `Network`, `SuperIO`, `Motherboard`, `Storage`) or hardware name. Supports `*` wildcards. Sub-hardware (e.g. SuperIO under Motherboard) is searched recursively.
-- `<sensor type>`: `SensorType` enum name (`Temperature`, `Load`, `Clock`, `Fan`, `Data`, `SmallData`, `Throughput`, ...).
-- `<sensor name>`: Sensor name from LibreHardwareMonitor. Supports `*` wildcards.
-- Reduction (`first|avg|sum|max|min`): Defaults to `first`. Empty/null sensor readings are skipped.
+- `@feed`: a key of PcHwCtl's sensor feed (see [below](#pchwctl-sensors-monitors-process-lasso)). Which LibreHardwareMonitor sensor feeds it, and how often, is PcHwCtl's config (`feed.keys`, `feed.every`). A key with no reading, or the feed down, goes out empty (NaN on the board). The old `<hardware> | <sensor type> | <sensor name>` rules and `@every` are gone; such lines are logged and skipped.
+- `@net`: the change in the adapters' byte counters (`NetworkInterface.GetIPStatistics`) since the last tick, as LibreHardwareMonitor's Throughput sensors did. Empty on the first tick.
 - `@ecore_load`: Average "% Processor Time" across E-core logical processors identified via `GetSystemCpuSetInformation` (lowest `EfficiencyClass` on hybrid CPUs; falls back to overall CPU load on non-hybrid CPUs). Counters created once at startup.
 - `@proc_mb <name>`: Summed working set (`WorkingSet64`) in MB across all running processes matching `<name>` (e.g. `@proc_mb llama-server`), or `0` if none are running.
 - `@source <name> <url> <ms>`: Spawns a background thread to poll an HTTP or `file:///` endpoint returning `key=value` lines, or a `helper:<feed>` feed from the user-session half (e.g. `@source media helper:media 250`). `file:///` URLs ending in `ESP32PcStats/agy_quota.txt` or `ESP32PcStats/media.txt` (stats.ini from before the merge) are read as `helper:agy` / `helper:media`. Numeric values join the `@s` stream; text values stream as `@t` lines. Generates `<name>.ok` (1 if updated within 3 x interval, 0 on timeout/error, dropping other source keys when down).
-- Run `ESP32-Helper.exe --list` to inspect the exact hardware type/name and sensor names available on your system.
+- Run `ESP32-Helper.exe --list` to see the feed's keys and current values.
 
 ## Claude Usage
 
@@ -326,18 +326,17 @@ ESP32-Helper.exe --going
 ```
 Prints the last 15 event 1074 entries (`time | process | type | code | reason -> kind`), followed by the computed `pc.last_down` / `pc.last_down_at` and `pc.update_pending`.
 
-## PC Monitor Control (DDC/CI)
+## PcHwCtl: sensors, monitors, Process Lasso
 
-The user-session half (`Monitors.cs`) talks DDC/CI to every physical monitor through `dxva2.dll`, since session 0 sees no monitors. Monitors are numbered from the left. Every 5 s, and right after each change, it sends the `mon` feed (`@source mon helper:mon 1000` in stats.ini): `mon.count`, then `mon.<n>.name`, `.main`, `.bright` (%, -1 = no answer) and `.power` (1 on, 0 off, -1 no answer). The board's `!mon <id> bright <n|all> <0-100>` or `!mon <id> power <n|all> on|off` goes to the user half over its pipe (`M <id> <command>`, answered `R <id> ok|err ...`). The answer reaches the board as `monctl.reply`. Power is Windows' own display off (`SC_MONITORPOWER`), every display at once; "on" nudges the mouse a pixel and back. The models in `HOST_MON_DDC_POWER_MODELS` (settings.h; the two DELL E1715S) also get DDC/CI power (VCP 0xD6). Off puts them in DPM off (4) before Windows blanks the screens; on sends power on (1) after Windows wakes them. With `power <n>`, only monitor n gets DDC power, and Windows still turns every display off. The other monitors get no DDC standby: a DisplayPort monitor in standby drops out of Windows and can't be woken from here. A DDC failure is added to the reply (`ok, no DDC answer from monitor 3`). A brightness or power set is reported as set for 15 s, since monitors answer DDC reads with the old value for a while.
+PcHwCtl (`E:\PC Hardware Controller`, github.com/lnminh1411/PC-Hardware-Control-Service) is the PC's fan, RGB, monitor and Process Lasso service. The helper talks to it on its named pipe `\\.\pipe\PcHwCtl` (`HOST_HWCTL_PIPE`; protocol in its `docs/ipc.md`) and reads its state file through `@source hw file:///C:/ProgramData/PcHwCtl/state.txt 1000`.
 
-The user half also sends the `idle` feed every second (`@source idle helper:idle 1000`): `pc.idle_s`, seconds since the last keyboard or mouse input in the session (`GetLastInputInfo`), for the board's night mode, plus `pc.in_px` (mouse travel) and `pc.in_press` (key and button presses), counters the board uses to tell a real return from a bumped mouse.
+**Sensor feed** (`Feed.cs`): the service sends `subscribe sensors` and keeps the newest pushed block (`seq=`, `ts=`, then `key=value` lines, an empty line ends it, about every 500 ms). `@feed` rules read from it. No block for 3 s or a broken pipe: every `@feed` key goes out empty, as when a sensor fails, and the reader reconnects with a 1 s back-off doubling to 30 s. The log says `feed: 21 sensors from PcHwCtl` on (re)connect and the reason once per outage.
 
-Night mode, service side (`Night.cs`): `pc.disp_req` = 1 while a process holds a display-required power request (`powercfg /requests` every 10 s, so the service needs admin), `pc.disp_req_by` names it; the board does not start night mode then. `!night 1` from the board swaps Process Lasso's `prolasso.ini` for a copy that pins every non-critical background process to the cores in `HOST_NIGHT_CORES` (E-cores 12-17; processes in `HOST_NIGHT_KEEP` are left alone) and pins the running ones; `!night 0` copies the original back (kept as `prolasso.ini.esp32-night`) and restores each process's affinity. The board repeats its state every 30 s; after `HOST_NIGHT_NO_WORD_MIN` (5) min without it the original goes back.
+**Monitors**: the board's `!mon <id> bright <n|all> <0-100>` becomes `display bright <n|all> <pct>`; `!mon <id> power <n|all> off` becomes `display power <n|all> off`, plus `display sleep` (Windows' display off) for `all`; `power ... on` becomes `display wake` (for `all`) then `display power <n|all> on`. PcHwCtl's user-session agent does the DDC/CI, with each model's power method (DDC power for the DELLs, an input switch for the MSI). The answer reaches the board as `monctl.reply` (`<id> ok` or `<id> err <why>`, 30 s). The monitors' state comes from the state file as `hw.mon.*` and goes to the board renamed to `mon.count`, `mon.<n>.name`, `.main`, `.bright`, `.power`, the keys the board's PC Monitor Control panel reads.
 
-```cmd
-ESP32-Helper.exe --monitors                 # list monitors with brightness and power
-ESP32-Helper.exe --monitors bright 2 50     # run one command first, then list
-```
+**Night mode** (`Night.cs`): the board decides and owns the sleep / hibernate timers; the helper carries it out. `!night 1` sends `lasso save day` (the normal `prolasso.ini` kept as PcHwCtl profile `day`), then `aff set <exe> <HOST_NIGHT_CORES>` (E-cores 14-17) and `eco on <exe>` (Windows efficiency mode; PcHwCtl sweeps new instances) for every running process and every whole-exe rule outside the keep list: `HOST_NIGHT_KEEP` plus Process Lasso's ProBalance exclusions (`OocExclusions`, read from the ini, since PcHwCtl has no command for them). PcHwCtl writes each rule and pins the running processes at once. Names with spaces and rules not ending in `.exe` are skipped (`aff set` takes one word ending in `.exe`). Heavy exes are left alone: every 10 s the helper asks PcHwCtl for `proc top 50` (cores per exe, 1.0 = one core busy, summed over instances); an exe averaging `HOST_NIGHT_HEAVY_CORES` (0.8) for `HOST_NIGHT_HEAVY_S` (120 s) is heavy until it averages under `HOST_NIGHT_CALM_CORES` (0.3) for `HOST_NIGHT_CALM_S` (300 s). This runs all night: a pinned exe that turns heavy gets its day rule back (`aff set` with the day's CPUs, else `aff clear`) and `eco off`; a calm one gets pinned. The foreground full-screen app (`pc.fg_full`, `pc.fg_exe` from the user half) is left alone the same way. Exes in `HOST_NIGHT_ALWAYS` stay pinned even while heavy. New process names are pinned within 10 s. `pc.heavy` (how many exes are heavy, kept ones included) and `pc.heavy_by` (the busiest) go to the board all day; it won't sleep or hibernate the PC while `pc.heavy >= 1`. `!night 0` sends `lasso load day` (the normal ini back, every process on its own rule or every CPU) and `eco off all`. `night.on` in `C:\ProgramData\ESP32PcStats` marks night engaged and lists the exes pinned and the day's rules, so a restart mid-night restores rather than saving the night config as `day`. After `HOST_NIGHT_NO_WORD_MIN` (5) min without the board's 30 s repeat, the helper sends `lasso load day` itself. A `prolasso.ini.esp32-night` left by the helper's older night code blocks night mode (logged once) until it is copied back over `prolasso.ini` by hand. `pc.disp_req` / `pc.disp_req_by` (a process holds the display awake, so the board holds night mode off), `pc.sys_req` and `pc.exec_req` (each with `_by`; they hold the board's night sleep) are PcHwCtl's `hw.*_req*`, renamed.
+
+The user half still sends the `idle` feed every second (`Idle.cs`, `@source idle helper:idle 1000`): `pc.idle_s`, seconds since the last keyboard or mouse input in the session (`GetLastInputInfo`), for the board's night mode, plus `pc.in_px` (mouse travel) and `pc.in_press` (key and button presses), counters the board uses to tell a real return from a bumped mouse. XInput gamepads count too (Windows' idle time ignores them): a button or trigger is a press, a stick past its dead zone 20 px per 100 ms. `pc.fg_full` = 1 while the foreground app runs full screen (`SHQueryUserNotificationState`), `pc.fg_exe` names the foreground app.
 
 ## USB COM Port Notice
 

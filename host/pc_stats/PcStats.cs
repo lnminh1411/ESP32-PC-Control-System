@@ -1,5 +1,5 @@
-// ESP32-Helper: Windows service that reads configured hardware sensors
-// through LibreHardwareMonitorLib (PawnIO driver) and streams
+// ESP32-Helper: Windows service that collects configured PC stats (hardware
+// sensors from PcHwCtl's sensor feed, Feed.cs) and streams
 // them to the carrier board over its WinUSB bulk interface, else a vendor
 // HID interface (report ID 6), else native USB CDC (Espressif VID 303A).
 //
@@ -8,12 +8,13 @@
 // anonymous pipes (see "User-session half" below).
 //
 // Sensor mapping is defined in stats.ini (in the executable's directory):
-//   key = <hardware> | <sensor type> | <sensor name> [| first|avg|sum|max|min]
+//   key = @feed [<feed key>]             PcHwCtl sensor feed (Feed.cs), default the same key
+//   key = @ram load|used|free            physical memory (% / GB)
+//   key = @net down|up <adapter,...>     bytes/s summed over adapters (wildcards)
 //   key = @uptime
 //   key = @drive <letter>: used|free|total|load
-//   key = @cpu_mhz                       Task Manager's CPU speed (no LHWM cost)
+//   key = @cpu_mhz                       Task Manager's CPU speed
 //   key = @counter <category> | <counter> | <instance> [| scale]   any Windows perf counter
-//   @every <hardware> <ms>               update that hardware at most every ms
 //   @source <name> <url> <ms>            poll HTTP key=value stream on background thread
 //
 // Wire format, ASCII lines (firmware side: firmware/carrier_main/pcstats.h):
@@ -22,13 +23,11 @@
 //   @e <seq>                     end of one sample (every @interval ms, default 500)
 //
 // Usage: ESP32-Helper.exe             run as service (installed by install.ps1)
-//        ESP32-Helper.exe --console   run in console, print stats each tick
-//        ESP32-Helper.exe --list      print every sensor once and exit
-//        ESP32-Helper.exe --bench     time one Update() of each hardware
+//        ESP32-Helper.exe --console   run in console, print stats each tick; lines
+//                                     typed there starting with ! act as board lines
+//        ESP32-Helper.exe --list      print one PcHwCtl sensor feed snapshot and exit
 //        ESP32-Helper.exe --agy-once  poll Antigravity quota once, print it
 //        ESP32-Helper.exe --media     sample media sessions for 5 s
-//        ESP32-Helper.exe --monitors ["<command>"]  list monitors over DDC/CI, after
-//                                     an optional "bright 2 50" / "power all on"
 //        --transport auto|winusb|hid|serial  transport mode (default: auto)
 //        --port COMn                  skip VID auto-detect, force serial COMn
 //        --no-user                    with --console: don't start the user half
@@ -50,7 +49,6 @@ using System.ServiceProcess;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
-using LibreHardwareMonitor.Hardware;
 using Microsoft.Win32;
 using Microsoft.Win32.SafeHandles;
 
@@ -754,20 +752,63 @@ partial class PcStats : ServiceBase {
     return PipeRequest(HostSettings.HWCTL_PIPE, command, HostSettings.HWCTL_TIMEOUT_MS, out data);
   }
 
+  // PcHwCtl's state file (@source hw) carries what the helper used to read
+  // itself, under hw.: the monitors (hw.mon.*) and the power requests
+  // (hw.disp_req, hw.sys_req, hw.exec_req, each with _by). They go to the
+  // board as mon.* and pc.*_req*, which its Discord panel and night mode read.
+  static string BoardKey(string source, string key) {
+    if (source != "hw") return key;
+    if (key.StartsWith("hw.mon.", StringComparison.Ordinal)) return key.Substring(3);
+    if (Regex.IsMatch(key, @"^hw\.(disp|sys|exec)_req")) return "pc" + key.Substring(2);
+    return key;
+  }
+
   // One request, one JSON line back: {"ok":true,"data":...} or {"ok":false,"error":"..."}.
   // Returns "ok" (data set) or "err <why>".
   static string PipeRequest(string pipeName, string command, int readTimeoutMs, out Dictionary<string, object> data) {
     data = null;
     try {
-      using (var pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut)) {
+      using (var c = new PipeClient(pipeName, readTimeoutMs)) return c.Request(command, out data);
+    } catch (System.TimeoutException) {
+      return "err " + pipeName + " not running";
+    } catch (Exception ex) {
+      return "err " + ex.GetType().Name;
+    }
+  }
+
+  // Several requests on one connection (night mode sends hundreds). The
+  // constructor throws TimeoutException when nobody serves the pipe.
+  class PipeClient : IDisposable {
+    readonly string name;
+    readonly int timeoutMs;
+    readonly NamedPipeClientStream pipe;
+    readonly StreamWriter w;
+    readonly StreamReader r;
+    bool broken;   // an answer timed out: the next line could be its late answer
+
+    public PipeClient(string pipeName, int readTimeoutMs) {
+      name = pipeName;
+      timeoutMs = readTimeoutMs;
+      pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+      try {
         pipe.Connect(1000);
-        var w = new StreamWriter(pipe, Utf8NoBom) { AutoFlush = true, NewLine = "\n" };
-        var r = new StreamReader(pipe, Utf8NoBom);
+      } catch (Exception) {
+        pipe.Dispose();
+        throw;
+      }
+      w = new StreamWriter(pipe, Utf8NoBom) { AutoFlush = true, NewLine = "\n" };
+      r = new StreamReader(pipe, Utf8NoBom);
+    }
+
+    public string Request(string command, out Dictionary<string, object> data) {
+      data = null;
+      if (broken) return "err " + name + " did not answer";
+      try {
         w.WriteLine(command);
         var read = r.ReadLineAsync();
-        if (!read.Wait(readTimeoutMs)) return "err " + pipeName + " did not answer";
+        if (!read.Wait(timeoutMs)) { broken = true; return "err " + name + " did not answer"; }
         string json = read.Result;
-        if (json == null) return "err " + pipeName + " closed the pipe";
+        if (json == null) { broken = true; return "err " + name + " closed the pipe"; }
         Dictionary<string, object> o = Json.ParseObject(json);
         object ok, err, d;
         if (o != null && o.TryGetValue("ok", out ok) && ok is bool && (bool)ok) {
@@ -776,12 +817,13 @@ partial class PcStats : ServiceBase {
         }
         if (o != null && o.TryGetValue("error", out err) && err != null) return "err " + Convert.ToString(err, CultureInfo.InvariantCulture);
         return "err unexpected answer";
+      } catch (Exception ex) {
+        broken = true;
+        return "err " + ex.GetType().Name;
       }
-    } catch (System.TimeoutException) {
-      return "err " + pipeName + " not running";
-    } catch (Exception ex) {
-      return "err " + ex.GetType().Name;
     }
+
+    public void Dispose() { pipe.Dispose(); }
   }
 
   // ---- Local AI stack control (LocalAIHost) ----
@@ -891,13 +933,18 @@ partial class PcStats : ServiceBase {
     return (n / 1024).ToString("0", CultureInfo.InvariantCulture) + "k";
   }
 
-  // ---- PC Monitor Control (DDC/CI, in the user half) ----
+  // ---- PC Monitor Control (PcHwCtl displays) ----
   // The board's `!mon <id> <command>` (bright <n|all> <pct>, power <n|all>
-  // on|off) goes to the user half, which talks DDC/CI to the monitors
-  // (Monitors.cs) and answers "R <id> ok|err ...". The answer comes back as the
-  // text stat monctl.reply = "<id> ok" or "<id> err <message>", 30 s like hw.reply.
-  static readonly Regex MonCmdRegex = new Regex(@"^!mon\s+([0-9a-fA-F]{1,8})\s+((?:bright|power)\s.+)$", RegexOptions.IgnoreCase);
+  // on|off) becomes PcHwCtl's `display ...` commands (docs/ipc.md#displays);
+  // its user-session agent talks DDC/CI. "power all off" also sends `display
+  // sleep` (Windows' display off, for monitors without a power method), "power
+  // all on" a `display wake` first. The answer comes back as the text stat
+  // monctl.reply = "<id> ok" or "<id> err <message>", 30 s like hw.reply. The
+  // monitors' state is PcHwCtl's hw.mon.* (state.txt), sent as mon.*.
+  static readonly Regex MonCmdRegex = new Regex(@"^!mon\s+([0-9a-fA-F]{1,8})\s+(bright|power)\s+(all|\d{1,2})\s+(\S+)$", RegexOptions.IgnoreCase);
+  const int DisplayTimeoutMs = 10000;   // DDC/CI is slow: one write per monitor, with a retry
   static readonly object monLock = new object();
+  static readonly object monPipeLock = new object();   // one display command at a time
   static string monReply;
   static DateTime monReplyExpiresUtc;
 
@@ -905,11 +952,32 @@ partial class PcStats : ServiceBase {
     Match m = MonCmdRegex.Match(line.Trim());
     if (!m.Success) { Log("mon: unrecognized command"); return; }
     string id = m.Groups[1].Value.ToLowerInvariant();
-    string command = m.Groups[2].Value.Trim();
-    if (!SendToUserHalf("M " + id + " " + command)) {
-      SetMonReply(id, "err nobody signed in (the user half talks to the monitors)");
-      Log("mon: #" + id + " " + command + " -> no user half");
+    string verb = m.Groups[2].Value.ToLowerInvariant(), target = m.Groups[3].Value.ToLowerInvariant(), arg = m.Groups[4].Value.ToLowerInvariant();
+    var commands = new List<string>();
+    if (verb == "bright") {
+      commands.Add("display bright " + target + " " + arg);
+    } else if (arg == "off") {
+      commands.Add("display power " + target + " off");
+      if (target == "all") commands.Add("display sleep");
+    } else if (arg == "on") {
+      if (target == "all") commands.Add("display wake");
+      commands.Add("display power " + target + " on");
+    } else {
+      SetMonReply(id, "err power is on or off");
+      return;
     }
+    ThreadPool.QueueUserWorkItem(delegate(object o) {
+      lock (monPipeLock) {
+        string reply = "ok";
+        foreach (string c in commands) {
+          Dictionary<string, object> data;
+          string r = PipeRequest(HostSettings.HWCTL_PIPE, c, DisplayTimeoutMs, out data);
+          if (r != "ok") { reply = r; break; }
+        }
+        SetMonReply(id, reply);
+        Log("mon: #" + id + " " + string.Join(" + ", commands) + " -> " + reply);
+      }
+    });
   }
 
   static void SetMonReply(string id, string reply) {
@@ -926,13 +994,11 @@ partial class PcStats : ServiceBase {
   // signed-in user's token, so it runs with that user's normal rights) and
   // keeps one running there. --console mode starts it as the current user.
   // Two anonymous pipes, UTF-8 lines. User half to service:
-  //   F <feed> <n>   then n key=value lines (feeds: agy, media, mon; @source helper:<feed>)
+  //   F <feed> <n>   then n key=value lines (feeds: agy, media, idle; @source helper:<feed>)
   //   A <base64>     cover art, 144x144 RGB565 big-endian (41,472 bytes)
   //   L <text>       log line, written to this log as "user: <text>"
-  //   R <id> <reply> answer to an M request
   // Service to user half:
   //   S <nonce> <webhook>   take a screenshot
-  //   M <id> <command>      monitor command (Monitors.cs)
   // The user half exits as soon as its pipes break, so it never outlives us.
   class HelperFeed {
     public string[] Lines;
@@ -1107,9 +1173,6 @@ partial class PcStats : ServiceBase {
             if (art.Length == 41472) lock (helperLock) { helperArt = art; }
           } else if (line.StartsWith("L ")) {
             Log("user: " + line.Substring(2));
-          } else if (line.StartsWith("R ")) {
-            int sp = line.IndexOf(' ', 2);
-            if (sp > 2) SetMonReply(line.Substring(2, sp - 2), line.Substring(sp + 1));
           }
         }
       }
@@ -1673,17 +1736,20 @@ partial class PcStats : ServiceBase {
   Thread worker;
   volatile bool stop;
 
-  enum StatKind { Sensor, Uptime, Drive, Counter, CpuMhz, EcoreLoad, ProcMb }
+  enum StatKind { Feed, Ram, Net, Uptime, Drive, Counter, CpuMhz, EcoreLoad, ProcMb }
 
   class StatRule {
     public string Key;
     public StatKind Kind;
-    // Sensor rule
-    public string[] HwAlternatives;
-    public string SensorType;
-    public string SensorName;
-    public string Reduce;
-    public List<ISensor> ResolvedSensors = new List<ISensor>();
+    // PcHwCtl feed key (@feed)
+    public string FeedKey;
+    // @ram load|used|free
+    public string RamMetric;
+    // @net down|up <adapters>, with the byte count at the last tick
+    public string NetMetric;
+    public string[] NetAdapters;
+    public long NetLastBytes;
+    public DateTime NetLastUtc = DateTime.MinValue;
     // Drive rule
     public string DriveLetter;
     public string DriveMetric;
@@ -2533,9 +2599,6 @@ partial class PcStats : ServiceBase {
     }
   }
 
-  // "@every <hardware> <ms>": update matching hardware at most that often
-  // (e.g. the CPU, whose update costs ~320 ms; temperatures move slowly).
-  static List<KeyValuePair<string, int>> everyRules = new List<KeyValuePair<string, int>>();
   static float cpuBaseMhz;
 
   static System.Diagnostics.PerformanceCounter OpenCounter(string cat, string name, string inst) {
@@ -2554,10 +2617,6 @@ partial class PcStats : ServiceBase {
     if (args.Length == 3 && args[0] == "--user") { RunSta(delegate() { AgyQuota.RunUser(args[1], args[2]); }); return; }
     if (args.Length == 1 && args[0] == "--agy-once") { RunSta(AgyQuota.RunOnceTest); return; }
     if (args.Length == 1 && args[0] == "--media") { RunSta(AgyQuota.RunMediaTest); return; }
-    if (args.Length >= 1 && args[0] == "--monitors") {
-      AgyQuota.RunMonitorTest(args.Length > 1 ? string.Join(" ", args, 1, args.Length - 1) : null);
-      return;
-    }
     if (args.Length == 1 && args[0] == "--agy-usage") {
       AgyUsage.Window w, f;
       bool ok = AgyUsage.Read(out w, out f);
@@ -2570,8 +2629,7 @@ partial class PcStats : ServiceBase {
       else if (args[i] == "--no-user") noUserHalf = true;
       else if (args[i] == "--port" && i + 1 < args.Length) fixedPort = args[++i];
       else if (args[i] == "--transport" && i + 1 < args.Length) transportMode = args[++i].ToLowerInvariant();
-      else if (args[i] == "--list") { List(); return; }
-      else if (args[i] == "--bench") { Bench(); return; }
+      else if (args[i] == "--list") { ListFeed(); return; }
       else if (args[i] == "--claude" && i + 1 < args.Length) { ClaudeTest(args[++i]); return; }
       else if (args[i] == "--going") { PrintGoingTest(); return; }
       else if (args[i] == "--render-text" && i + 3 < args.Length) {
@@ -2591,6 +2649,11 @@ partial class PcStats : ServiceBase {
     if (consoleMode) {
       var s = new PcStats();
       Console.CancelKeyPress += delegate(object o, ConsoleCancelEventArgs e) { e.Cancel = true; s.stop = true; };
+      // board lines typed here ("!mon 1 bright all 50") are handled as if the board sent them
+      new Thread(delegate() {
+        string l;
+        while ((l = Console.ReadLine()) != null) if (l.StartsWith("!")) HandleBoardLine(l);
+      }) { IsBackground = true, Name = "stdin" }.Start();
       StartUserHalf();
       s.Run();
       StopUserHalf();
@@ -2683,72 +2746,7 @@ partial class PcStats : ServiceBase {
     } catch (IOException) { }
   }
 
-  // Updates every hardware and its sub-hardware (lhwm-wrapper.dll used to ship this)
-  class UpdateVisitor : IVisitor {
-    public void VisitComputer(IComputer computer) { computer.Traverse(this); }
-    public void VisitHardware(IHardware hardware) {
-      hardware.Update();
-      foreach (IHardware sub in hardware.SubHardware) sub.Accept(this);
-    }
-    public void VisitSensor(ISensor sensor) { }
-    public void VisitParameter(IParameter parameter) { }
-  }
-
-  static Computer OpenComputer() {
-    var c = new Computer {
-      IsCpuEnabled = HostSettings.LHM_CPU, IsGpuEnabled = HostSettings.LHM_GPU, IsMemoryEnabled = HostSettings.LHM_MEMORY,
-      IsMotherboardEnabled = HostSettings.LHM_MOTHERBOARD, IsStorageEnabled = HostSettings.LHM_STORAGE,
-      IsNetworkEnabled = HostSettings.LHM_NETWORK, IsControllerEnabled = HostSettings.LHM_CONTROLLER,
-      IsPsuEnabled = HostSettings.LHM_PSU, IsBatteryEnabled = HostSettings.LHM_BATTERY
-    };
-    c.Open();
-    return c;
-  }
-
-  static void CollectHardware(IHardware hw, List<IHardware> list) {
-    list.Add(hw);
-    foreach (IHardware sub in hw.SubHardware) CollectHardware(sub, list);
-  }
-
-  static List<IHardware> AllHardware(Computer c) {
-    var list = new List<IHardware>();
-    foreach (IHardware hw in c.Hardware) CollectHardware(hw, list);
-    return list;
-  }
-
-  static List<ISensor> Sensors(Computer c) {
-    var list = new List<ISensor>();
-    foreach (IHardware hw in AllHardware(c)) {
-      list.AddRange(hw.Sensors);
-    }
-    return list;
-  }
-
   static string Clean(string s) { return (s ?? "").Replace('\t', ' ').Replace('\n', ' ').Replace('\r', ' ').Trim(); }
-
-  static void List() {
-    var c = OpenComputer();
-    c.Accept(new UpdateVisitor());
-    foreach (ISensor s in Sensors(c)) {
-      string hwCol = s.Hardware.HardwareType.ToString() + "/" + Clean(s.Hardware.Name);
-      Console.WriteLine("{0,-36} {1,-12} {2,-30} {3}",
-                        hwCol, s.SensorType, Clean(s.Name),
-                        s.Value.HasValue ? s.Value.Value.ToString("0.###", CultureInfo.InvariantCulture) : "-");
-    }
-    c.Close();
-  }
-
-  // ms per Update() of each hardware, to see what limits the interval
-  static void Bench() {
-    var c = OpenComputer();
-    c.Accept(new UpdateVisitor());
-    foreach (IHardware hw in AllHardware(c)) {
-      var t = System.Diagnostics.Stopwatch.StartNew();
-      for (int i = 0; i < 5; i++) hw.Update();
-      Console.WriteLine("{0,8:0.0} ms  {1}/{2}", t.Elapsed.TotalMilliseconds / 5, hw.HardwareType, Clean(hw.Name));
-    }
-    c.Close();
-  }
 
   static string FindHid(out SafeFileHandle matchedHandle) {
     matchedHandle = null;
@@ -3574,7 +3572,6 @@ partial class PcStats : ServiceBase {
 
   static List<StatRule> LoadRules(string path, List<HttpSource> sources, ref ClaudeSource claudeSource) {
     var list = new List<StatRule>();
-    everyRules.Clear();
     if (!File.Exists(path)) return list;
     string[] lines;
     try {
@@ -3599,10 +3596,7 @@ partial class PcStats : ServiceBase {
       }
 
       if (raw.StartsWith("@every", StringComparison.OrdinalIgnoreCase)) {
-        string[] ep = raw.Split(new char[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
-        int ms;
-        if (ep.Length == 3 && int.TryParse(ep[2], out ms) && ms > 0) everyRules.Add(new KeyValuePair<string, int>(ep[1], ms));
-        else Log("stats.ini line " + (i + 1) + ": @every wants <hardware> <ms>");
+        Log("stats.ini line " + (i + 1) + ": @every is gone (PcHwCtl's config feed.every paces the sensors), ignored");
         continue;
       }
 
@@ -3647,7 +3641,39 @@ partial class PcStats : ServiceBase {
         continue;
       }
 
-      if (string.Equals(valPart, "@uptime", StringComparison.OrdinalIgnoreCase)) {
+      if (valPart.StartsWith("@feed", StringComparison.OrdinalIgnoreCase)) {
+        string fk = valPart.Substring(5).Trim();
+        var r = new StatRule();
+        r.Key = key;
+        r.Kind = StatKind.Feed;
+        r.FeedKey = fk.Length > 0 ? fk : key;
+        list.Add(r);
+      } else if (valPart.StartsWith("@ram", StringComparison.OrdinalIgnoreCase)) {
+        string metric = valPart.Substring(4).Trim().ToLowerInvariant();
+        if (metric != "load" && metric != "used" && metric != "free") {
+          Log("stats.ini line " + (i + 1) + ": @ram wants load|used|free");
+          continue;
+        }
+        var r = new StatRule();
+        r.Key = key;
+        r.Kind = StatKind.Ram;
+        r.RamMetric = metric;
+        list.Add(r);
+      } else if (valPart.StartsWith("@net", StringComparison.OrdinalIgnoreCase)) {
+        string[] np = valPart.Substring(4).Trim().Split(new char[] { ' ', '\t' }, 2, StringSplitOptions.RemoveEmptyEntries);
+        string metric = np.Length > 0 ? np[0].ToLowerInvariant() : "";
+        if (np.Length < 2 || (metric != "down" && metric != "up")) {
+          Log("stats.ini line " + (i + 1) + ": @net wants down|up <adapter,...>");
+          continue;
+        }
+        var r = new StatRule();
+        r.Key = key;
+        r.Kind = StatKind.Net;
+        r.NetMetric = metric;
+        r.NetAdapters = np[1].Split(new char[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+        for (int k = 0; k < r.NetAdapters.Length; k++) r.NetAdapters[k] = r.NetAdapters[k].Trim();
+        list.Add(r);
+      } else if (string.Equals(valPart, "@uptime", StringComparison.OrdinalIgnoreCase)) {
         var r = new StatRule();
         r.Key = key;
         r.Kind = StatKind.Uptime;
@@ -3714,115 +3740,17 @@ partial class PcStats : ServiceBase {
         r.DriveMetric = metric;
         list.Add(r);
       } else {
-        string[] parts = valPart.Split('|');
-        if (parts.Length < 3 || parts.Length > 4) {
-          Log("stats.ini line " + (i + 1) + ": invalid sensor rule (expected 3-4 '|' parts): " + valPart);
-          continue;
-        }
-        string hwPart = parts[0].Trim();
-        string typePart = parts[1].Trim();
-        string namePart = parts[2].Trim();
-        string reducePart = parts.Length == 4 ? parts[3].Trim().ToLowerInvariant() : "first";
-
-        if (reducePart != "first" && reducePart != "avg" && reducePart != "sum" && reducePart != "max" && reducePart != "min") {
-          Log("stats.ini line " + (i + 1) + ": invalid reduce '" + reducePart + "' (defaulting to first)");
-          reducePart = "first";
-        }
-
-        string[] hwAlts = hwPart.Split(new char[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
-        for (int k = 0; k < hwAlts.Length; k++) hwAlts[k] = hwAlts[k].Trim();
-
-        var r = new StatRule();
-        r.Key = key;
-        r.Kind = StatKind.Sensor;
-        r.HwAlternatives = hwAlts;
-        r.SensorType = typePart;
-        r.SensorName = namePart;
-        r.Reduce = reducePart;
-        list.Add(r);
+        // the old LibreHardwareMonitor rule (hardware | type | name): PcHwCtl reads the sensors now
+        Log("stats.ini line " + (i + 1) + ": '" + key + "' is not a known rule (sensors are '@feed <key>' now, see --list)");
       }
     }
     return list;
-  }
-
-  static void ResolveSensors(List<StatRule> rules, Computer computer) {
-    if (rules == null || computer == null) return;
-    List<ISensor> allSensors = Sensors(computer);
-    for (int rIdx = 0; rIdx < rules.Count; rIdx++) {
-      StatRule r = rules[rIdx];
-      if (r.Kind != StatKind.Sensor) continue;
-      r.ResolvedSensors.Clear();
-      for (int i = 0; i < allSensors.Count; i++) {
-        ISensor s = allSensors[i];
-        bool hwMatch = false;
-        string hwType = s.Hardware.HardwareType.ToString();
-        string hwName = s.Hardware.Name;
-        for (int j = 0; j < r.HwAlternatives.Length; j++) {
-          string alt = r.HwAlternatives[j];
-          if (WildcardMatch(alt, hwType) || WildcardMatch(alt, hwName)) {
-            hwMatch = true;
-            break;
-          }
-        }
-        if (!hwMatch) continue;
-
-        if (!string.Equals(s.SensorType.ToString(), r.SensorType, StringComparison.OrdinalIgnoreCase)) continue;
-        if (!WildcardMatch(r.SensorName, s.Name)) continue;
-
-        r.ResolvedSensors.Add(s);
-      }
-    }
-  }
-
-  static List<IHardware> HotHardware(List<StatRule> rules) {
-    var list = new List<IHardware>();
-    for (int i = 0; i < rules.Count; i++)
-      for (int k = 0; k < rules[i].ResolvedSensors.Count; k++) {
-        IHardware hw = rules[i].ResolvedSensors[k].Hardware;
-        if (!list.Contains(hw)) list.Add(hw);
-      }
-    return list;
-  }
-
-  // The CPU update alone takes ~320 ms (it samples clocks on every core, mostly
-  // sleeping) and the NVIDIA one ~80 ms: run them side by side so a tick costs
-  // the slowest one, not the sum.
-  static void UpdateParallel(List<IHardware> hw) {
-    using (var done = new CountdownEvent(hw.Count)) {
-      for (int i = 0; i < hw.Count; i++) {
-        IHardware h = hw[i];
-        ThreadPool.QueueUserWorkItem(delegate(object o) {
-          try { h.Update(); } catch (Exception) { } finally { done.Signal(); }
-        });
-      }
-      done.Wait();
-    }
-  }
-
-  static HashSet<IHardware> updating = new HashSet<IHardware>();
-
-  static bool UpdateInBackground(IHardware hw) {
-    lock (updating) { if (!updating.Add(hw)) return false; }
-    ThreadPool.QueueUserWorkItem(delegate(object o) {
-      try { hw.Update(); } catch (Exception) { } finally { lock (updating) updating.Remove(hw); }
-    });
-    return true;
-  }
-
-  static int EveryMs(IHardware hw) {
-    for (int i = 0; i < everyRules.Count; i++)
-      if (WildcardMatch(everyRules[i].Key, hw.HardwareType.ToString()) || WildcardMatch(everyRules[i].Key, hw.Name))
-        return everyRules[i].Value;
-    return 0;
-  }
-
-  static bool Unresolved(List<StatRule> rules) {
-    for (int i = 0; i < rules.Count; i++)
-      if (rules[i].Kind == StatKind.Sensor && rules[i].ResolvedSensors.Count == 0) return true;
-    return false;
   }
 
   static double? EvalStat(StatRule r) {
+    if (r.Kind == StatKind.Feed) return FeedValue(r.FeedKey);
+    if (r.Kind == StatKind.Ram) return RamStat(r.RamMetric);
+    if (r.Kind == StatKind.Net) return NetStat(r);
     if (r.Kind == StatKind.Uptime) {
       return (double)(GetTickCount64() / 1000);   // whole seconds
     }
@@ -3874,64 +3802,25 @@ partial class PcStats : ServiceBase {
       } catch (Exception) { }
       return null;
     }
-    // Sensor evaluation
-    var vals = new List<float>();
-    for (int i = 0; i < r.ResolvedSensors.Count; i++) {
-      ISensor s = r.ResolvedSensors[i];
-      if (s.Value.HasValue && !float.IsNaN(s.Value.Value) && !float.IsInfinity(s.Value.Value)) {
-        vals.Add(s.Value.Value);
-        if (r.Reduce == "first") break;
-      }
-    }
-    if (vals.Count == 0) return null;
-    if (r.Reduce == "first") return vals[0];
-    if (r.Reduce == "sum") {
-      double sum = 0;
-      for (int i = 0; i < vals.Count; i++) sum += vals[i];
-      return (float)sum;
-    }
-    if (r.Reduce == "avg") {
-      double sum = 0;
-      for (int i = 0; i < vals.Count; i++) sum += vals[i];
-      return (float)(sum / vals.Count);
-    }
-    if (r.Reduce == "max") {
-      float max = vals[0];
-      for (int i = 1; i < vals.Count; i++) if (vals[i] > max) max = vals[i];
-      return max;
-    }
-    if (r.Reduce == "min") {
-      float min = vals[0];
-      for (int i = 1; i < vals.Count; i++) if (vals[i] < min) min = vals[i];
-      return min;
-    }
     return null;
   }
 
   void Run() {
     Log("start");
     NightStart();
-    Computer computer = null;
+    FeedStart();
     ILink link = null;
     List<StatRule> rules = null;
     List<HttpSource> sources = null;
     ClaudeSource claudeSource = null;
-    bool hardwareChanged = false;
     bool iniMissingLogged = false;
     DateTime lastIniWriteTime = DateTime.MinValue;
-    DateTime nextScan = DateTime.MinValue, nextResolve = DateTime.MinValue;
-    List<IHardware> hot = null;              // hardware the rules read, updated every tick
-    var lastUpdate = new Dictionary<IHardware, DateTime>();
+    DateTime nextScan = DateTime.MinValue;
     uint seq = 0;
     string exeDir = AppDomain.CurrentDomain.BaseDirectory;
     string iniPath = Path.Combine(exeDir, "stats.ini");
 
     try {
-      computer = OpenComputer();
-      computer.HardwareAdded += delegate(IHardware h) { hardwareChanged = true; };
-      computer.HardwareRemoved += delegate(IHardware h) { hardwareChanged = true; };
-      var visitor = new UpdateVisitor();
-
       ComputeLastShutdown();
       Log("last shutdown: " + lastDownKind + " at " + lastDownAt);
       updatePending = CheckUpdatePending();
@@ -4012,8 +3901,6 @@ partial class PcStats : ServiceBase {
             rules = LoadRules(iniPath, sources, ref claudeSource);
             StartSources(sources);
             if (claudeSource != null) claudeSource.Start();
-            nextResolve = DateTime.MinValue;
-            hot = null;
             Log("loaded " + rules.Count + " stats, " + sources.Count + " sources" + (claudeSource != null ? ", claude enabled" : "") + " from stats.ini");
           }
         }
@@ -4051,38 +3938,8 @@ partial class PcStats : ServiceBase {
           nextScan = t0.AddSeconds(3);
         }
 
-        DateTime u0 = DateTime.UtcNow;
-        // Resolve after a FULL update: SuperIO fans and some GPU sensors only
-        // exist once a reading was seen. A full update costs ~0.5 s (SMART on
-        // every drive, every NIC), so it only runs on (re)load, hardware
-        // change, or every 30 s while some rule still matches nothing.
-        if (rules != null && (hardwareChanged || (t0 >= nextResolve && (hot == null || Unresolved(rules))))) {
-          hardwareChanged = false;
-          for (;;) { lock (updating) { if (updating.Count == 0) break; } Thread.Sleep(10); }   // no overlap with a background update
-          computer.Accept(visitor);
-          ResolveSensors(rules, computer);
-          hot = HotHardware(rules);
-          nextResolve = t0.AddSeconds(30);
-        } else if (hot != null) {
-          // Only what the rules read. @every hardware (the slow CPU update)
-          // refreshes in the background so no tick waits for it; the tick
-          // sends its last values.
-          var due = new List<IHardware>();
-          for (int i = 0; i < hot.Count; i++) {
-            int every = EveryMs(hot[i]);
-            if (every == 0) { due.Add(hot[i]); continue; }
-            DateTime last;
-            if (lastUpdate.TryGetValue(hot[i], out last) && (t0 - last).TotalMilliseconds < every - intervalMs / 2) continue;
-            if (!UpdateInBackground(hot[i])) continue;   // previous one still running
-            lastUpdate[hot[i]] = t0;
-          }
-          if (due.Count > 0) UpdateParallel(due);
-        }
-        int updateMs = (int)(DateTime.UtcNow - u0).TotalMilliseconds;
-        if (updateMs > intervalMs * 8 / 10 && seq % 60 == 0)
-          Log("hardware update takes " + updateMs + " ms of a " + intervalMs + " ms interval");
-
         // Evaluate stats
+        DateTime u0 = DateTime.UtcNow;
         var tokens = new List<string>();
         if (rules != null) {
           for (int i = 0; i < rules.Count; i++) {
@@ -4091,6 +3948,8 @@ partial class PcStats : ServiceBase {
             tokens.Add(r.Key + "=" + Fmt(val));
           }
         }
+
+        int updateMs = (int)(DateTime.UtcNow - u0).TotalMilliseconds;
 
         // Evaluate sources
         var texts = new List<KeyValuePair<string, string>>();
@@ -4115,10 +3974,10 @@ partial class PcStats : ServiceBase {
             if (ok) {
               foreach (KeyValuePair<string, double> kv in numCopy) {
                 if (string.Equals(kv.Key, src.Name + ".ok", StringComparison.OrdinalIgnoreCase)) continue;
-                tokens.Add(kv.Key + "=" + Fmt(kv.Value));
+                tokens.Add(BoardKey(src.Name, kv.Key) + "=" + Fmt(kv.Value));
               }
               foreach (KeyValuePair<string, string> kv in textCopy) {
-                texts.Add(kv);
+                texts.Add(new KeyValuePair<string, string>(BoardKey(src.Name, kv.Key), kv.Value));
               }
               if (src.Name == "media") {
                 double aidNum;
@@ -4167,11 +4026,11 @@ partial class PcStats : ServiceBase {
             else monReply = null;
           }
         }
-        // night mode's video guard (Night.cs)
-        int dr = dispReq;
-        if (dr >= 0) {
-          tokens.Add("pc.disp_req=" + dr);
-          if (dr > 0) texts.Add(new KeyValuePair<string, string>("pc.disp_req_by", TruncateUtf8(dispReqBy, 60)));
+        // heavy exes for the board's night sleep / hibernate hold (Night.cs)
+        int heavy = heavyCount;
+        if (heavy >= 0) {
+          tokens.Add("pc.heavy=" + heavy);
+          texts.Add(new KeyValuePair<string, string>("pc.heavy_by", heavyBy));
         }
 
         // Power ack
@@ -4299,7 +4158,6 @@ partial class PcStats : ServiceBase {
         claudeSource = null;
       }
       if (link != null) try { link.Close(); } catch (Exception) { }
-      if (computer != null) computer.Close();
       if (goingWatcher != null) {
         try {
           goingWatcher.Enabled = false;

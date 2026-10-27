@@ -363,6 +363,18 @@
 #ifndef NIGHT_LASSO_REPEAT_MS
 #define NIGHT_LASSO_REPEAT_MS 30000               // !night state resent to the PC this often (Process Lasso profile)
 #endif
+#ifndef NIGHT_SLEEP_S
+#define NIGHT_SLEEP_S (60 * 60)                   // s without real input on the PC (false wakes don't count) before night mode sleeps it
+#endif
+#ifndef NIGHT_HIBERNATE_S
+#define NIGHT_HIBERNATE_S (2 * 60 * 60)           // s without input before it hibernates; a PC night mode put to sleep is woken and hibernated after (this - NIGHT_SLEEP_S), even after the night
+#endif
+#ifndef NIGHT_NET_HOLD_BPS
+#define NIGHT_NET_HOLD_BPS 1000000                // sleep / hibernate wait while net_down or net_up averages more than this (bytes/s, ~1 min)
+#endif
+#ifndef NIGHT_REQ_IGNORE
+#define NIGHT_REQ_IGNORE "claude.exe"             // power request holders that don't hold sleep (comma list; claude.exe always holds EXECUTION)
+#endif
 
 // ---- Weather (board) ----
 #ifndef WEATHER_HOME_NAME
@@ -499,13 +511,28 @@
 #define HOST_LASSO_INI "C:\\ProgramData\\ProcessLasso\\config\\prolasso.ini"  // Process Lasso config the night profile rewrites (original kept as .esp32-night)
 #endif
 #ifndef HOST_NIGHT_CORES
-#define HOST_NIGHT_CORES "12-17"                  // cores night mode pins processes to (Core Ultra 7 265K E-cores are 2-5, 10-17)
+#define HOST_NIGHT_CORES "14-17"                  // cores night mode pins processes to, in efficiency mode (Core Ultra 7 265K E-cores are 2-5, 10-17)
 #endif
 #ifndef HOST_NIGHT_KEEP
 #define HOST_NIGHT_KEEP "system,idle,registry,secure system,memory compression,smss,csrss,wininit,winlogon,services,lsass,lsaiso,fontdrvhost,dwm,audiodg,explorer,sihost,ctfmon,textinputhost,searchhost,startmenuexperiencehost,shellexperiencehost,logonui,lockapp,esp32-helper,pchwctl,localaihost,llama-server,processgovernor,processlasso,bitsumsessionagent,msmpeng,mpdefendercoreservice"  // processes night mode never pins (comma list)
 #endif
 #ifndef HOST_NIGHT_NO_WORD_MIN
 #define HOST_NIGHT_NO_WORD_MIN 5                  // no !night from the board this long: the Process Lasso config goes back
+#endif
+#ifndef HOST_NIGHT_HEAVY_CORES
+#define HOST_NIGHT_HEAVY_CORES 0.8                // an exe averaging this many cores (1.0 = one core, summed over instances) ...
+#endif
+#ifndef HOST_NIGHT_HEAVY_S
+#define HOST_NIGHT_HEAVY_S 120                    //   ... for this long is heavy: night mode leaves it unpinned, and the board won't sleep the PC
+#endif
+#ifndef HOST_NIGHT_CALM_CORES
+#define HOST_NIGHT_CALM_CORES 0.3                 // a heavy exe averaging less than this ...
+#endif
+#ifndef HOST_NIGHT_CALM_S
+#define HOST_NIGHT_CALM_S 300                     //   ... for this long is calm again (pinned again at night)
+#endif
+#ifndef HOST_NIGHT_ALWAYS
+#define HOST_NIGHT_ALWAYS ""                      // exes night mode keeps pinned even while heavy (comma list, e.g. searchindexer,tiworker); they still hold sleep
 #endif
 #ifndef HOST_HWCTL_PIPE
 #define HOST_HWCTL_PIPE "PcHwCtl"                 // named pipe of the RGB / fan service (!hw)

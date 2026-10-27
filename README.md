@@ -243,7 +243,7 @@ One per line on the USB CDC console or the CH343 UART:
 | `pcsim <on\|off\|auto>` | Pretend the PC is on or off (LED, faces, backlights), for testing |
 | `door <1-4> [ms]`, `reset`, `reboot` | Press a door button; pulse the motherboard reset; restart the board itself |
 | `screenshot` | Post the PC's desktop to #logging for 5 min, then auto-delete (needs the service + a #logging webhook) |
-| `mon <bright <n\|all> <0-100> \| power all on\|off>` | The PC's monitors, numbered from the left: brightness over DDC/CI, power with Windows' display off plus DDC/CI power for the two DELLs (done by the service's user-session half) |
+| `mon <bright <n\|all> <0-100> \| power all on\|off>` | The PC's monitors, numbered from the left: brightness over DDC/CI, power through each model's method plus Windows' display off for `all` (done by PcHwCtl, which the PC service forwards to) |
 | `night [on\|off\|start\|end\|status]` | Night mode: on/off = the automatic engage (saved); start/end = now, until input on the PC |
 | `wake [force \| mac <AA:BB:..>]`, `power <sleep\|hibernate\|restart\|shutdown\|lock>` | Wake-on-LAN; power commands over USB (`lock` locks the signed-in session) |
 | `going <restart\|shutdown\|update_restart\|update_shutdown\|sleep\|clear>` | Tell the board what the PC is about to do |
@@ -284,9 +284,9 @@ old hardcoded value in `settings_or_example.h`, so a key missing from
 - `host/pc_stats/build.cmd` reads only the `HOST_*` keys
   (`gen_settings.ps1` -> `Settings.g.cs`), so no secret ends up in the exe.
   Changing one means rebuilding and reinstalling the helper.
-- The sensor map (which LibreHardwareMonitor sensor feeds `cpu_temp`,
-  `gpu1_*`, the fans, ...) stays in `host/pc_stats/stats.ini`, read at run
-  time next to the exe.
+- Which board key takes which PcHwCtl feed key (`cpu_temp`, `gpu1_*`, the
+  fans, ...) stays in `host/pc_stats/stats.ini`, read at run time next to the
+  exe; which LibreHardwareMonitor sensor feeds each key is PcHwCtl's config.
 - `scripts/check_pins.py` checks the `PIN_*` settings against `pcb/main.ato`.
 
 The build compiles only the ESP-IDF components `main` needs (`MINIMAL_BUILD`).
@@ -317,7 +317,7 @@ category dropdown; picking one swaps the controls below it:
 | PC Control | PC state, board Wi-Fi, night mode | Wake PC, Lock, Sleep, Hibernate; Restart, Shut down, PC reset (these ask first); Screenshot; Night auto on/off; Start / End night now |
 | PC Case RGB LEDs | PcHwCtl's RGB rules and brightness | Mode, color and brightness dropdowns; target group (All, Motherboard, RAM) |
 | PC Fan Control | Each fan's speed, rpm and temperature, the RX 6600 and RTX 3050 included (with Zero RPM) | Target (All fans, Case fans, one case fan, RX 6600, RTX 3050), speed (held 5/15/60 min) and curve dropdowns; a Zero RPM dropdown in place of the curve for a GPU; Auto releases the override |
-| PC Monitor Control | Each monitor's power and brightness, numbered from the left | Target (one monitor or all), brightness in 10 % steps (DDC/CI); All screens on / off (Windows' display off, every display at once, plus DDC/CI power for the two DELLs) |
+| PC Monitor Control | Each monitor's power and brightness, numbered from the left | Target (one monitor or all), brightness in 10 % steps (DDC/CI); All screens on / off (each monitor's power method in PcHwCtl, plus Windows' display off) |
 | Local Agent Control | Local model, phase, context, auto-unload | Load, unload, reload, context size, auto-unload, keep awake; restart the stack's services |
 | ESP32 Board Control | Uptime, Wi-Fi, internal RAM, PSRAM, last restart reason, status LED | Status LED max brightness (10 % steps) and on/off (both saved); Restart board (asks first), Refresh weather, Reconnect Discord |
 | ESP32 Display Control | Each panel's screen and backlight | A screen dropdown per panel (each with an Auto option; not saved, like `face`); a brightness dropdown for all panels (5 % steps + Off, saved) |
@@ -341,21 +341,41 @@ Guards against false triggers:
 
 - **Wake check.** Input during the night only ends it if the next 10 s show a
   real return: more than 50 px of mouse travel, or 3 key / mouse button
-  presses (`pc.in_px`, `pc.in_press` from the user-session half). A bumped
-  mouse turns the displays off again and the night carries on.
+  presses (`pc.in_px`, `pc.in_press` from the user-session half; gamepad
+  buttons and sticks count too). A bumped mouse turns the displays off again
+  and the night carries on.
 - **Video.** No automatic start while a process keeps the display on (a video
-  playing, a presentation): the service reads `powercfg /requests` every 10 s
-  (`pc.disp_req`, `pc.disp_req_by`). The PC Control tab shows who holds it.
+  playing, a presentation): PcHwCtl reads `powercfg /requests` every 10 s and
+  the PC service passes it on (`pc.disp_req`, `pc.disp_req_by`). The PC
+  Control tab shows who holds it.
 
-While engaged, the PC service also swaps Process Lasso's config
-(`C:\ProgramData\ProcessLasso\config\prolasso.ini`) for a copy that pins every
-non-critical background process to six E-cores (12-17 on the Core Ultra 7
-265K), and pins the running ones at once. The kernel and session processes,
-the desktop shell, audio, this stack, Process Lasso and its ProBalance
-exclusions are left alone. The original file is kept beside it
-(`prolasso.ini.esp32-night`) and goes back the moment the night ends, and every
-pinned process gets its old affinity back. If the board stops confirming the
-night for 5 minutes, the service restores the original by itself.
+While engaged, the PC service has PcHwCtl move every non-critical
+background process to four E-cores (14-17 on the Core Ultra 7 265K) in Process
+Lasso's config (`C:\ProgramData\ProcessLasso\config\prolasso.ini`), pin the
+running ones at once and put them in Windows' efficiency mode (`lasso save
+day`, then `aff set` and `eco on` per exe; PcHwCtl puts new instances in
+efficiency mode too). The kernel and session processes, the desktop shell,
+audio, this stack, Process Lasso and its ProBalance exclusions are left alone.
+So is a heavy exe: one averaging 0.8 cores or more (1.0 = one core busy,
+summed over its instances) for 2 minutes, such as a render or a long
+calculation, and the foreground full-screen app (a game can be light on CPU).
+The check runs all night: a pinned exe that turns heavy gets its day rule back
+and leaves efficiency mode, and an exe left alone is pinned once it stays
+under 0.3 cores for 5 minutes. When the night ends, `lasso load day` puts the
+normal config back and `eco off all` lifts efficiency mode. If the board stops
+confirming the night for 5 minutes, the service does that by itself.
+
+Sleep and hibernate (Windows' own timers off; the board keeps them, in the
+night window only): 1 hour after the last real input on the PC (false wakes
+don't count) the board sleeps the PC, after 2 hours it hibernates it. Both
+wait, with the displays off, while an exe is heavy (`pc.heavy`, kept ones such
+as Defender scans included), a power request keeps the PC up (`pc.disp_req`,
+`pc.sys_req`, `pc.exec_req`, minus `NIGHT_REQ_IGNORE`: `claude.exe` always
+holds one) or the network averages more than 1 MB/s either way. A PC that
+night mode put to sleep is woken and hibernated an hour later, after 06:00
+too, unless someone powers it on first; a hibernated one stays so until it is
+powered on. When the PC comes back the board sends its night state at once,
+so the day config is back right after power-on.
 
 Lock needs the PC stats service: the board has no keyboard to send Win+L, so
 the service starts `LockWorkStation` in the signed-in session.
@@ -414,11 +434,13 @@ elevated shell).
 
 `host/pc_stats` builds one program, `ESP32-Helper.exe`, a self-contained
 single-file .NET 10 exe (needs the .NET 10 SDK to build, nothing to run;
-sensors come from LibreHardwareMonitorLib through the PawnIO driver). It runs
-as two processes:
+hardware sensors come from PcHwCtl's sensor feed, `E:\PC Hardware
+Controller`, the only LibreHardwareMonitor reader on the PC). It runs as two
+processes:
 
-- **The Windows service** (SYSTEM, session 0): reads sensors through
-  LibreHardwareMonitor and Windows performance counters, polls the local AI
+- **The Windows service** (SYSTEM, session 0): reads PcHwCtl's sensor feed
+  and Windows performance counters, forwards the board's monitor and night
+  mode commands to PcHwCtl, polls the local AI
   status hub and Claude's usage, and streams everything to the board over a
   WinUSB bulk pipe (no driver install; vendor HID as the fallback; the COM
   port stays free either way). It also renders
