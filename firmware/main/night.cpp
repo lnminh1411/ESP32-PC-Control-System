@@ -16,6 +16,7 @@
 #include "pcstats.h"
 #include "screens.h"
 #include "sys.h"
+#include "usb.h"
 #include "views.h"
 
 static const int IDLE_ENGAGE_S = 15 * 60;
@@ -27,6 +28,23 @@ static bool engaged;
 static bool manual;                      // started by hand: no window, no idle needed
 static uint32_t engagedAtMin;            // minutes since midnight, for the status line
 static uint32_t engagedMs;               // input newer than this ends it
+// Wake guard: input during the night only ends it if the next 10 s show a
+// real return (mouse moved > 50 px, or 3 key / button presses); otherwise
+// the displays go off again and the night carries on
+static const uint32_t GUARD_MS = 10000;
+static const double GUARD_PX = 50, GUARD_PRESSES = 3;
+static uint32_t guardUntilMs;            // 0 = no wake being checked
+static double guardPx0, guardPress0;     // pc.in_px / pc.in_press when the wake was seen
+static uint32_t falseWakes;              // this night, for the status line
+
+// Process Lasso's night config on the PC (Night.cs), repeated every 30 s
+static void lassoSend() { usbPcSendLine(engaged ? "!night 1\n" : "!night 0\n"); }
+
+// counters that wrap at 1e6
+static double counted(const char *key, double from) {
+  double d = pcStat(key) - from;
+  return d < 0 ? d + 1000000.0 : d;
+}
 static int8_t savedRgb = -1;             // PC LED brightness to put back, -1 = nothing owed (NVS)
 static bool rgbLowered;                  // our 10 % is on the LEDs right now (NVS with savedRgb)
 
@@ -84,6 +102,8 @@ static void engage(bool byHand) {
   engaged = true;
   manual = byHand;
   engagedMs = nowMs();
+  guardUntilMs = 0;
+  falseWakes = 0;
   struct tm t;
   engagedAtMin = boardLocalTime(&t) ? t.tm_hour * 60 + t.tm_min : 0;
   boardSide(true);
@@ -105,12 +125,15 @@ static void engage(bool byHand) {
   snprintf(what, sizeof what, "Engaged%s: PC LEDs %s, board panels 10 %% on the PC-off screens, status LED 20 %%, PC displays %s",
            byHand ? " by hand" : "", rgbLowered ? "10 %" : "unchanged", err ? "not reached" : "off");
   announce(what, 0x2C3E50);
+  lassoSend();
 }
 
 static void disengage(const char *why) {
   engaged = false;
   manual = false;
+  guardUntilMs = 0;
   boardSide(false);
+  lassoSend();
   rgbRestoreTry(false);   // the "back to normal" post covers it
   logMsg("night: off again (%s)%s", why, rgbLowered ? ", PC LEDs go back when PcHwCtl answers" : "");
   char what[160];
@@ -124,6 +147,8 @@ void nightPoll() {
   if (now - lastMs < 1000) return;
   lastMs = now;
 
+  static uint32_t lassoMs;
+  if (now - lassoMs >= 30000) { lassoMs = now; lassoSend(); }
   if (!engaged) rgbRestoreTry(true);   // owed from a morning or a restart
   if (!enabled && !engaged) return;
   struct tm t;
@@ -138,10 +163,33 @@ void nightPoll() {
     float since = (now - engagedMs) / 1000.0f;
     if (!enabled && !manual) disengage("turned off");
     else if (!inWindow && !manual) disengage("06:00");
-    else if (idleKnown && idle + 3 < since) disengage("input on the PC");
+    else if (guardUntilMs) {
+      double px = counted("pc.in_px", guardPx0), presses = counted("pc.in_press", guardPress0);
+      if (px > GUARD_PX || presses >= GUARD_PRESSES) {
+        disengage("input on the PC");
+      } else if ((int32_t)(now - guardUntilMs) >= 0) {
+        guardUntilMs = 0;
+        engagedMs = now;   // the next input is a new wake
+        falseWakes++;
+        uint32_t id;
+        monSend("power all off", &id);
+        logMsg("night: false wake (%.0f px, %.0f presses in 10 s), displays off again", px, presses);
+      }
+    } else if (idleKnown && idle + 3 < since) {
+      guardPx0 = pcStat("pc.in_px");
+      guardPress0 = pcStat("pc.in_press");
+      if (isnan(guardPx0) || isnan(guardPress0)) {
+        disengage("input on the PC");   // a helper without the counters: no guard
+      } else {
+        guardUntilMs = now + GUARD_MS;
+        logMsg("night: input on the PC, checking for 10 s");
+      }
+    }
     return;
   }
-  if (inWindow && pcState() == PC_ON && idleKnown && idle >= IDLE_ENGAGE_S) engage(false);
+  // video guard: no automatic start while something keeps the display on
+  bool videoHold = pcStat("pc.disp_req") >= 1;
+  if (inWindow && pcState() == PC_ON && idleKnown && idle >= IDLE_ENGAGE_S && !videoHold) engage(false);
 }
 
 void nightSetEnabled(bool on) {
@@ -162,8 +210,11 @@ bool nightEngaged() { return engaged; }
 
 void nightStatus(char *buf, uint32_t size) {
   if (engaged)
-    snprintf(buf, size, "engaged since %02lu:%02lu%s", (unsigned long)(engagedAtMin / 60),
-             (unsigned long)(engagedAtMin % 60), manual ? ", started by hand" : "");
+    snprintf(buf, size, "engaged since %02lu:%02lu%s%s", (unsigned long)(engagedAtMin / 60),
+             (unsigned long)(engagedAtMin % 60), manual ? ", by hand" : "",
+             guardUntilMs ? ", checking a wake" : falseWakes ? ", false wakes ignored" : "");
+  else if (enabled && pcStat("pc.disp_req") >= 1)
+    snprintf(buf, size, "on, held off: %.20s keeps the display on", pcText("pc.disp_req_by"));
   else if (enabled)
     snprintf(buf, size, "on: 22:00-06:00 after 15 min idle%s", rgbLowered ? ", LED restore owed" : "");
   else
@@ -183,5 +234,7 @@ void nightConsole(const char *args) {
   }
   nightStatus(st, sizeof st);
   float idle = pcStat("pc.idle_s");
-  logMsg("night: %s | PC idle %s%.0f s", st, pcStat("idle.ok") >= 1 ? "" : "(stale) ", isnan(idle) ? -1.0f : idle);
+  logMsg("night: %s | PC idle %s%.0f s, input %.0f px / %.0f presses, display request %.0f", st,
+         pcStat("idle.ok") >= 1 ? "" : "(stale) ", isnan(idle) ? -1.0f : idle, pcStat("pc.in_px"),
+         pcStat("pc.in_press"), pcStat("pc.disp_req"));
 }

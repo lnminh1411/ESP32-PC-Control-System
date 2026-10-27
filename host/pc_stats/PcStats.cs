@@ -54,7 +54,7 @@ using LibreHardwareMonitor.Hardware;
 using Microsoft.Win32;
 using Microsoft.Win32.SafeHandles;
 
-class PcStats : ServiceBase {
+partial class PcStats : ServiceBase {
   static readonly Encoding Utf8NoBom = new UTF8Encoding(false);
 
   static string TruncateUtf8(string s, int maxBytes) {
@@ -670,6 +670,8 @@ class PcStats : ServiceBase {
       HandleMonLine(line);
     } else if (line.StartsWith("!ai", StringComparison.OrdinalIgnoreCase)) {
       HandleAiLine(line);
+    } else if (line.StartsWith("!night", StringComparison.OrdinalIgnoreCase)) {
+      HandleNightLine(line);
     } else {
       Log("board: unrecognized line '" + line + "'");
     }
@@ -3910,6 +3912,7 @@ class PcStats : ServiceBase {
 
   void Run() {
     Log("start");
+    NightStart();
     Computer computer = null;
     ILink link = null;
     List<StatRule> rules = null;
@@ -4165,6 +4168,12 @@ class PcStats : ServiceBase {
             if (DateTime.UtcNow < monReplyExpiresUtc) texts.Add(new KeyValuePair<string, string>("monctl.reply", monReply));
             else monReply = null;
           }
+        }
+        // night mode's video guard (Night.cs)
+        int dr = dispReq;
+        if (dr >= 0) {
+          tokens.Add("pc.disp_req=" + dr);
+          if (dr > 0) texts.Add(new KeyValuePair<string, string>("pc.disp_req_by", TruncateUtf8(dispReqBy, 60)));
         }
 
         // Power ack

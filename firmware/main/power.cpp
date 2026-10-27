@@ -20,6 +20,11 @@
 
 static const char *powerWakeSend();
 
+// Motherboard quirk: the PC's power-on drags the USB 5 V rail down and the
+// board browns out. Every wake turns the backlights off while it goes out and
+// for this long after (always on since 2026-10-27, after it came back).
+static const uint32_t WAKE_DIM_MS = 200;
+
 static bool s_pending = false;
 static char s_action[16] = "";
 static char s_nonce[16] = "";
@@ -176,10 +181,6 @@ const char *screenshotRequest() {
 }
 
 const char *powerWake() {
-  if (!WAKE_DIM_BACKLIGHTS) return powerWakeSend();
-  // Motherboard quirk (WAKE_DIM_BACKLIGHTS in secrets.h): the PC's power-on
-  // drags the USB 5 V rail down and the board browns out. Backlights off while
-  // the wake goes out, back WAKE_DIM_MS later.
   bool wasIdle = backlightIsIdle();
   backlightIdle(true);
   logMsg("wake: backlights off for the wake");

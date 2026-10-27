@@ -638,6 +638,88 @@ static void drawGpuCard(LGFX_Sprite &c, int x, int y, const char *name, uint16_t
 }
 
 // Screen 1: PC stats face.
+// Power card (Display 1, where the C: card was): the whole setup's draw.
+// CPU and GPUs are measured (LHM package power); fans, RGB and this board are
+// estimates from what is known about them: fan power follows the cube of the
+// duty, the LEDs scale with PcHwCtl's brightness, the board with its
+// backlights. Values are watts at the wall side of the parts, PSU loss not
+// included.
+static const struct { const char *key; float maxW; } FAN_W[] = {
+  {"cpu_fans", 3.0f}, {"rear_fan", 1.5f}, {"front_fans", 4.5f}, {"water_pump", 4.0f}};
+static constexpr float RGB_W_FULL = 6.0f;      // every ARGB LED at 100 %, mixed colours
+static constexpr float BOARD_BASE_W = 0.6f;    // ESP32-S3 with Wi-Fi up, the status LED
+static constexpr float PANEL_BL_W = 0.25f;     // one panel's backlight at 100 %
+static constexpr uint16_t C_PWR = 0xFD46;      // #ffaa33
+
+static float fansWatts() {
+  float w = 0;
+  bool any = false;
+  for (auto &f : FAN_W) {
+    char k[32];
+    snprintf(k, sizeof k, "hw.%s.pct", f.key);
+    double pct = pcStat(k);
+    if (isnan(pct)) continue;
+    float d = (float)pct / 100.0f;
+    w += f.maxW * (0.15f + 0.85f * d * d * d);   // electronics + the fan law
+    any = true;
+  }
+  return any ? w : NAN;
+}
+
+static float rgbWatts() {
+  double b = pcStat("hw.rgb.bright");
+  if (isnan(b)) return NAN;
+  const char *mainRule = pcText("hw.rgb.main"), *ramRule = pcText("hw.rgb.ram");
+  bool off = strstr(mainRule, "off") == mainRule && strstr(ramRule, "off") == ramRule;
+  return off ? 0.0f : RGB_W_FULL * (float)b / 100.0f;
+}
+
+static float boardWatts() {
+  float w = BOARD_BASE_W;
+  if (!backlightIsIdle() && !backlightForcedOff()) {
+    uint8_t cap = backlightCapPct();
+    for (int i = 0; i < N_PANELS; i++) {
+      uint8_t pct = backlightPct(i) < cap ? backlightPct(i) : cap;
+      w += PANEL_BL_W * pct / 100.0f;
+    }
+  }
+  return w;
+}
+
+static void drawPowerCard(LGFX_Sprite &c, int x, int y) {
+  char buf[24];
+  drawCard(c, x, y, 114, 78);
+  double cpu = pcStat("cpu_power"), g1 = pcStat("gpu1_power"), g2 = pcStat("gpu2_power");
+  double gpu = isnan(g1) && isnan(g2) ? NAN : (isnan(g1) ? 0 : g1) + (isnan(g2) ? 0 : g2);
+  float fans = fansWatts(), rgb = rgbWatts(), board = boardWatts();
+  double fanLed = isnan(fans) && isnan(rgb) ? NAN : (isnan(fans) ? 0 : fans) + (isnan(rgb) ? 0 : rgb);
+  double total = board;
+  for (double v : {cpu, gpu, fanLed}) if (!isnan(v)) total += v;
+
+  c.setFont(fontSmall());
+  c.setTextColor(C_PWR);
+  c.setTextDatum(lgfx::textdatum_t::top_left);
+  c.drawString("POWER", x + 8, y + 6);
+  snprintf(buf, sizeof buf, "%.0f W", total);
+  c.setTextColor(sev(total, 300.0, 450.0));
+  c.setTextDatum(lgfx::textdatum_t::top_right);
+  c.drawString(buf, x + 106, y + 6);
+
+  const struct { const char *label; double w; const char *fmt; } rows[] = {
+    {"CPU", cpu, "%.0f W"}, {"GPU", gpu, "%.0f W"}, {"Fan+LED", fanLed, "~%.0f W"}, {"Board", board, "~%.1f W"}};
+  for (int i = 0; i < 4; i++) {
+    int ry = y + 23 + i * 13;
+    c.setTextColor(C_FAINT);
+    c.setTextDatum(lgfx::textdatum_t::top_left);
+    c.drawString(rows[i].label, x + 8, ry);
+    if (isnan(rows[i].w)) snprintf(buf, sizeof buf, "--");
+    else snprintf(buf, sizeof buf, rows[i].fmt, rows[i].w);
+    c.setTextColor(C_TEXT);
+    c.setTextDatum(lgfx::textdatum_t::top_right);
+    c.drawString(buf, x + 106, ry);
+  }
+}
+
 static void drawPcStats(LGFX_Sprite &c) {
   c.fillScreen(C_BG);
 
@@ -747,39 +829,7 @@ static void drawPcStats(LGFX_Sprite &c) {
   c.setTextDatum(lgfx::textdatum_t::top_right);
   c.drawString(buf, 110, 284);
 
-  // Drive C: card
-  drawCard(c, 122, 238, 114, 78);
-  c.setFont(fontSmall());
-  c.setTextColor(C_DISK);
-  c.setTextDatum(lgfx::textdatum_t::top_left);
-  c.drawString("C:", 130, 244);
-
-  double cUsed = pcStat("c_used");
-  double cTotal = pcStat("c_total");
-  double dp = (isnan(cUsed) || isnan(cTotal) || cTotal <= 0.0) ? NAN : (cUsed / cTotal);
-  if (isnan(dp)) {
-    snprintf(buf, sizeof(buf), "--");
-    c.setTextColor(C_DIM);
-  } else {
-    snprintf(buf, sizeof(buf), "%.0f%%", dp * 100.0);
-    c.setTextColor(sev(dp * 100.0, 85.0, 95.0));
-  }
-  c.setTextDatum(lgfx::textdatum_t::top_right);
-  c.drawString(buf, 228, 244);
-
-  if (isnan(cUsed) || isnan(cTotal)) snprintf(buf, sizeof(buf), "--");
-  else snprintf(buf, sizeof(buf), "%.0f/%.0f GB", cUsed, cTotal);
-  c.setTextColor(C_TEXT);
-  c.setTextDatum(lgfx::textdatum_t::top_left);
-  c.drawString(buf, 130, 264);
-
-  drawBar(c, 130, 284, 98, 6, isnan(dp) ? 0.0f : (float)dp, C_DISK);
-
-  if (isnan(cUsed) || isnan(cTotal)) snprintf(buf, sizeof(buf), "--");
-  else snprintf(buf, sizeof(buf), "%.0f GB free", cTotal - cUsed);
-  c.setTextColor(C_FAINT);
-  c.setTextDatum(lgfx::textdatum_t::top_left);
-  c.drawString(buf, 130, 296);
+  drawPowerCard(c, 122, 238);
 }
 
 // Screen 2: Media playback & uptime / network face.

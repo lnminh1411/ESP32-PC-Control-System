@@ -307,6 +307,26 @@ PcHwCtl answer. Each change is posted to #pc-announcement. "Night auto" is the
 automatic engage; "Start night now" engages it at once, at any hour, until
 input on the PC or "End night now".
 
+Guards against false triggers:
+
+- **Wake check.** Input during the night only ends it if the next 10 s show a
+  real return: more than 50 px of mouse travel, or 3 key / mouse button
+  presses (`pc.in_px`, `pc.in_press` from the user-session half). A bumped
+  mouse turns the displays off again and the night carries on.
+- **Video.** No automatic start while a process keeps the display on (a video
+  playing, a presentation): the service reads `powercfg /requests` every 10 s
+  (`pc.disp_req`, `pc.disp_req_by`). The PC Control tab shows who holds it.
+
+While engaged, the PC service also swaps Process Lasso's config
+(`C:\ProgramData\ProcessLasso\config\prolasso.ini`) for a copy that pins every
+non-critical background process to six E-cores (12-17 on the Core Ultra 7
+265K), and pins the running ones at once. The kernel and session processes,
+the desktop shell, audio, this stack, Process Lasso and its ProBalance
+exclusions are left alone. The original file is kept beside it
+(`prolasso.ini.esp32-night`) and goes back the moment the night ends, and every
+pinned process gets its old affinity back. If the board stops confirming the
+night for 5 minutes, the service restores the original by itself.
+
 Lock needs the PC stats service: the board has no keyboard to send Win+L, so
 the service starts `LockWorkStation` in the signed-in session.
 
@@ -330,22 +350,14 @@ Set it up with one line in secrets.h (keeps the config in one place):
 Empty (the default) disables the button: it answers "no screenshot webhook in
 secrets.h".
 
-`WAKE_DIM_BACKLIGHTS` (secrets.h, default false) is for motherboards that drag
-the USB 5 V rail down while the PC powers on from shutdown: the board browns
-out and restarts (`boot: last reset: brownout` in the log). With it on, a wake
-turns the backlights off while the WoL / USB wake goes out, for
-`WAKE_DIM_MS` after it (default 100 ms; 500 and 100 both tested fine). Seen on
-the author's board, both with Wake PC and with the PC's own power button;
-waking from sleep is not affected. Two of two shutdown-then-wake tests passed
-with it on.
-
-Status: not reproducible. Since 2026-10-26 the brownout no longer happens on
-the author's board, with the setting on or off, by Wake PC or by the PC's
-power button. The firmware changes in between don't touch what the board draws
-at power-on, so the cause is unknown. At power-on the status LED's slow blink
-now stalls for a few milliseconds and carries on, with no reset. A dip that
-no longer reaches the brownout threshold would look like that. The settings
-stay in as a safety measure.
+Some motherboards drag the USB 5 V rail down while the PC powers on from
+shutdown: the board browns out and restarts (`boot: last reset: brownout` in
+the log). Every wake therefore turns the backlights off while the WoL / USB
+wake goes out and for 200 ms after it (`WAKE_DIM_MS` in power.cpp). This used
+to be a secrets.h option; it is always on since the brownout came back on
+2026-10-27 (the author suspects capacitance on the motherboard bleeding off).
+Seen on the author's board, both with Wake PC and with the PC's own power
+button; waking from sleep is not affected.
 
 It does not cover a power-on from the PC's own power button, which never goes
 through the board. The real fix is a supply that the PC's power-on cannot pull

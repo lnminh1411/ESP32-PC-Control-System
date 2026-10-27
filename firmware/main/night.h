@@ -9,6 +9,11 @@
 // engage it again. At 06:00 the board side goes back at once; the LEDs go
 // back as soon as PcHwCtl answers (the PC is usually hibernating by then).
 // Start/End (by hand) engages it now, at any hour, until input or End.
+// Input only ends it if the next 10 s show a real return (> 50 px of mouse
+// travel or 3 presses, pc.in_px / pc.in_press); a bumped mouse turns the
+// displays off again. No automatic start while a process keeps the display on
+// (pc.disp_req: a video playing). Engaged/ended also goes to the PC service as
+// `!night 1|0` (every 30 s too): Process Lasso's E-core night config.
 
 #include <stdint.h>
 

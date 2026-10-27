@@ -16,7 +16,9 @@
 //
 // Feed "idle" (@source idle helper:idle), every second, for the board's night
 // mode: pc.idle_s = seconds since the last keyboard/mouse input in this
-// session (GetLastInputInfo).
+// session (GetLastInputInfo); pc.in_px = mouse travel in px and pc.in_press =
+// key and mouse button presses, both counting up (wrapping at 1,000,000), so
+// the board can tell a real return from a bumped mouse.
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -70,6 +72,15 @@ static partial class AgyQuota {
 
   [DllImport("user32.dll")]
   static extern bool GetLastInputInfo(ref LASTINPUTINFO info);
+
+  [DllImport("user32.dll")]
+  static extern short GetAsyncKeyState(int vKey);
+
+  [DllImport("user32.dll")]
+  static extern bool GetCursorPos(out MonPoint p);
+
+  [StructLayout(LayoutKind.Sequential)]
+  struct MonPoint { public int X, Y; }
 
   [DllImport("user32.dll")]
   static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
@@ -190,13 +201,46 @@ static partial class AgyQuota {
     }
   }
 
+  static double inPx, inPress;   // IdleLoop's counters, wrap at 1e6
+
+  // Mouse travel and key/button presses, polled every 25 ms (no hooks: a
+  // GetAsyncKeyState sweep is cheap and needs no message loop)
+  static void InputCountLoop() {
+    var down = new bool[256];
+    MonPoint last;
+    bool havePos = GetCursorPos(out last);
+    while (true) {
+      MonPoint p;
+      if (GetCursorPos(out p)) {
+        if (havePos) {
+          double dx = p.X - last.X, dy = p.Y - last.Y;
+          inPx = (inPx + Math.Sqrt(dx * dx + dy * dy)) % 1000000.0;
+        }
+        last = p;
+        havePos = true;
+      }
+      for (int vk = 1; vk < 255; vk++) {
+        if (vk >= 0x10 && vk <= 0x12) continue;   // Shift/Ctrl/Alt also report as their left/right keys
+        bool d = (GetAsyncKeyState(vk) & 0x8000) != 0;
+        if (d && !down[vk]) inPress = (inPress + 1) % 1000000.0;
+        down[vk] = d;
+      }
+      Thread.Sleep(25);
+    }
+  }
+
   // Seconds since the last input in this session, for the board's night mode
   static void IdleLoop() {
+    new Thread(InputCountLoop) { IsBackground = true, Name = "esp32_input" }.Start();
     while (true) {
       var lii = new LASTINPUTINFO { cbSize = (uint)Marshal.SizeOf(typeof(LASTINPUTINFO)) };
       if (GetLastInputInfo(ref lii)) {
         uint ms = (uint)Environment.TickCount - lii.dwTime;   // both wrap at 49.7 days together
-        SendFeed("idle", new List<string> { "pc.idle_s=" + (ms / 1000).ToString(CultureInfo.InvariantCulture) });
+        SendFeed("idle", new List<string> {
+          "pc.idle_s=" + (ms / 1000).ToString(CultureInfo.InvariantCulture),
+          "pc.in_px=" + Math.Floor(inPx).ToString(CultureInfo.InvariantCulture),
+          "pc.in_press=" + inPress.ToString(CultureInfo.InvariantCulture),
+        });
       }
       Thread.Sleep(1000);
     }

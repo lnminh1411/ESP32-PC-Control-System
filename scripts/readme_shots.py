@@ -41,6 +41,8 @@ BASE_STATS = {
     "gpu1_temp": 61, "gpu1_clock": 2450, "gpu1_load": 64, "gpu1_vram": 5120, "gpu1_vramt": 8176,
     "gpu2_temp": 58, "gpu2_clock": 1785, "gpu2_load": 41, "gpu2_vram": 4620, "gpu2_vramt": 6144,
     "c_used": 412.6, "c_total": 919.6, "net_up": 384000,
+    "gpu1_power": 72.4, "gpu2_power": 61.4, "hw.rgb.bright": 60, "hw.cpu_fans.pct": 48, "hw.rear_fan.pct": 45,
+    "hw.front_fans.pct": 42, "hw.water_pump.pct": 100,
     "media.ok": 1, "media.art_id": ART_ID, "media.playing": 1, "media.pos_s": 74, "media.len_s": 179,
     "claude.ok": 1, "claude.stale": 0, "claude.s_pct": 38, "claude.w_pct": 22,
     "agy.ok": 1, "agy2.flash_5h_pct": 64, "agy2.flash_wk_pct": 88,

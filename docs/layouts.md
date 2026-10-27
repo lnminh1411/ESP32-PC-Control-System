@@ -187,6 +187,7 @@ Streamed by the host PC stats service over USB HID / CDC:
 | `gpu2_clock`, `gpu2_vram` | number | GPU 2 clock & VRAM used | MHz, MB |
 | `igpu_load` | number | Integrated GPU load | % |
 | `c_used`, `c_total` | number | C: drive disk space | GB |
+| `cpu_power`, `gpu1_power`, `gpu2_power` | number | CPU package, RX 6600 and RTX 3050 power (Display 1's power card) | W |
 | `net_down`, `net_up` | number | Network traffic (scale `0.0009765625` to KB/s) | bytes/s |
 | `claude.s_pct` | number | Claude session quota consumed | % |
 | `claude.w_pct` | number | Claude weekly quota consumed | % |
