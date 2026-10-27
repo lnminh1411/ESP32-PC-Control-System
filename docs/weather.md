@@ -96,7 +96,8 @@ EMQX Cloud's Serverless broker is free up to a monthly allowance of session minu
 **Client footprint** (`owntracks.cpp`):
 - TLS over TCP only. The WebSocket transports are off in sdkconfig.defaults.
 - Keepalive 120 s.
-- Task stack 5120 B (default 6144). The TLS handshake runs on it, so check `bench usage` after the first connect.
+- Task stack 4096 B (default 6144). It peaked at 2.85 KB, TLS handshake included (`bench usage`, EMQX, 2026-10-27).
+- A bare broker address in `MQTT_URI` (as the EMQX console shows it) means TLS on port 8883.
 - 512 B receive buffer and 256 B send buffer. A location is about 300-450 B. A bigger message arrives in pieces and is joined in a temporary heap copy, up to 4 KB.
 
 ---

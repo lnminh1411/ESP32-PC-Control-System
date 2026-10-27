@@ -29,7 +29,7 @@
 // network port). Empty = OTA disabled.
 #define OTA_PASS ""
 
-// OwnTracks over MQTT (TLS, EMQX Cloud Serverless: mqtts://<address>:8883). Empty MQTT_URI = phone engine off.
+// OwnTracks over MQTT (TLS, EMQX Cloud Serverless: mqtts://<address>:8883, or the bare address = TLS on 8883). Empty MQTT_URI = phone engine off.
 #define MQTT_URI        ""
 #define MQTT_USER       ""
 #define MQTT_PASS       ""

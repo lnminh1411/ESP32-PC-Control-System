@@ -124,13 +124,20 @@ void owntracksStart() {
   if (!locMutex) locMutex = xSemaphoreCreateMutex();
 
   esp_mqtt_client_config_t cfg = {};
-  cfg.broker.address.uri = MQTT_URI;
+  if (strstr(MQTT_URI, "://")) {
+    cfg.broker.address.uri = MQTT_URI;
+  } else {
+    // a bare host name ("xxxx.emqxsl.com" as the console shows it): TLS on 8883
+    cfg.broker.address.hostname = MQTT_URI;
+    cfg.broker.address.transport = MQTT_TRANSPORT_OVER_SSL;
+    cfg.broker.address.port = 8883;
+  }
   cfg.broker.verification.crt_bundle_attach = esp_crt_bundle_attach;
   cfg.credentials.username = MQTT_USER;
   cfg.credentials.authentication.password = MQTT_PASS;
   cfg.network.timeout_ms = 10000;
   cfg.session.keepalive = 120;   // seconds; the phone publishes, the board only listens
-  cfg.task.stack_size = 5120;    // default 6144; the TLS handshake runs on this task, check `bench usage`
+  cfg.task.stack_size = 4096;    // default 6144; peak 2.85 KB with the TLS handshake (bench usage, 2026-10-27)
   cfg.buffer.size = 512;         // default 1024; bigger messages are joined in MQTT_EVENT_DATA
   cfg.buffer.out_size = 256;     // only CONNECT, SUBSCRIBE and PINGREQ go out
 
