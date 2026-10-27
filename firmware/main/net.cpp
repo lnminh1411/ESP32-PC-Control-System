@@ -227,11 +227,13 @@ static void wifiEventHandler(void *, esp_event_base_t event_base, int32_t event_
     // the address went away without a disconnect (DHCP lease lost): rejoin
     logMsg("wifi: lost the IP address, rejoining");
     ip[0] = 0;
-    downSinceMs = lastWifiEventMs = nowMs();
+    downSinceMs = nowMs();
+    lastWifiEventMs = downSinceMs;
     esp_wifi_disconnect();   // the disconnect event connects again
   } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
     ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
-    lastTrafficMs = lastWifiEventMs = nowMs();
+    lastTrafficMs = nowMs();
+    lastWifiEventMs = lastTrafficMs;
     snprintf(ip, sizeof ip, IPSTR, IP2STR(&event->ip_info.ip));
     logMsg("wifi: connected to %s, %s, %d dBm", WIFI_SSID, ip, netRssi());
     markAppValidOnce();
@@ -268,7 +270,8 @@ void netInit() {
   esp_wifi_set_ps(NET_WIFI_PS);
   e = esp_wifi_connect();
   if (e != ESP_OK) logMsg("wifi: connect failed (%s)", esp_err_to_name(e));
-  downSinceMs = lastWifiEventMs = nowMs();
+  downSinceMs = nowMs();
+  lastWifiEventMs = downSinceMs;
   wifiStarted = true;
   logMsg("wifi: joining %s", WIFI_SSID);
 }
@@ -288,7 +291,8 @@ static void netWatchdog() {
       esp_wifi_start();
       esp_wifi_set_ps(WIFI_PS_NONE);
       esp_wifi_connect();
-      downSinceMs = lastWifiEventMs = now;
+      downSinceMs = now;
+      lastWifiEventMs = now;
     } else if (now - lastWifiEventMs >= NET_STUCK_MS) {
       lastWifiEventMs = now;
       esp_wifi_connect();
