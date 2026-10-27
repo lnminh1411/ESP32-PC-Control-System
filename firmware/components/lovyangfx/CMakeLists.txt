@@ -5,7 +5,6 @@ set(LGFX_ROOT "${CMAKE_CURRENT_LIST_DIR}/LovyanGFX")
 set(LGFX_SRCS
   "${LGFX_ROOT}/src/lgfx/v1/lgfx_v1.cpp"
   "${LGFX_ROOT}/src/lgfx/v1/lgfx_v1_panel.cpp"
-  "${LGFX_ROOT}/src/lgfx/v1/lgfx_v1_touch.cpp"
   "${LGFX_ROOT}/src/lgfx/v1/lgfx_v1_platforms.cpp"
   "${LGFX_ROOT}/src/lgfx/v1/LGFXBase.cpp"
   "${LGFX_ROOT}/src/lgfx/v1/lgfx_fonts.cpp"
@@ -17,5 +16,6 @@ set(LGFX_SRCS
 idf_component_register(
   SRCS ${LGFX_SRCS}
   INCLUDE_DIRS "LovyanGFX/src"
-  REQUIRES nvs_flash efuse esp_lcd driver esp_timer esp_mm)
+  REQUIRES nvs_flash efuse esp_lcd esp_timer esp_mm
+           esp_driver_gpio esp_driver_spi esp_driver_ledc esp_driver_i2c esp_driver_i2s)
 target_compile_options(${COMPONENT_LIB} PRIVATE -w)   # third-party warnings
