@@ -21,6 +21,11 @@
 
 static bool otaStarted;
 static char ip[16];
+// Watchdogs for a link that stops coming back on its own (netPoll)
+static const uint32_t NET_SILENT_MS = 5 * 60 * 1000;    // up but no answers: rejoin
+static const uint32_t NET_STUCK_MS = 60 * 1000;         // down and no driver events: connect again
+static const uint32_t NET_RESTART_MS = 10 * 60 * 1000;  // down this long: restart the Wi-Fi driver
+static volatile uint32_t lastTrafficMs, lastWifiEventMs, downSinceMs;
 static httpd_handle_t otaServer;
 
 static bool constantTimeEq(const char *a, const char *b) {
@@ -193,6 +198,7 @@ static esp_err_t layoutPutHandler(httpd_req_t *req) {
 }
 
 static volatile bool scanning;   // `wifi scan` holds the reconnect off
+static bool wifiStarted;         // netInit got as far as connecting
 
 static void wifiEventHandler(void *, esp_event_base_t event_base, int32_t event_id, void *event_data) {
   if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
@@ -213,10 +219,19 @@ static void wifiEventHandler(void *, esp_event_base_t event_base, int32_t event_
       lastReasonMs = nowMs();
     }
     lastReason = reason;
+    if (ip[0]) downSinceMs = nowMs();
     ip[0] = 0;
+    lastWifiEventMs = nowMs();
     if (!scanning) esp_wifi_connect();
+  } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_LOST_IP) {
+    // the address went away without a disconnect (DHCP lease lost): rejoin
+    logMsg("wifi: lost the IP address, rejoining");
+    ip[0] = 0;
+    downSinceMs = lastWifiEventMs = nowMs();
+    esp_wifi_disconnect();   // the disconnect event connects again
   } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
     ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
+    lastTrafficMs = lastWifiEventMs = nowMs();
     snprintf(ip, sizeof ip, IPSTR, IP2STR(&event->ip_info.ip));
     logMsg("wifi: connected to %s, %s, %d dBm", WIFI_SSID, ip, netRssi());
     markAppValidOnce();
@@ -239,6 +254,7 @@ void netInit() {
 
   esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifiEventHandler, nullptr, nullptr);
   esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifiEventHandler, nullptr, nullptr);
+  esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_LOST_IP, &wifiEventHandler, nullptr, nullptr);
 
   esp_wifi_set_mode(WIFI_MODE_STA);
 
@@ -252,7 +268,38 @@ void netInit() {
   esp_wifi_set_ps(WIFI_PS_NONE);
   e = esp_wifi_connect();
   if (e != ESP_OK) logMsg("wifi: connect failed (%s)", esp_err_to_name(e));
+  downSinceMs = lastWifiEventMs = nowMs();
+  wifiStarted = true;
   logMsg("wifi: joining %s", WIFI_SSID);
+}
+
+void netNoteTraffic() { lastTrafficMs = nowMs(); }
+
+// Recovery the driver's own retries don't cover: no events at all while
+// down, a driver that stays down for many minutes, and an association that
+// is up but passes nothing (router hung, lease gone quietly)
+static void netWatchdog() {
+  if (!wifiStarted || scanning) return;
+  uint32_t now = nowMs();
+  if (!netUp()) {
+    if (now - downSinceMs >= NET_RESTART_MS) {
+      logMsg("wifi: down for %u min, restarting the Wi-Fi driver", (unsigned)((now - downSinceMs) / 60000));
+      esp_wifi_stop();
+      esp_wifi_start();
+      esp_wifi_set_ps(WIFI_PS_NONE);
+      esp_wifi_connect();
+      downSinceMs = lastWifiEventMs = now;
+    } else if (now - lastWifiEventMs >= NET_STUCK_MS) {
+      lastWifiEventMs = now;
+      esp_wifi_connect();
+    }
+    return;
+  }
+  if (now - lastTrafficMs >= NET_SILENT_MS) {
+    logMsg("wifi: no answers from the network for %u min, rejoining", (unsigned)((now - lastTrafficMs) / 60000));
+    lastTrafficMs = now;
+    esp_wifi_disconnect();   // the disconnect event connects again
+  }
 }
 
 // `wifi scan`: drops the connection attempt, lists every network the board
@@ -291,6 +338,7 @@ void netScan() {
 static volatile int rssiCached;
 
 void netPoll() {
+  netWatchdog();
   // RSSI read here, on the main loop, every 5 s: asking the Wi-Fi driver from
   // other tasks (the Discord panel) collides with it ("failed to get wifi thread sem")
   static uint32_t lastRssiMs;

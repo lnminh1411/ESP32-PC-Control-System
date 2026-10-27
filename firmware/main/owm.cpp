@@ -9,6 +9,7 @@
 #include <time.h>
 
 #include "log.h"
+#include "net.h"
 #include "secrets_or_example.h"
 
 static const float RAIN_MMH = 0.5f;   // what counts as rain: the Open-Meteo nowcast's threshold
@@ -91,6 +92,7 @@ static bool owmGet(const char *url, char *buf, size_t cap) {
     return false;
   }
   callsToday++;   // OpenWeather counts every answered request
+  netNoteTraffic();
   if (callsToday % 10 == 0) owmSaveCount();
   uint32_t now = (uint32_t)time(nullptr);
   if (status == 401) {

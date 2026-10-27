@@ -15,3 +15,6 @@ void netScan();                 // console `wifi scan`: log the networks the boa
 bool netUp();
 const char *netIp();            // "" while down
 int netRssi();                  // dBm, 0 while down
+// A network answer came back (Discord heartbeat ACK, an HTTP reply). With
+// Wi-Fi up but nothing for NET_SILENT_MS, netPoll rejoins the network.
+void netNoteTraffic();

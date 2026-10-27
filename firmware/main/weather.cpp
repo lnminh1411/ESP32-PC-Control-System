@@ -291,6 +291,7 @@ static bool httpGet(const char *url, char *buf, size_t cap, int *outStatus, int 
   int status = esp_http_client_get_status_code(client);
   if (outStatus) *outStatus = status;
   esp_http_client_cleanup(client);
+  if (err == ESP_OK && status > 0) netNoteTraffic();
 
   return (err == ESP_OK && status >= 200 && status < 300 && hb.len > 0);
 }

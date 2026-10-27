@@ -1769,6 +1769,7 @@ static void handleGatewayMessage(const char *jsonStr, size_t len) {
     }
     case 11: // heartbeat ACK
       gotAck = true;
+      netNoteTraffic();
       break;
     case 1: // server asks for a beat now
       heartbeat();
@@ -1864,10 +1865,9 @@ static void onGatewayEvent(void *, esp_event_base_t, int32_t event_id, void *eve
   }
 }
 
-static void botTask(void *) {
-  while (!netUp()) sleepMs(500);
-  registerCommands();
-
+// The gateway client; when it can't be created (low internal RAM at boot)
+// the bot loop tries again every 30 s
+static void gatewayStart() {
   esp_websocket_client_config_t ws_cfg = {};
   ws_cfg.uri = "wss://gateway.discord.gg/?v=10&encoding=json";
   ws_cfg.crt_bundle_attach = esp_crt_bundle_attach;
@@ -1885,14 +1885,25 @@ static void botTask(void *) {
     esp_err_t err = esp_websocket_client_start(ws);
     if (err != ESP_OK) logMsg("discord: gateway start failed (%s)", esp_err_to_name(err));
   } else {
-    logMsg("discord: gateway client init failed (internal RAM free %u)",
+    logMsg("discord: gateway client init failed (internal RAM free %u), retrying in 30 s",
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
   }
+}
+
+static void botTask(void *) {
+  while (!netUp()) sleepMs(500);
+  registerCommands();
+  gatewayStart();
+  uint32_t lastGatewayTryMs = nowMs();
 
   PcState lastPc = pcState();
   uint32_t lastLogPostMs = 0, lastCtlSyncMs = 0;
   bool ctlSynced = false;
   for (;;) {
+    if (!ws && netUp() && nowMs() - lastGatewayTryMs >= 30000) {
+      lastGatewayTryMs = nowMs();
+      gatewayStart();
+    }
     if (requestReconnect) {
       requestReconnect = false;
       if (ws) esp_websocket_client_close(ws, pdMS_TO_TICKS(1000));
