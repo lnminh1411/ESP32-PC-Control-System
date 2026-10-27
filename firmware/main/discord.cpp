@@ -1167,6 +1167,7 @@ static void panelLaterService() {
 }
 
 static uint32_t ctlLastCrc;      // the panel last sent, its clock left out
+static volatile uint32_t lastInteractionMs;   // any button, menu or slash command (0 = none yet)
 static uint32_t ctlRetryAtMs;    // after a rate limit (429): no edits until then
 
 // The panel's text without the footer's clock, which changes every time
@@ -1179,7 +1180,7 @@ static uint32_t panelCrc(const char *body) {
 }
 
 // Post the standing panel in #control, or bring the one there up to date.
-// Called every CONTROL_PANEL_REFRESH_MS; skips the edit when only the
+// Called every CONTROL_PANEL_REFRESH_MS while live; skips the edit when only the
 // clock would change, unless force.
 static void controlPanelSync(bool force) {
   if (!DISCORD_CH_CONTROL[0]) return;
@@ -1895,6 +1896,7 @@ static void handleGatewayMessage(const char *jsonStr, size_t len) {
           postChannelEmbed(DC_PC, "ESP32 PC Control is online", (netUp() && netIp()[0]) ? netIp() : "Wi-Fi down", 0x57F287);
         }
       } else if (!strcmp(t, "INTERACTION_CREATE")) {
+        lastInteractionMs = nowMs() | 1;   // the #control panel goes live (CONTROL_PANEL_LIVE_MS)
         if (data) ixEnqueue(data);   // handled in the bot task
       }
       break;
@@ -2034,12 +2036,15 @@ static void botTask(void *) {
       lastLogPostMs = nowMs();
       postLogBatch();
     }
-    // #control: posted once online, then brought up to date every
-    // CONTROL_PANEL_REFRESH_MS (only when something changed; every 10 min regardless)
-    if (ready && DISCORD_CH_CONTROL[0] && (!ctlSynced || nowMs() - lastCtlSyncMs >= CONTROL_PANEL_REFRESH_MS)) {
-      static uint32_t lastForcedMs;
-      bool force = !ctlSynced || !lastCtlSyncMs || nowMs() - lastForcedMs >= 10 * 60 * 1000;
-      if (force) lastForcedMs = nowMs();
+    // #control: posted once online. For CONTROL_PANEL_LIVE_MS after someone
+    // uses the bot it is brought up to date every CONTROL_PANEL_REFRESH_MS
+    // (when something changed); otherwise every 10 min and on PC changes.
+    // Discord caps edits to messages older than an hour, so no idle 5 s edits.
+    uint32_t sinceIx = nowMs() - lastInteractionMs;
+    bool live = lastInteractionMs && sinceIx < CONTROL_PANEL_LIVE_MS;
+    uint32_t every = live ? CONTROL_PANEL_REFRESH_MS : 10 * 60 * 1000;
+    if (ready && DISCORD_CH_CONTROL[0] && (!ctlSynced || !lastCtlSyncMs || nowMs() - lastCtlSyncMs >= every)) {
+      bool force = !ctlSynced || !lastCtlSyncMs || !live;
       ctlSynced = true;
       lastCtlSyncMs = nowMs();
       controlPanelSync(force);

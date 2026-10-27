@@ -195,7 +195,10 @@
 #define PCSTATS_STALE_MS 5000                     // values older than this read as missing (NAN / "")
 #endif
 #ifndef CONTROL_PANEL_REFRESH_MS
-#define CONTROL_PANEL_REFRESH_MS 5000             // #control panel: edited this often while something on it changes
+#define CONTROL_PANEL_REFRESH_MS 5000             // #control panel: edited this often while live (below), when something on it changed
+#endif
+#ifndef CONTROL_PANEL_LIVE_MS
+#define CONTROL_PANEL_LIVE_MS (3 * 60 * 1000)     // live this long after any interaction with the bot; else every 10 min
 #endif
 
 // ---- PC warnings (pcwarn.cpp; `pcwarn set` overrides per metric in NVS) ----
