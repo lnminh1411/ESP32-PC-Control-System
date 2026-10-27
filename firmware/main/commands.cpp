@@ -440,7 +440,11 @@ static void cmdLayout(const char *a1, const char *a2) {
 static void cmdHw(const char *, const char *) { hwConsole(""); }
 static void cmdAi(const char *, const char *) { aiConsole(""); }
 static void cmdMon(const char *, const char *) { monConsole(""); }
-static void cmdNight(const char *a1, const char *) { nightConsole(a1 ? a1 : ""); }
+static void cmdNight(const char *a1, const char *a2) {
+  char args[24];
+  snprintf(args, sizeof args, "%s%s%s", a1 ? a1 : "", a1 && a2 ? " " : "", a1 && a2 ? a2 : "");
+  nightConsole(args);
+}
 static void cmdPcWarn(const char *, const char *) { pcWarnCommand(""); }
 
 static const Command COMMANDS[] = {
@@ -458,7 +462,7 @@ static const Command COMMANDS[] = {
   {"hw",      "<ping | rgb ...>  (PcHwCtl via the PC)",       cmdHw},
   {"ai",      "<status | model ... | restart <name> | ...>  (LocalAIHost via the PC)", cmdAi},
   {"mon",     "<bright <n|all> <0-100> | power all on|off>  (PC monitors: DDC/CI brightness, Windows display off)", cmdMon},
-  {"night",   "[on|off|start|end|status]  (night mode: on/off = the automatic one; start/end = now)", cmdNight},
+  {"night",   "[on|off|start|end|low on|low off|status]  (night mode: on/off = the automatic one; start/end = now; low = low power mode)", cmdNight},
   {"screenshot", "  (secret PC screenshot to #logging, 5 min)", cmdScreenshot},
   {"led",     "<auto|on|off|sweep|0-100>",           cmdLed},
   {"pcsim",   "<on|off|auto>  (test: pretend the PC is on/off)", cmdPcSim},

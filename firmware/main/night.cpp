@@ -28,6 +28,12 @@ static const uint8_t PANEL_PCT = NIGHT_PANEL_PCT, STATUS_LED_PCT = NIGHT_STATUS_
 
 static bool enabled;
 static bool engaged;
+// Low power mode (by hand, saved): the night's Process Lasso config, PC LEDs
+// 10 %, panels 10 % (normal faces), status LED 20 %, at any hour, until
+// turned off. No display off, no sleep, input doesn't end it.
+static bool lowPower;
+static uint32_t lowPowerAtMin;           // minutes since midnight, for the status line
+static bool lowRgbPending;               // PC LEDs to lower once PcHwCtl answers
 static bool manual;                      // started by hand: no window, no idle needed
 static uint32_t engagedAtMin;            // minutes since midnight, for the status line
 static uint32_t engagedMs;               // input newer than this ends it
@@ -60,7 +66,7 @@ static float netAvg;                     // bytes/s, the busier of net_down / ne
 static char holdWhy[64];                 // why sleep waits, "" = it doesn't
 
 // Process Lasso's night config on the PC (Night.cs), repeated every 30 s
-static void lassoSend() { usbPcSendLine(engaged ? "!night 1\n" : "!night 0\n"); }
+static void lassoSend() { usbPcSendLine(engaged || lowPower ? "!night 1\n" : "!night 0\n"); }
 
 // counters that wrap at 1e6
 static double counted(const char *key, double from) {
@@ -78,6 +84,7 @@ static void saveNvs() {
   if (nvs_open("night", NVS_READWRITE, &h) != ESP_OK) return;
   nvs_set_u8(h, "on", enabled ? 1 : 0);
   nvs_set_i8(h, "rgb", savedRgb);
+  nvs_set_u8(h, "low", lowPower ? 1 : 0);
   nvs_commit(h);
   nvs_close(h);
 }
@@ -88,7 +95,10 @@ void nightInit() {
   uint8_t on = 0;
   if (nvs_get_u8(h, "on", &on) == ESP_OK) enabled = on;
   nvs_get_i8(h, "rgb", &savedRgb);
+  uint8_t low = 0;
+  if (nvs_get_u8(h, "low", &low) == ESP_OK) lowPower = low;
   nvs_close(h);
+  lowRgbPending = lowPower;
   rgbLowered = savedRgb >= 0;   // a restart while engaged: the LEDs are still at 10 %
 }
 
@@ -98,11 +108,24 @@ void nightWindowText(char *buf, uint32_t size) {
 
 static bool pcReachable() { return pcState() == PC_ON && pcStatsFresh() && pcStat("hw.ok") >= 1; }
 
-static void boardSide(bool night) {
-  screensNight = night;
-  backlightCap(night ? PANEL_PCT : 100);
-  ledCapSet(night ? STATUS_LED_PCT : 100);
+// PC-off faces while engaged; panels and status LED dimmed while engaged or in low power mode
+static void boardSide() {
+  screensNight = engaged;
+  bool dim = engaged || lowPower;
+  backlightCap(dim ? PANEL_PCT : 100);
+  ledCapSet(dim ? STATUS_LED_PCT : 100);
   viewsMarkDirty(-1);
+}
+
+// PC LEDs to 10 %, remembering the level once (a re-engage keeps the first one)
+static void rgbLower() {
+  float b = pcStat("hw.rgb.bright");
+  if (rgbLowered || isnan(b) || b <= RGB_PCT || !pcReachable()) return;
+  uint32_t id;
+  if (hwSend("rgb brightness 10", &id)) return;
+  savedRgb = (int8_t)lroundf(b);
+  rgbLowered = true;
+  saveNvs();
 }
 
 // PC LEDs back to what they were, now if PcHwCtl is there, else when it is
@@ -266,17 +289,8 @@ static void engage(bool byHand) {
   inputAtMs = engagedMs - (!isnan(idle) && idle > 0 && idle < 86400 ? (uint32_t)(idle * 1000) : 0);
   struct tm t;
   engagedAtMin = boardLocalTime(&t) ? t.tm_hour * 60 + t.tm_min : 0;
-  boardSide(true);
-  // PC LEDs: remember the level once (a re-engage keeps the first one)
-  float b = pcStat("hw.rgb.bright");
-  if (!rgbLowered && !isnan(b) && b > RGB_PCT && pcReachable()) {
-    uint32_t id;
-    if (!hwSend("rgb brightness 10", &id)) {
-      savedRgb = (int8_t)lroundf(b);
-      rgbLowered = true;
-      saveNvs();
-    }
-  }
+  boardSide();
+  rgbLower();
   uint32_t id;
   const char *err = monSend("power all off", &id);
   char rgbPct[8];
@@ -294,8 +308,15 @@ static void disengage(const char *why) {
   engaged = false;
   manual = false;
   guardUntilMs = 0;
-  boardSide(false);
+  boardSide();
   lassoSend();
+  if (lowPower) {
+    logMsg("night: off again (%s), low power mode stays on", why);
+    char what[160];
+    snprintf(what, sizeof what, "Over (%s); low power mode stays on (PC LEDs, panels and status LED stay dimmed)", why);
+    announce(what, 0xF1C40F);
+    return;
+  }
   rgbRestoreTry(false);   // the "back to normal" post covers it
   logMsg("night: off again (%s)%s", why, rgbLowered ? ", PC LEDs go back when PcHwCtl answers" : "");
   char what[160];
@@ -318,7 +339,14 @@ void nightPoll() {
   wasFresh = fresh;
   netAverage();
   powerFollow(now);
-  if (!engaged) rgbRestoreTry(true);   // owed from a morning or a restart
+  static bool lowApplied;
+  if (lowPower && !lowApplied) boardSide();   // after a restart in low power mode
+  lowApplied = true;
+  if (lowRgbPending && pcReachable()) {
+    lowRgbPending = false;
+    rgbLower();
+  }
+  if (!engaged && !lowPower) rgbRestoreTry(true);   // owed from a morning or a restart
   if (!enabled && !engaged) return;
   struct tm t;
   bool haveTime = boardLocalTime(&t);
@@ -379,6 +407,48 @@ void nightManual(bool on) {
   else if (!on && engaged) disengage("ended by hand");
 }
 
+void nightLowPower(bool on) {
+  if (on == lowPower) return;
+  lowPower = on;
+  saveNvs();
+  boardSide();
+  lassoSend();
+  char rgbPct[8], what[192];
+  snprintf(rgbPct, sizeof rgbPct, "%d %%", RGB_PCT);
+  if (on) {
+    struct tm t;
+    lowPowerAtMin = boardLocalTime(&t) ? t.tm_hour * 60 + t.tm_min : 0;
+    rgbLower();
+    lowRgbPending = !rgbLowered && !pcReachable();   // PC off or PcHwCtl not up: lower when it is
+    logMsg("night: low power mode on (PC LEDs %s)", rgbLowered ? rgbPct : "unchanged");
+    snprintf(what, sizeof what, "On by hand: Process Lasso night config (E-cores, efficiency mode), PC LEDs %s, board panels %d %%, status LED %d %%",
+             rgbLowered ? rgbPct : lowRgbPending ? "10 % once PcHwCtl answers" : "unchanged", PANEL_PCT, STATUS_LED_PCT);
+    discordPost(DC_PC, "Low power mode", what, 0x2C3E50);
+    return;
+  }
+  lowRgbPending = false;
+  if (engaged) {
+    logMsg("night: low power mode off, night mode still engaged");
+    discordPost(DC_PC, "Low power mode", "Off by hand; night mode is still engaged", 0xF1C40F);
+    return;
+  }
+  rgbRestoreTry(false);
+  logMsg("night: low power mode off%s", rgbLowered ? ", PC LEDs go back when PcHwCtl answers" : "");
+  snprintf(what, sizeof what, "Off by hand: Process Lasso day config, panels and status LED back to normal%s",
+           rgbLowered ? "; PC LEDs go back once the PC is on" : "");
+  discordPost(DC_PC, "Low power mode", what, 0xF1C40F);
+}
+
+bool nightLowPowerOn() { return lowPower; }
+
+void nightLowPowerStatus(char *buf, uint32_t size) {
+  if (lowPower)
+    snprintf(buf, size, "on since %02lu:%02lu (Lasso night config, LEDs %d %%, panels %d %%, status LED %d %%)",
+             (unsigned long)(lowPowerAtMin / 60), (unsigned long)(lowPowerAtMin % 60), RGB_PCT, PANEL_PCT, STATUS_LED_PCT);
+  else
+    snprintf(buf, size, "off");
+}
+
 bool nightEnabled() { return enabled; }
 bool nightEngaged() { return engaged; }
 
@@ -413,12 +483,17 @@ void nightConsole(const char *args) {
   else if (args && !strcmp(args, "off")) nightSetEnabled(false);
   else if (args && (!strcmp(args, "start") || !strcmp(args, "test"))) nightManual(true);
   else if (args && !strcmp(args, "end")) nightManual(false);
+  else if (args && !strcmp(args, "low on")) nightLowPower(true);
+  else if (args && !strcmp(args, "low off")) nightLowPower(false);
   else if (args && *args && strcmp(args, "status")) {
-    logMsg("night: usage night [on|off|start|end|status]");
+    logMsg("night: usage night [on|off|start|end|low on|low off|status]");
     return;
   }
   nightStatus(st, sizeof st);
   float idle = pcStat("pc.idle_s");
+  char low[112];
+  nightLowPowerStatus(low, sizeof low);
+  logMsg("night: low power %s", low);
   logMsg("night: %s | PC idle %s%.0f s, input %.0f px / %.0f presses, requests display %.0f system %.0f execution %.0f, heavy %.0f, net %.2f MB/s | %s",
          st, pcStat("idle.ok") >= 1 ? "" : "(stale) ", isnan(idle) ? -1.0f : idle, pcStat("pc.in_px"),
          pcStat("pc.in_press"), pcStat("pc.disp_req"), pcStat("pc.sys_req"), pcStat("pc.exec_req"), pcStat("pc.heavy"),

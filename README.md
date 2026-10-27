@@ -314,7 +314,7 @@ category dropdown; picking one swaps the controls below it:
 | Tab | Shows | Controls |
 |---|---|---|
 | Door | Door remote state | Door 1-4 |
-| PC Control | PC state, board Wi-Fi, night mode | Wake PC, Lock, Sleep, Hibernate; Restart, Shut down, PC reset (these ask first); Screenshot; Night auto on/off; Start / End night now |
+| PC Control | PC state, board Wi-Fi, night mode | Wake PC, Lock, Sleep, Hibernate; Restart, Shut down, PC reset (these ask first); Screenshot; Night auto on/off; Start / End night now; Low power on/off |
 | PC Case RGB LEDs | PcHwCtl's RGB rules and brightness | Mode, color and brightness dropdowns; target group (All, Motherboard, RAM) |
 | PC Fan Control | Each fan's speed, rpm and temperature, the RX 6600 and RTX 3050 included (with Zero RPM) | Target (All fans, Case fans, one case fan, RX 6600, RTX 3050), speed (held 5/15/60 min) and curve dropdowns; a Zero RPM dropdown in place of the curve for a GPU; Auto releases the override |
 | PC Monitor Control | Each monitor's power and brightness, numbered from the left | Target (one monitor or all), brightness in 10 % steps (DDC/CI); All screens on / off (each monitor's power method in PcHwCtl, plus Windows' display off) |
@@ -336,6 +336,14 @@ board side goes back at once, and the LEDs go back as soon as the PC and
 PcHwCtl answer. Each change is posted to #pc-announcement. "Night auto" is the
 automatic engage; "Start night now" engages it at once, at any hour, until
 input on the PC or "End night now".
+
+**Low power mode** (PC Control button "Low power", console `night low on|off`)
+is the night's power side by hand, at any hour, until turned off: Process
+Lasso's night config (E-cores in efficiency mode, heavy exes left alone, the
+same `!night 1` night mode sends), PC LEDs 10 %, board panels 10 % with their
+normal faces, status LED capped at 20 %. Displays stay on, the PC never sleeps,
+and input does not end it. It survives a board restart. On and off are posted
+to #pc-announcement and Pushover; a night that ends while it is on leaves it on.
 
 Guards against false triggers:
 

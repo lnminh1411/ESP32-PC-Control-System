@@ -853,6 +853,8 @@ static void buildEmbed(cJSON *embed, const char *footerText, bool standing) {
     addField(fields, "Board Wi-Fi", v);
     nightStatus(v, sizeof v);
     addField(fields, "Night mode", v);
+    nightLowPowerStatus(v, sizeof v);
+    addField(fields, "Low power mode", v);
     addPcStatsFields(fields);
   } else if (cat == CAT_RGB) {
     const char *mainRule = pcText("hw.rgb.main"), *ramRule = pcText("hw.rgb.ram");
@@ -958,7 +960,9 @@ static void buildEmbed(cJSON *embed, const char *footerText, bool standing) {
     addField(fields, "PSRAM", v);
     addField(fields, "Last restart", resetReasonText());
     if (ledMode() == LED_OFF) snprintf(v, sizeof v, "off");
-    else if (nightEngaged()) snprintf(v, sizeof v, "on, max %u %% (night: %d %%)", (unsigned)ledBrightness(), NIGHT_STATUS_LED_PCT);
+    else if (nightEngaged() || nightLowPowerOn())
+      snprintf(v, sizeof v, "on, max %u %% (%s: %d %%)", (unsigned)ledBrightness(), nightEngaged() ? "night" : "low power",
+               NIGHT_STATUS_LED_PCT);
     else snprintf(v, sizeof v, "on, max %u %%", (unsigned)ledBrightness());
     addField(fields, "Status LED", v);
   } else {
@@ -968,10 +972,11 @@ static void buildEmbed(cJSON *embed, const char *footerText, bool standing) {
       snprintf(v, sizeof v, "%s, %u %%", screensForce[i] == FACE_NONE ? "auto" : faceLabel(screensForce[i]), backlightPct(i));
       addField(fields, name, v);
     }
-    char nightDisp[40];
+    char nightDisp[40], lowDisp[32];
     snprintf(nightDisp, sizeof nightDisp, "night mode (%d %%, PC-off screens)", NIGHT_PANEL_PCT);
+    snprintf(lowDisp, sizeof lowDisp, "low power mode (%d %%)", NIGHT_PANEL_PCT);
     addField(fields, "Displays", backlightForcedOff() ? "off" : backlightIsIdle() ? "dark (PC asleep)" :
-                                 nightEngaged() ? nightDisp : "on");
+                                 nightEngaged() ? nightDisp : nightLowPowerOn() ? lowDisp : "on");
   }
 
   const char *ft = (footerText && footerText[0]) ? footerText :
@@ -1035,9 +1040,11 @@ static void buildComponents(cJSON *data, PanelView view, bool standing) {
     addButton(r, "Shut down", "shutdown", 4);
     addButton(r, "PC reset", "reset", 4);
     r = addRow(comps);
-    addButton(r, "Screenshot", "shot", 2);   // Refresh/Close share this row
     addButton(r, nightEnabled() ? "Night auto: on" : "Night auto: off", "night", nightEnabled() ? 1 : 2);
     addButton(r, nightEngaged() ? "End night now" : "Start night now", "night_now", nightEngaged() ? 3 : 2);
+    addButton(r, nightLowPowerOn() ? "Low power: on" : "Low power: off", "lowpower", nightLowPowerOn() ? 1 : 2);
+    r = addRow(comps);
+    addButton(r, "Screenshot", "shot", 2);   // Refresh/Close share this row
   } else if (cat == CAT_RGB) {
     // 5 rows: tabs, mode, color, brightness, then target group + Refresh/Close
     cJSON_DeleteItemFromArray(comps, cJSON_GetArraySize(comps) - 1);
@@ -1622,6 +1629,12 @@ static void onInteraction(cJSON *d) {
       ledModeSet(off ? LED_OFF : LED_AUTO);
       ledSettingsSave();
       snprintf(lastPanelResult, sizeof lastPanelResult, "Status LED %s", off ? "off" : "on");
+      sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
+    } else if (!strcmp(cid, "lowpower")) {
+      bool on = !nightLowPowerOn();
+      nightLowPower(on);
+      snprintf(lastPanelResult, sizeof lastPanelResult, "%s",
+               on ? "Low power mode on: Lasso night config, LEDs, panels and status LED dimmed" : "Low power mode off");
       sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
     } else if (!strcmp(cid, "night_now")) {
       bool start = !nightEngaged();

@@ -29,8 +29,15 @@ void nightInit();                  // NVS: the toggle, a pending LED restore
 void nightPoll();                  // main loop
 void nightSetEnabled(bool on);     // saved: the automatic 22:00-06:00 engage
 void nightManual(bool on);         // start now (any hour, no idle wait) / end now; input on the PC ends it too
+// Low power mode (PC Control button, console `night low on|off`, saved):
+// the night's Process Lasso config (`!night 1`), PC LEDs 10 %, board panels
+// 10 % with their normal faces, status LED 20 %, until turned off. Posts to
+// #pc-announcement (and Pushover).
+void nightLowPower(bool on);
+bool nightLowPowerOn();
+void nightLowPowerStatus(char *buf, uint32_t size);
 bool nightEnabled();
 bool nightEngaged();
 void nightStatus(char *buf, uint32_t size);   // one line for the panel and the console
 void nightWindowText(char *buf, uint32_t size);   // "22:00-06:00 after 15 min" (from settings.h)
-void nightConsole(const char *args);          // `night [on|off|start|end|status]`
+void nightConsole(const char *args);          // `night [on|off|start|end|low on|low off|status]`
