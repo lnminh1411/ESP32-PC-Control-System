@@ -67,7 +67,8 @@ OwnTracks sends GPS updates from your smartphone to your private MQTT broker.
    - **Tracker ID**: (e.g. `p1`)
 3. **Topic**:
    - Publishes to `owntracks/<username>/<device>`
-   - The ESP32 subscribes to `OWNTRACKS_TOPIC` (default `owntracks/#`).
+   - Set `OWNTRACKS_TOPIC` to that exact topic. With a wildcard (`owntracks/#`, the fallback when it is empty) the board also receives events, waypoints and other devices, and logs a hint.
+   - Turn on **Retain** in the app, so the broker hands the last location to the board right after it connects.
 4. **Payload format**:
    - Reads JSON location events with `"_type": "location"` containing `lat`, `lon`, `tst`, `acc`.
    - Location is considered valid while `tst` timestamp is `< 2 h` old.
@@ -88,9 +89,15 @@ HiveMQ Cloud provides a free serverless MQTT broker suitable for OwnTracks:
    #define MQTT_URI        "mqtts://<cluster-id>.s1.eu.hivemq.cloud:8883"
    #define MQTT_USER       "your_username"
    #define MQTT_PASS       "your_password"
-   #define OWNTRACKS_TOPIC "owntracks/#"
+   #define OWNTRACKS_TOPIC "owntracks/your_username/phone"
    ```
 6. Leaving `MQTT_URI` empty (`""`) keeps the phone engine disabled. Secrets are never logged to console or UART.
+
+**Client footprint** (`owntracks.cpp`):
+- TLS over TCP only. The WebSocket transports are off in sdkconfig.defaults.
+- Keepalive 120 s.
+- Task stack 5120 B (default 6144). The TLS handshake runs on it, so check `bench usage` after the first connect.
+- 512 B receive buffer and 256 B send buffer. A location is about 300-450 B. A bigger message arrives in pieces and is joined in a temporary heap copy, up to 4 KB.
 
 ---
 

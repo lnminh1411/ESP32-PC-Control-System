@@ -90,3 +90,6 @@ CONFIG_MDNS_MEMORY_ALLOC_SPIRAM=y
 # stacks trimmed to measured use + margin (bench usage, 2026-10-26)
 CONFIG_ESP_TIMER_TASK_STACK_SIZE=2560
 CONFIG_MDNS_TASK_STACK_SIZE=3584
+# OwnTracks MQTT is TLS over TCP only (mqtts://); the WebSocket transports were never used
+CONFIG_MQTT_TRANSPORT_WEBSOCKET=n
+CONFIG_MQTT_TRANSPORT_WEBSOCKET_SECURE=n

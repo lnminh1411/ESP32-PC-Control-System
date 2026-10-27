@@ -32,7 +32,7 @@
 #define MQTT_URI        ""
 #define MQTT_USER       ""
 #define MQTT_PASS       ""
-#define OWNTRACKS_TOPIC "owntracks/#"
+#define OWNTRACKS_TOPIC "owntracks/<user>/<device>"   // exact topic; a wildcard also brings events and other devices
 
 // Pushover notifications for rain alerts. Empty token/user = Pushover disabled.
 #define PUSHOVER_TOKEN  ""

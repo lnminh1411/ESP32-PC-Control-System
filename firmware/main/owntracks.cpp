@@ -7,6 +7,7 @@
 #include <math.h>
 #include <mqtt_client.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -30,6 +31,7 @@ static uint32_t phoneReceivedMs;
 static bool hasLocation;
 static bool clientStarted;
 static bool errLogged;
+static char *bigMsg;   // joins a message split across MQTT_EVENT_DATA events
 
 static double haversineKm(double lat1, double lon1, double lat2, double lon2) {
   constexpr double R = 6371.0;
@@ -50,11 +52,33 @@ static void mqttEventHandler(void *, esp_event_base_t, int32_t event_id, void *e
       const char *topic = OWNTRACKS_TOPIC[0] ? OWNTRACKS_TOPIC : "owntracks/#";
       esp_mqtt_client_subscribe(mqttClient, topic, 0);
       logMsg("owntracks: subscribed to %s", topic);
+      if (strpbrk(topic, "#+"))
+        logMsg("owntracks: wildcard topic also delivers events and other devices; set owntracks/<user>/<device>");
       break;
     }
     case MQTT_EVENT_DATA: {
       if (!event->data || event->data_len <= 0) break;
-      cJSON *root = cJSON_ParseWithLength(event->data, event->data_len);
+      // A message bigger than the 512 B buffer arrives in pieces: join them
+      // in a heap copy (rare; a location is ~300-450 B)
+      const char *msg = event->data;
+      int msgLen = event->data_len;
+      if (event->total_data_len > event->data_len) {
+        if (event->total_data_len > 4096) break;
+        if (event->current_data_offset == 0) {
+          free(bigMsg);
+          bigMsg = (char *)malloc(event->total_data_len);
+        }
+        if (!bigMsg || event->current_data_offset + event->data_len > event->total_data_len) break;
+        memcpy(bigMsg + event->current_data_offset, event->data, event->data_len);
+        if (event->current_data_offset + event->data_len < event->total_data_len) break;
+        msg = bigMsg;
+        msgLen = event->total_data_len;
+      }
+      cJSON *root = cJSON_ParseWithLength(msg, msgLen);
+      if (bigMsg) {
+        free(bigMsg);
+        bigMsg = nullptr;
+      }
       if (!root) break;
 
       cJSON *type = cJSON_GetObjectItem(root, "_type");
@@ -105,6 +129,10 @@ void owntracksStart() {
   cfg.credentials.username = MQTT_USER;
   cfg.credentials.authentication.password = MQTT_PASS;
   cfg.network.timeout_ms = 10000;
+  cfg.session.keepalive = 120;   // seconds; the phone publishes, the board only listens
+  cfg.task.stack_size = 5120;    // default 6144; the TLS handshake runs on this task, check `bench usage`
+  cfg.buffer.size = 512;         // default 1024; bigger messages are joined in MQTT_EVENT_DATA
+  cfg.buffer.out_size = 256;     // only CONNECT, SUBSCRIBE and PINGREQ go out
 
   mqttClient = esp_mqtt_client_init(&cfg);
   if (!mqttClient) {
