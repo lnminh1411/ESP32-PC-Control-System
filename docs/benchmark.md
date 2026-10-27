@@ -37,7 +37,8 @@ blocks). Four changes:
 1. Wi-Fi static TX buffers 16 -> 8 (`CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM`):
    with PSRAM on they default to static, ~1.6 KB each in internal RAM for good.
 2. mbedTLS: dynamic buffers, config data and CA chain freed after the
-   handshake, peer certificate not kept.
+   handshake, peer certificate not kept. (Dynamic buffers were turned off
+   again on 2026-10-27; see below.)
 3. Discord button clicks and slash commands handled in the bot task through a
    queue instead of in the websocket task: one REST TLS client instead of two,
    websocket task stack 12 -> 8 KB, and a slow PC command no longer holds the
@@ -153,3 +154,28 @@ Notes:
 - Wi-Fi throughput is low on purpose: 8 static RX and 8 static TX buffers and
   a BA window of 8 free internal RAM for TLS (see `sdkconfig.defaults`).
   Nothing on the board needs more than ~100 KB/s.
+
+## Build changes and TLS dynamic buffers off, 2026-10-27
+
+The build changes (MINIMAL_BUILD, lovyangfx driver requirements, cached IDF
+environment) were measured against the main build. Both builds carried the
+heapguard debug checker and light heap poisoning.
+
+With the build changes in, the board crash-looped about 50 s after each boot.
+Closing the GDACS cyclone download (200-350 KB over TLS) freed a corrupted
+mbedTLS dynamic-buffer block in internal RAM: 2 bytes were written past its
+end. `CONFIG_MBEDTLS_DYNAMIC_BUFFER` is now off.
+
+| | Before (main) | After (build changes, dynamic buffers off) |
+|---|---|---|
+| Internal free during the rounds | 75.5 KB | 77.9 KB |
+| Internal free, lowest ever since boot | 22 KB | 34 KB |
+| Largest internal block | 31.7 KB | 31.7 KB |
+| PSRAM free | 3.17 MB | 3.11 MB |
+| App image | 1591 KB | 1586 KB |
+| Core 1 (main loop) | 22.8 % | 21.8 % |
+| Wi-Fi download, 9 runs | 0.99-1.14 MB/s | 0.44-0.97 MB/s, one stall (radio) |
+| `bench usb 2048` CDC write | 0.23 MB/s | 0.14-0.22 MB/s (varies run to run) |
+| Incremental build | 33-42 s | 16-23 s |
+| Clean build | 269 s | 158-197 s |
+| Crashes | 0 | 0, through both cyclone fetches |

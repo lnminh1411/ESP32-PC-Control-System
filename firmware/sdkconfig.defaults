@@ -70,11 +70,12 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 # TLS: plain malloc, so small allocations (Wi-Fi WPA3 bignums) stay internal and the
 # 16 KB record buffers go to PSRAM (SPIRAM_MALLOC_ALWAYSINTERNAL=4096)
 CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC=y
-# TLS sessions hold less between records: buffers sized per record, config and
-# CA chain freed after the handshake, peer certificate not kept
-CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
-CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA=y
-CONFIG_MBEDTLS_DYNAMIC_FREE_CA_CERT=y
+# TLS dynamic buffers OFF: with them on, closing a large TLS download (GDACS
+# cyclone track, 200-350 KB) freed a corrupted mbedTLS buffer block (2 bytes
+# written past its end, multi_heap_free assert), which made the board crash-loop
+# on 2026-10-27. Off: stable through the same fetches, lowest-ever internal free
+# 22 -> 34 KB. Peer certificate still not kept.
+# CONFIG_MBEDTLS_DYNAMIC_BUFFER is not set
 # CONFIG_MBEDTLS_SSL_KEEP_PEER_CERTIFICATE is not set
 # Software AES: hardware AES needs DMA bounce buffers in internal RAM for PSRAM data
 CONFIG_MBEDTLS_HARDWARE_AES=n
