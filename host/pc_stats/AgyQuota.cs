@@ -157,18 +157,86 @@ static partial class AgyQuota {
       Log("claude: refresh token expires " + refreshUtc.ToLocalTime().ToString("ddd HH:mm", CultureInfo.InvariantCulture) +
           " -- run `claude auth login` before then");
     }
+    if (pendingOauth != null) { WritePendingClaudeToken(); return; }
     if (accessUtc - now > TimeSpan.FromMinutes(ClaudeRefreshLeadMin)) return;
     if (now - lastClaudeAttemptUtc < TimeSpan.FromMinutes(ClaudeRetryMin)) return;
+
+    // The refresh token rotates: a refresh lost halfway leaves only a dead
+    // token behind. So no attempt while the PC is offline, and a network
+    // failure is retried at once (the server may still take the old token
+    // for a moment) rather than in 5 minutes.
+    if (!Http.Reachable(ClaudeTokenHost, 3000)) {
+      if (!claudeOfflineLogged) { claudeOfflineLogged = true; Log("claude: token due, waiting for the network"); }
+      return;
+    }
+    claudeOfflineLogged = false;
     lastClaudeAttemptUtc = now;
 
-    try {
-      RefreshClaudeToken();
-    } catch (HttpFailure ex) {
-      int code = ex.Status;
-      Log("claude: token refresh failed (" + (code != 0 ? code.ToString(CultureInfo.InvariantCulture) : ex.Reason) + ")" +
-          (code == 400 || code == 401 ? " -- signed out? run `claude auth login`" : ""));
-    } catch (Exception ex) {
-      Log("claude: token refresh error: " + ex.GetType().Name);   // never the content
+    int[] retryWaitS = { 3, 10, 20 };
+    for (int attempt = 0; ; attempt++) {
+      try {
+        RefreshClaudeToken();
+        return;
+      } catch (HttpFailure ex) when (ex.Status == 0 && attempt < retryWaitS.Length) {
+        Log("claude: token refresh got no answer (" + ex.Reason + "), retrying in " + retryWaitS[attempt] + " s");
+      } catch (IOException ex) when (attempt < retryWaitS.Length) {
+        Log("claude: token refresh cut off (" + ex.GetType().Name + "), retrying in " + retryWaitS[attempt] + " s");
+      } catch (HttpFailure ex) {
+        int code = ex.Status;
+        Log("claude: token refresh failed (" + (code != 0 ? code.ToString(CultureInfo.InvariantCulture) : ex.Reason) + ")" +
+            (code == 400 || code == 401 ? " -- signed out? run `claude auth login`" : ""));
+        return;
+      } catch (Exception ex) {
+        Log("claude: token refresh error: " + ex.GetType().Name);   // never the content
+        return;
+      }
+      Thread.Sleep(retryWaitS[attempt] * 1000);
+    }
+  }
+
+  const string ClaudeTokenHost = "platform.claude.com";
+  static bool claudeOfflineLogged;
+  // A refreshed token not yet written to .credentials.json (file locked):
+  // the old refresh token is already dead, so this copy is the only good one
+  static Dictionary<string, object> pendingOauth;
+  static string pendingFromRefresh;
+
+  // Writes the refreshed fields onto the file's current state, if that state
+  // is still the one refreshed from. Retries a locked file for ~5 s.
+  static bool WriteClaudeToken(Dictionary<string, object> fresh, string usedRefresh) {
+    string path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), @".claude\.credentials.json");
+    for (int i = 0; i < 10; i++) {
+      try {
+        Dictionary<string, object> root = Json.ParseObject(File.ReadAllText(path));
+        Dictionary<string, object> oauth = root != null && root.ContainsKey("claudeAiOauth") ? root["claudeAiOauth"] as Dictionary<string, object> : null;
+        if (oauth == null || Convert.ToString(oauth["refreshToken"], CultureInfo.InvariantCulture) != usedRefresh) {
+          Log("claude: credentials changed during refresh, keeping the other process's token");
+          return true;
+        }
+        foreach (KeyValuePair<string, object> kv in fresh) oauth[kv.Key] = kv.Value;
+        string tmp = path + ".tmp." + Guid.NewGuid().ToString("N");
+        File.WriteAllText(tmp, Json.Write(root), new UTF8Encoding(false));
+        try {
+          File.Replace(tmp, path, null);
+        } catch (Exception) {
+          try { File.Delete(tmp); } catch (Exception) { }
+          throw;
+        }
+        return true;
+      } catch (IOException) {
+        Thread.Sleep(500);
+      } catch (UnauthorizedAccessException) {
+        Thread.Sleep(500);
+      }
+    }
+    return false;
+  }
+
+  static void WritePendingClaudeToken() {
+    if (WriteClaudeToken(pendingOauth, pendingFromRefresh)) {
+      pendingOauth = null;
+      pendingFromRefresh = null;
+      Log("claude: pending refreshed token written");
     }
   }
 
@@ -197,24 +265,23 @@ static partial class AgyQuota {
       return;
     }
 
-    // re-read: write only onto the state we refreshed from
-    Dictionary<string, object> root = Json.ParseObject(File.ReadAllText(path));
-    oauth = root != null && root.ContainsKey("claudeAiOauth") ? root["claudeAiOauth"] as Dictionary<string, object> : null;
-    if (oauth == null || Convert.ToString(oauth["refreshToken"], CultureInfo.InvariantCulture) != usedRefresh) {
-      Log("claude: credentials changed during refresh, keeping the other process's token");
+    // write only onto the state we refreshed from (WriteClaudeToken re-reads)
+    long nowMs = (long)(DateTime.UtcNow - UnixEpoch).TotalMilliseconds;
+    var fresh = new Dictionary<string, object>();
+    fresh["accessToken"] = resp["access_token"];
+    if (resp.ContainsKey("refresh_token") && resp["refresh_token"] != null) fresh["refreshToken"] = resp["refresh_token"];
+    long expiresAt = nowMs + (long)(Convert.ToDouble(resp["expires_in"], CultureInfo.InvariantCulture) * 1000);
+    fresh["expiresAt"] = expiresAt;
+    if (resp.ContainsKey("refresh_token_expires_in") && resp["refresh_token_expires_in"] != null)
+      fresh["refreshTokenExpiresAt"] = nowMs + (long)(Convert.ToDouble(resp["refresh_token_expires_in"], CultureInfo.InvariantCulture) * 1000);
+
+    if (!WriteClaudeToken(fresh, usedRefresh)) {
+      // keep it in memory and write it on the next ticks: losing it would sign us out
+      pendingOauth = fresh;
+      pendingFromRefresh = usedRefresh;
+      Log("claude: token refreshed but .credentials.json is locked, will keep trying to write it");
       return;
     }
-    long nowMs = (long)(DateTime.UtcNow - UnixEpoch).TotalMilliseconds;
-    oauth["accessToken"] = resp["access_token"];
-    if (resp.ContainsKey("refresh_token") && resp["refresh_token"] != null) oauth["refreshToken"] = resp["refresh_token"];
-    long expiresAt = nowMs + (long)(Convert.ToDouble(resp["expires_in"], CultureInfo.InvariantCulture) * 1000);
-    oauth["expiresAt"] = expiresAt;
-    if (resp.ContainsKey("refresh_token_expires_in") && resp["refresh_token_expires_in"] != null)
-      oauth["refreshTokenExpiresAt"] = nowMs + (long)(Convert.ToDouble(resp["refresh_token_expires_in"], CultureInfo.InvariantCulture) * 1000);
-
-    string tmp = path + ".tmp." + Guid.NewGuid().ToString("N");
-    File.WriteAllText(tmp, Json.Write(root), new UTF8Encoding(false));
-    File.Replace(tmp, path, null);
     Log("claude: token refreshed, valid until " + UnixEpoch.AddMilliseconds(expiresAt).ToLocalTime().ToString("ddd HH:mm", CultureInfo.InvariantCulture));
   }
 

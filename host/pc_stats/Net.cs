@@ -92,6 +92,19 @@ static class Http {
   static readonly HttpClient Client = NewClient(true);
   static readonly HttpClient Direct = NewClient(false);   // 127.0.0.1 never goes through a proxy
 
+  // True when a TCP connection to host:443 opens within timeoutMs: the PC is
+  // online and the host resolves. Lets callers wait out an outage instead of
+  // spending a request that must not fail halfway (a rotating token).
+  public static bool Reachable(string host, int timeoutMs) {
+    try {
+      using (var tcp = new System.Net.Sockets.TcpClient()) {
+        return tcp.ConnectAsync(host, 443).Wait(timeoutMs) && tcp.Connected;
+      }
+    } catch (Exception) {
+      return false;
+    }
+  }
+
   public static string Get(string url, IDictionary<string, string> headers, int timeoutMs, CancellationToken cancel = default(CancellationToken)) {
     return Send(HttpMethod.Get, url, null, headers, timeoutMs, cancel);
   }
