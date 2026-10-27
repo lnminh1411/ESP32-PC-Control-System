@@ -1,7 +1,8 @@
 // PC Monitor Control, user-session half: DDC/CI brightness on every physical
 // monitor (session 0 sees no monitors), VCP 0x10. Power is Windows' own
 // display off (SC_MONITORPOWER, every display at once, any input wakes them);
-// "on" nudges the mouse a pixel and back.
+// "on" nudges the mouse a pixel and back. The models in DdcPowerModels also
+// get DDC/CI power (VCP 0xD6) both ways.
 //
 // Monitors are numbered from the left. Feed "mon" (@source mon helper:mon),
 // sent every 5 s and right after each change:
@@ -12,7 +13,7 @@
 //   mon.<n>.power        1 on, 0 off/standby (DDC VCP 0xD6), -1 no DDC answer
 // Commands from the service ("M <id> <command>", answered "R <id> ok|err <why>"):
 //   bright <n|all> <0-100>
-//   power <n|all> on|off   (n is accepted, Windows turns every display off)
+//   power <n|all> on|off   (Windows turns every display off; DDC power only for monitor n)
 //
 // Feed "idle" (@source idle helper:idle), every second, for the board's night
 // mode: pc.idle_s = seconds since the last keyboard/mouse input in this
@@ -108,6 +109,13 @@ static partial class AgyQuota {
   // the feed reports what was just set until then (index -> value, expiry)
   const int SetHoldMs = 15000;
   static readonly Dictionary<int, KeyValuePair<int, DateTime>> setBright = new Dictionary<int, KeyValuePair<int, DateTime>>();
+  static readonly Dictionary<int, KeyValuePair<int, DateTime>> setPower = new Dictionary<int, KeyValuePair<int, DateTime>>();
+
+  // Models whose DDC/CI power (VCP 0xD6) follows "power on|off", next to
+  // Windows' display off. Off is DPM off (4): the monitor still answers DDC
+  // and wakes on power on or on input.
+  static readonly string[] DdcPowerModels = { "DELL E1715S" };
+  const uint DdcPowerOff = 4;
 
   static int Held(Dictionary<int, KeyValuePair<int, DateTime>> held, int i, int read) {
     KeyValuePair<int, DateTime> v;
@@ -185,7 +193,7 @@ static partial class AgyQuota {
           lines.Add(k + "name=" + mons[i].Name);
           lines.Add(k + "main=" + (mons[i].Main ? 1 : 0));
           lines.Add(k + "bright=" + Held(setBright, i, mons[i].Bright));
-          lines.Add(k + "power=" + mons[i].Power);
+          lines.Add(k + "power=" + (mons[i].Power < 0 ? -1 : Held(setPower, i, mons[i].Power)));
         }
       } finally {
         FreeMonitors(owned);
@@ -246,6 +254,29 @@ static partial class AgyQuota {
     }
   }
 
+  // DDC/CI power (VCP 0xD6) for the target monitors whose model is in
+  // DdcPowerModels; the rest only get Windows' display off. "" when every
+  // monitor answered, else "no DDC answer from monitor 3"
+  static string DdcPower(string target, bool on) {
+    lock (ddcLock) {
+      var owned = new List<PHYSICAL_MONITOR[]>();
+      try {
+        List<Mon> mons = ScanMonitors(false, owned);
+        var failed = new List<string>();
+        for (int i = 0; i < mons.Count; i++) {
+          if (target != "all" && target != (i + 1).ToString(CultureInfo.InvariantCulture)) continue;
+          if (Array.IndexOf(DdcPowerModels, mons[i].Name) < 0) continue;
+          if (!WriteVcp(mons[i].Handle, VCP_POWER, on ? 1u : DdcPowerOff))
+            failed.Add((i + 1).ToString(CultureInfo.InvariantCulture));
+          else setPower[i] = new KeyValuePair<int, DateTime>(on ? 1 : 0, DateTime.UtcNow.AddMilliseconds(SetHoldMs));
+        }
+        return failed.Count > 0 ? "no DDC answer from monitor " + string.Join(", ", failed) : "";
+      } finally {
+        FreeMonitors(owned);
+      }
+    }
+  }
+
   // "bright 2 50", "power all off": "ok" or "err <why>"
   static string MonitorCommand(string command) {
     Match m = MonCmdRegex.Match(command.Trim());
@@ -255,16 +286,19 @@ static partial class AgyQuota {
     if (verb == "bright") {
       if (!int.TryParse(arg, NumberStyles.Integer, CultureInfo.InvariantCulture, out pct) || pct < 0 || pct > 100) return "err brightness is 0-100";
     } else if (arg == "on" || arg == "off") {
-      // Windows' display off rather than the monitors' DDC standby: a
-      // DisplayPort monitor in DDC standby drops out of Windows and can't be
-      // reached to wake it again
-      if (arg == "off") {
+      // Windows' display off for every monitor, plus DDC power for the models
+      // in DdcPowerModels: off = DDC standby before Windows blanks them, on =
+      // Windows wakes them, then DDC power on
+      bool on = arg == "on";
+      if (!on) {
+        string ddc = DdcPower(target, false);
         if (!PostMessage(HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, (IntPtr)2)) return "err display off not sent";
-      } else {
-        mouse_event(MOUSEEVENTF_MOVE, 0, 1, 0, UIntPtr.Zero);
-        mouse_event(MOUSEEVENTF_MOVE, 0, -1, 0, UIntPtr.Zero);
+        return ddc.Length > 0 ? "ok, " + ddc : "ok";
       }
-      return "ok";
+      mouse_event(MOUSEEVENTF_MOVE, 0, 1, 0, UIntPtr.Zero);
+      mouse_event(MOUSEEVENTF_MOVE, 0, -1, 0, UIntPtr.Zero);
+      string ddcOn = DdcPower(target, true);
+      return ddcOn.Length > 0 ? "ok, " + ddcOn : "ok";
     } else {
       return "err power is on or off";
     }

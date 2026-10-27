@@ -243,7 +243,7 @@ One per line on the USB CDC console or the CH343 UART:
 | `pcsim <on\|off\|auto>` | Pretend the PC is on or off (LED, faces, backlights), for testing |
 | `door <1-4> [ms]`, `reset`, `reboot` | Press a door button; pulse the motherboard reset; restart the board itself |
 | `screenshot` | Post the PC's desktop to #logging for 5 min, then auto-delete (needs the service + a #logging webhook) |
-| `mon <bright <n\|all> <0-100> \| power all on\|off>` | The PC's monitors, numbered from the left: brightness over DDC/CI, power with Windows' display off (done by the service's user-session half) |
+| `mon <bright <n\|all> <0-100> \| power all on\|off>` | The PC's monitors, numbered from the left: brightness over DDC/CI, power with Windows' display off plus DDC/CI power for the two DELLs (done by the service's user-session half) |
 | `night [on\|off\|start\|end\|status]` | Night mode: on/off = the automatic engage (saved); start/end = now, until input on the PC |
 | `wake [force \| mac <AA:BB:..>]`, `power <sleep\|hibernate\|restart\|shutdown\|lock>` | Wake-on-LAN; power commands over USB (`lock` locks the signed-in session) |
 | `going <restart\|shutdown\|update_restart\|update_shutdown\|sleep\|clear>` | Tell the board what the PC is about to do |
@@ -294,7 +294,7 @@ category dropdown; picking one swaps the controls below it:
 | PC Control | PC state, board Wi-Fi, night mode | Wake PC, Lock, Sleep, Hibernate; Restart, Shut down, PC reset (these ask first); Screenshot; Night auto on/off; Start / End night now |
 | PC Case RGB LEDs | PcHwCtl's RGB rules and brightness | Mode, color and brightness dropdowns; target group (All, Motherboard, RAM) |
 | PC Fan Control | Each fan's speed, rpm and temperature, the RX 6600 and RTX 3050 included (with Zero RPM) | Target (All fans, Case fans, one case fan, RX 6600, RTX 3050), speed (held 5/15/60 min) and curve dropdowns; a Zero RPM dropdown in place of the curve for a GPU; Auto releases the override |
-| PC Monitor Control | Each monitor's power and brightness, numbered from the left | Target (one monitor or all), brightness in 10 % steps (DDC/CI); All screens on / off (Windows' display off, every display at once) |
+| PC Monitor Control | Each monitor's power and brightness, numbered from the left | Target (one monitor or all), brightness in 10 % steps (DDC/CI); All screens on / off (Windows' display off, every display at once, plus DDC/CI power for the two DELLs) |
 | Local Agent Control | Local model, phase, context, auto-unload | Load, unload, reload, context size, auto-unload, keep awake; restart the stack's services |
 | ESP32 Board Control | Uptime, Wi-Fi, internal RAM, PSRAM, last restart reason, status LED | Status LED max brightness (10 % steps) and on/off (both saved); Restart board (asks first), Refresh weather, Reconnect Discord |
 | ESP32 Display Control | Each panel's screen and backlight | A screen dropdown per panel (each with an Auto option; not saved, like `face`); a brightness dropdown for all panels (5 % steps + Off, saved) |
