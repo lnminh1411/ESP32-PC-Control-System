@@ -16,6 +16,7 @@
 #include "pc_state.h"
 #include "pc_going.h"
 #include "pcstats.h"
+#include "settings_or_example.h"
 #include "sys.h"
 
 #define C_BG     0x0000
@@ -30,7 +31,7 @@ static char lastAction[40] = "none";
 static uint32_t lastActionMs = 0;
 
 // Dynamic FPS engine state
-static uint8_t busBudgetPct = 85;
+static uint8_t busBudgetPct = VIEW_BUS_BUDGET_PCT;
 static uint8_t panelCapFps[N_PANELS] = {0, 0, 0};   // 0 = off (default 20 cap)
 static uint32_t boostUntilMs[N_PANELS] = {0, 0, 0};
 static bool panelDirty[N_PANELS] = {true, true, true};
@@ -144,8 +145,8 @@ void viewsMarkDirty(int panel) {
 static uint32_t getMinFrameMs(int panel) {
   uint8_t cap = panelCapFps[panel];
   if (cap >= 1 && cap <= 60) return 1000 / cap;
-  if (panels[panel].gifMode) return 16;   // GIFs keep their own frame times (up to 60 fps)
-  return 50;   // default 20 fps cap (MIN_FRAME_MS)
+  if (panels[panel].gifMode) return VIEW_GIF_MIN_FRAME_MS;   // GIFs keep their own frame times (up to 60 fps)
+  return VIEW_MIN_FRAME_MS;   // default 20 fps cap
 }
 
 static float getExpectedBytes(int panel) {
@@ -362,7 +363,7 @@ static void drawMetrics(Panel &p, int panelIdx) {
   const int rowH = c.fontHeight();
   const int ROWS_PER_PAGE = (TFT_H - 30) / rowH;
   int numPages = count > 0 ? ((count + ROWS_PER_PAGE - 1) / ROWS_PER_PAGE) : 1;
-  uint32_t page = (nowMs() / 5000) % (uint32_t)numPages;
+  uint32_t page = (nowMs() / VIEW_METRICS_PAGE_MS) % (uint32_t)numPages;
   int pageStart = (int)page * ROWS_PER_PAGE;
   int pageItems = count - pageStart;
   if (pageItems > ROWS_PER_PAGE) pageItems = ROWS_PER_PAGE;

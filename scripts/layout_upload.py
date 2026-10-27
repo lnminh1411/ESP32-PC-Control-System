@@ -14,7 +14,8 @@ import serial
 
 
 def find_ota_pass(repo_root):
-    candidates = [
+    candidates = [   # settings.h; secrets.h is its old name
+        os.path.join(repo_root, "firmware", "main", "settings.h"),
         os.path.join(repo_root, "firmware", "main", "secrets.h"),
     ]
     for path in candidates:
@@ -169,7 +170,7 @@ def main():
     parser.add_argument("file", help="Path to layout JSON file")
     parser.add_argument("--port", default=None, help="Serial port (e.g. COM12)")
     parser.add_argument("--host", default=None, help="Target hostname or IP address (e.g. esp32-pc-control.local)")
-    parser.add_argument("--password", default=None, help="OTA password for HTTP PUT (default: read from secrets.h)")
+    parser.add_argument("--password", default=None, help="OTA password for HTTP PUT (default: read from settings.h)")
     parser.add_argument("--baud", type=int, default=115200, help="Serial baud rate (default: 115200)")
     args = parser.parse_args()
 

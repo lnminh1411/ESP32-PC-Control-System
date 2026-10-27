@@ -261,10 +261,33 @@ python scripts/idf_flash.py --no-build
 `idf_flash.py` stops the PC stats service, reboots the board into the ROM
 with a 1200-baud touch, flashes over the ROM's USB-Serial-JTAG port and
 starts the service again. `--idf coredump-info` runs any other `idf.py`
-action on that port instead. Wi-Fi, Discord and OTA settings go in
-`main/secrets.h` (copy `secrets_example.h`; the real file is gitignored).
-Adding or removing `secrets.h` re-runs CMake and recompiles `main` by itself;
-the image is about 1.5 MB with it and about 1.1 MB without.
+action on that port instead.
+
+### Settings
+
+Everything that describes this setup lives in one file,
+`firmware/main/settings.h` (gitignored; copy `settings_example.h` to start).
+The secrets come first (Wi-Fi, Discord, OTA, MQTT, Pushover, Wake-on-LAN,
+OpenWeather), then about 140 settings grouped by topic: board pins and
+panels, night mode hours and levels, PC warning thresholds, GPU and drive
+labels, PcHwCtl fan and RGB names, weather and rain thresholds, poll periods,
+and the PC helper's `HOST_*` keys (Process Lasso path and night E-cores,
+named pipes, adapters to skip, fonts). Every key has a default equal to the
+old hardcoded value in `settings_or_example.h`, so a key missing from
+`settings.h` behaves as before. Without a `settings.h` (CI) the build uses
+`settings_example.h`: placeholders, nothing joins a network.
+
+- After editing `settings.h`, touch `firmware/main/settings_or_example.h`
+  before building (ccache's direct mode once handed back a stale image; a
+  real image is ~1.6 MB, a placeholder one ~1.1 MB). CMake re-runs on its
+  own when `settings.h` appears or goes away.
+- `host/pc_stats/build.cmd` reads only the `HOST_*` keys
+  (`gen_settings.ps1` -> `Settings.g.cs`), so no secret ends up in the exe.
+  Changing one means rebuilding and reinstalling the helper.
+- The sensor map (which LibreHardwareMonitor sensor feeds `cpu_temp`,
+  `gpu1_*`, the fans, ...) stays in `host/pc_stats/stats.ini`, read at run
+  time next to the exe.
+- `scripts/check_pins.py` checks the `PIN_*` settings against `pcb/main.ato`.
 
 The build compiles only the ESP-IDF components `main` needs (`MINIMAL_BUILD`).
 `idf.cmd` caches what ESP-IDF's `export.bat` sets in
@@ -272,7 +295,7 @@ The build compiles only the ESP-IDF components `main` needs (`MINIMAL_BUILD`).
 after reinstalling or moving ESP-IDF.
 
 The Discord bot uses up to four channels, each set by its channel id in
-`secrets.h` and off when empty:
+`settings.h` and off when empty:
 
 | Key | Channel | Posts |
 |---|---|---|
@@ -340,7 +363,7 @@ the service starts `LockWorkStation` in the signed-in session.
 **Screenshot** (PC Control) captures the whole desktop (every monitor in one
 image) and posts it to a Discord webhook for 5 minutes, then deletes the post;
 the local file in `%temp%` is removed as soon as it is uploaded. The board only
-asks (`!shot` over HID, with the webhook from secrets.h); the capture, overlay
+asks (`!shot` over HID, with the webhook from settings.h); the capture, overlay
 and upload run in the signed-in session, because the SYSTEM service cannot see
 the desktop. Right after the capture, a red border and "Screenshot Captured" in
 red show on every monitor for 5 s - these are drawn *after* the capture, so they
@@ -348,20 +371,20 @@ are never in the image. If nobody is logged in (locked / login screen) it just
 logs and does nothing; two presses close together are coalesced (the second is
 dropped while the first is in flight).
 
-Set it up with one line in secrets.h (keeps the config in one place):
+Set it up with one line in settings.h (keeps the config in one place):
 
 1. In Discord: #logging -> Edit Channel -> Integrations -> Webhooks -> New
    Webhook -> Copy Webhook URL.
-2. `#define DISCORD_SHOT_WEBHOOK "https://discord.com/api/webhooks/..."` in secrets.h.
+2. `#define DISCORD_SHOT_WEBHOOK "https://discord.com/api/webhooks/..."` in settings.h.
 
 Empty (the default) disables the button: it answers "no screenshot webhook in
-secrets.h".
+settings.h".
 
 Some motherboards drag the USB 5 V rail down while the PC powers on from
 shutdown: the board browns out and restarts (`boot: last reset: brownout` in
 the log). Every wake therefore turns the backlights off while the WoL / USB
-wake goes out and for 200 ms after it (`WAKE_DIM_MS` in power.cpp). This used
-to be a secrets.h option; it is always on since the brownout came back on
+wake goes out and for 200 ms after it (`POWER_WAKE_DIM_MS` in settings.h). It
+used to be a switch; it is always on since the brownout came back on
 2026-10-27 (the author suspects capacitance on the motherboard bleeding off).
 Seen on the author's board, both with Wake PC and with the PC's own power
 button; waking from sleep is not affected.
@@ -485,7 +508,7 @@ Rev 3.1 is fabricated and assembled, and the firmware runs on it:
 - the eFuse fix: no more keyfob presses while flashing.
 
 Still to do:
-- fill `secrets.h` (Wi-Fi, Discord, OTA), then test Wake-on-LAN, the
+- fill `settings.h` (Wi-Fi, Discord, OTA), then test Wake-on-LAN, the
   Discord bot, OTA and live weather (`weather home <lat>,<lon>`);
 - test the USB power commands and door buttons B1-B4 on the real PC and
   keyfob;

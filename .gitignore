@@ -10,8 +10,12 @@ pcb/build/
 # Python
 __pycache__/
 
-# Firmware credentials (copy secrets_example.h -> secrets.h)
+# Firmware secrets + settings (copy settings_example.h -> settings.h); secrets.h is the old name
+firmware/**/settings.h
 firmware/**/secrets.h
+
+# Host settings generated from settings.h by gen_settings.ps1
+host/pc_stats/Settings.g.cs
 
 host/pc_stats/vendor/
 host/pc_stats/build/

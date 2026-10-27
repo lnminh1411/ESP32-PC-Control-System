@@ -35,7 +35,7 @@ Run `build.cmd` from Command Prompt:
 ```cmd
 host\pc_stats\build.cmd
 ```
-Runs `dotnet publish` on `ESP32-Helper.csproj` and leaves one self-contained, single-file `build\ESP32-Helper.exe` (~58 MB, .NET 10 runtime included, nothing to install on the PC that runs it). Building needs the .NET 10 SDK; packages come from nuget.org through the repo's `nuget.config`.
+First `gen_settings.ps1` writes `Settings.g.cs` (gitignored) from the `HOST_*` keys of `firmware\main\settings.h` (defaults in `settings_or_example.h`, `settings_example.h` when there is no `settings.h`); it reads no other key, so no secret ends up in the exe. Then it runs `dotnet publish` on `ESP32-Helper.csproj` and leaves one self-contained, single-file `build\ESP32-Helper.exe` (~58 MB, .NET 10 runtime included, nothing to install on the PC that runs it). Building needs the .NET 10 SDK; packages come from nuget.org through the repo's `nuget.config`.
 
 Sensors come from the `LibreHardwareMonitorLib` package, which reads low-level hardware (Super I/O, CPU MSRs) through the **PawnIO** driver. Install PawnIO once (`winget install namazso.PawnIO`); without it those sensors read empty. `--list` shows what is available.
 
@@ -332,7 +332,7 @@ The user-session half (`Monitors.cs`) talks DDC/CI to every physical monitor thr
 
 The user half also sends the `idle` feed every second (`@source idle helper:idle 1000`): `pc.idle_s`, seconds since the last keyboard or mouse input in the session (`GetLastInputInfo`), for the board's night mode, plus `pc.in_px` (mouse travel) and `pc.in_press` (key and button presses), counters the board uses to tell a real return from a bumped mouse.
 
-Night mode, service side (`Night.cs`): `pc.disp_req` = 1 while a process holds a display-required power request (`powercfg /requests` every 10 s, so the service needs admin), `pc.disp_req_by` names it; the board does not start night mode then. `!night 1` from the board swaps Process Lasso's `prolasso.ini` for a copy that pins every non-critical background process to E-cores 12-17 and pins the running ones; `!night 0` copies the original back (kept as `prolasso.ini.esp32-night`) and restores each process's affinity. The board repeats its state every 30 s; after 5 min without it the original goes back.
+Night mode, service side (`Night.cs`): `pc.disp_req` = 1 while a process holds a display-required power request (`powercfg /requests` every 10 s, so the service needs admin), `pc.disp_req_by` names it; the board does not start night mode then. `!night 1` from the board swaps Process Lasso's `prolasso.ini` for a copy that pins every non-critical background process to the cores in `HOST_NIGHT_CORES` (E-cores 12-17; processes in `HOST_NIGHT_KEEP` are left alone) and pins the running ones; `!night 0` copies the original back (kept as `prolasso.ini.esp32-night`) and restores each process's affinity. The board repeats its state every 30 s; after `HOST_NIGHT_NO_WORD_MIN` (5) min without it the original goes back.
 
 ```cmd
 ESP32-Helper.exe --monitors                 # list monitors with brightness and power

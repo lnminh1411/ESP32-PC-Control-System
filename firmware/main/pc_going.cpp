@@ -12,6 +12,7 @@
 #include "pcstats.h"
 #include "sys.h"
 #include "views.h"
+#include "settings_or_example.h"
 
 static GoingKind latchedKind = GO_NONE;
 static char latchedBy[64] = "";
@@ -29,11 +30,11 @@ static uint32_t seqAtOff = 0;               // stats sample count when the PC la
 // restart runs "Updates are underway" before any service starts and may
 // restart a few more times, so "back" means fresh stats, not just USB.
 static uint32_t preOffMs(GoingKind k) {
-  return (k == GO_UPDATE_RESTART || k == GO_UPDATE_SHUTDOWN) ? 60 * 60 * 1000 : 120 * 1000;
+  return (k == GO_UPDATE_RESTART || k == GO_UPDATE_SHUTDOWN) ? PCGOING_PREOFF_UPDATE_MS : PCGOING_PREOFF_MS;
 }
 
 static uint32_t backWindowMs(GoingKind k) {
-  return k == GO_UPDATE_RESTART ? 2 * 60 * 60 * 1000 : 10 * 60 * 1000;
+  return k == GO_UPDATE_RESTART ? PCGOING_BACK_UPDATE_MS : PCGOING_BACK_MS;
 }
 
 // pc.update = 1: the PC says Windows is installing updates right now.

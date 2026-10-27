@@ -15,13 +15,14 @@
 #include "pc_state.h"
 #include "pcstats.h"
 #include "screens.h"
+#include "settings_or_example.h"
 #include "sys.h"
 #include "usb.h"
 #include "views.h"
 
-static const int IDLE_ENGAGE_S = 15 * 60;
-static const int START_HOUR = 22, END_HOUR = 6;
-static const uint8_t PANEL_PCT = 10, STATUS_LED_PCT = 20, RGB_PCT = 10;
+static const int IDLE_ENGAGE_S = NIGHT_IDLE_ENGAGE_S;
+static const int START_HOUR = NIGHT_START_HOUR, END_HOUR = NIGHT_END_HOUR;
+static const uint8_t PANEL_PCT = NIGHT_PANEL_PCT, STATUS_LED_PCT = NIGHT_STATUS_LED_PCT, RGB_PCT = NIGHT_RGB_PCT;
 
 static bool enabled;
 static bool engaged;
@@ -31,8 +32,8 @@ static uint32_t engagedMs;               // input newer than this ends it
 // Wake guard: input during the night only ends it if the next 10 s show a
 // real return (mouse moved > 50 px, or 3 key / button presses); otherwise
 // the displays go off again and the night carries on
-static const uint32_t GUARD_MS = 10000;
-static const double GUARD_PX = 50, GUARD_PRESSES = 3;
+static const uint32_t GUARD_MS = NIGHT_GUARD_MS;
+static const double GUARD_PX = NIGHT_GUARD_PX, GUARD_PRESSES = NIGHT_GUARD_PRESSES;
 static uint32_t guardUntilMs;            // 0 = no wake being checked
 static double guardPx0, guardPress0;     // pc.in_px / pc.in_press when the wake was seen
 static uint32_t falseWakes;              // this night, for the status line
@@ -68,6 +69,10 @@ void nightInit() {
   nvs_get_i8(h, "rgb", &savedRgb);
   nvs_close(h);
   rgbLowered = savedRgb >= 0;   // a restart while engaged: the LEDs are still at 10 %
+}
+
+void nightWindowText(char *buf, uint32_t size) {
+  snprintf(buf, size, "%02d:00-%02d:00 after %d min", START_HOUR, END_HOUR, IDLE_ENGAGE_S / 60);
 }
 
 static bool pcReachable() { return pcState() == PC_ON && pcStatsFresh() && pcStat("hw.ok") >= 1; }
@@ -119,11 +124,13 @@ static void engage(bool byHand) {
   }
   uint32_t id;
   const char *err = monSend("power all off", &id);
+  char rgbPct[8];
+  snprintf(rgbPct, sizeof rgbPct, "%d %%", RGB_PCT);
   logMsg("night: engaged%s (PC LEDs %s, displays %s)", byHand ? " by hand" : "",
-         rgbLowered ? "10 %" : "left alone", err ? err : "off");
+         rgbLowered ? rgbPct : "left alone", err ? err : "off");
   char what[160];
-  snprintf(what, sizeof what, "Engaged%s: PC LEDs %s, board panels 10 %% on the PC-off screens, status LED 20 %%, PC displays %s",
-           byHand ? " by hand" : "", rgbLowered ? "10 %" : "unchanged", err ? "not reached" : "off");
+  snprintf(what, sizeof what, "Engaged%s: PC LEDs %s, board panels %d %% on the PC-off screens, status LED %d %%, PC displays %s",
+           byHand ? " by hand" : "", rgbLowered ? rgbPct : "unchanged", PANEL_PCT, STATUS_LED_PCT, err ? "not reached" : "off");
   announce(what, 0x2C3E50);
   lassoSend();
 }
@@ -148,7 +155,7 @@ void nightPoll() {
   lastMs = now;
 
   static uint32_t lassoMs;
-  if (now - lassoMs >= 30000) { lassoMs = now; lassoSend(); }
+  if (now - lassoMs >= NIGHT_LASSO_REPEAT_MS) { lassoMs = now; lassoSend(); }
   if (!engaged) rgbRestoreTry(true);   // owed from a morning or a restart
   if (!enabled && !engaged) return;
   struct tm t;
@@ -196,7 +203,10 @@ void nightSetEnabled(bool on) {
   enabled = on;
   saveNvs();
   logMsg("night: mode %s", on ? "on" : "off");
-  announce(on ? "Turned on: engages 22:00-06:00 after 15 min without input on the PC" : "Turned off", 0x95A5A6);
+  char win[40], what[96];
+  nightWindowText(win, sizeof win);
+  snprintf(what, sizeof what, "Turned on: engages %s without input on the PC", win);
+  announce(on ? what : "Turned off", 0x95A5A6);
   if (!on && engaged) disengage("turned off");
 }
 
@@ -215,8 +225,11 @@ void nightStatus(char *buf, uint32_t size) {
              guardUntilMs ? ", checking a wake" : falseWakes ? ", false wakes ignored" : "");
   else if (enabled && pcStat("pc.disp_req") >= 1)
     snprintf(buf, size, "on, held off: %.20s keeps the display on", pcText("pc.disp_req_by"));
-  else if (enabled)
-    snprintf(buf, size, "on: 22:00-06:00 after 15 min idle%s", rgbLowered ? ", LED restore owed" : "");
+  else if (enabled) {
+    char win[40];
+    nightWindowText(win, sizeof win);
+    snprintf(buf, size, "on: %s idle%s", win, rgbLowered ? ", LED restore owed" : "");
+  }
   else
     snprintf(buf, size, "off%s", rgbLowered ? ", LED restore owed" : "");
 }

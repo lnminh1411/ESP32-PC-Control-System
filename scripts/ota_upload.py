@@ -11,7 +11,8 @@ import urllib.parse
 
 
 def find_ota_pass(repo_root):
-    candidates = [
+    candidates = [   # settings.h; secrets.h is its old name
+        os.path.join(repo_root, "firmware", "main", "settings.h"),
         os.path.join(repo_root, "firmware", "main", "secrets.h"),
     ]
     for path in candidates:
@@ -41,7 +42,7 @@ def parse_args():
     parser.add_argument(
         "--password",
         default=None,
-        help="OTA password (default: read from OTA_PASS in secrets.h)",
+        help="OTA password (default: read from OTA_PASS in settings.h)",
     )
     parser.add_argument(
         "bin",

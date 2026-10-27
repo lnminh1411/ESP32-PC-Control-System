@@ -11,7 +11,7 @@
 #include <string.h>
 
 #include "config.h"
-#include "secrets_or_example.h"
+#include "settings_or_example.h"
 #include "log.h"
 #include "net.h"
 #include "pcstats.h"
@@ -49,12 +49,12 @@ static void saveMacToNvs(const uint8_t mac[6]) {
 }
 
 void wolInit() {
-  if (WOL_MAC[0] && parseMac(WOL_MAC, s_mac)) {   // from secrets.h; a MAC learned from the PC replaces it
+  if (WOL_MAC[0] && parseMac(WOL_MAC, s_mac)) {   // from settings.h; a MAC learned from the PC replaces it
     s_macValid = true;
     snprintf(s_macStr, sizeof(s_macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
              s_mac[0], s_mac[1], s_mac[2], s_mac[3], s_mac[4], s_mac[5]);
   } else if (WOL_MAC[0]) {
-    logMsg("wol: WOL_MAC in secrets.h is not AA:BB:CC:DD:EE:FF; ignored");
+    logMsg("wol: WOL_MAC in settings.h is not AA:BB:CC:DD:EE:FF; ignored");
   }
   nvs_handle_t h;
   if (nvs_open("wol", NVS_READONLY, &h) == ESP_OK) {
@@ -138,8 +138,8 @@ const char *wolSend() {
     has_bcast = true;
   }
 
-  for (int iter = 0; iter < 3; iter++) {
-    if (iter > 0) sleepMs(100);
+  for (int iter = 0; iter < WOL_BURSTS; iter++) {
+    if (iter > 0) sleepMs(WOL_BURST_GAP_MS);
 
     // 1. 255.255.255.255:WOL_PORT
     struct sockaddr_in dest;
@@ -149,17 +149,17 @@ const char *wolSend() {
     dest.sin_addr.s_addr = htonl(INADDR_BROADCAST);
     sendto(sock, packet, sizeof(packet), 0, (struct sockaddr *)&dest, sizeof(dest));
 
-    // 2. Subnet broadcast on WOL_PORT and port 7
+    // 2. Subnet broadcast on WOL_PORT and WOL_PORT_ALT
     if (has_bcast) {
       dest.sin_addr.s_addr = bcast_addr;
       dest.sin_port = htons(WOL_PORT);
       sendto(sock, packet, sizeof(packet), 0, (struct sockaddr *)&dest, sizeof(dest));
 
-      dest.sin_port = htons(7);
+      dest.sin_port = htons(WOL_PORT_ALT);
       sendto(sock, packet, sizeof(packet), 0, (struct sockaddr *)&dest, sizeof(dest));
     }
 
-    // 3. WOL_TARGET from secrets.h (a router that forwards it, or another subnet)
+    // 3. WOL_TARGET from settings.h (a router that forwards it, or another subnet)
     if (WOL_TARGET[0] && inet_aton(WOL_TARGET, &dest.sin_addr)) {
       dest.sin_port = htons(WOL_PORT);
       sendto(sock, packet, sizeof(packet), 0, (struct sockaddr *)&dest, sizeof(dest));

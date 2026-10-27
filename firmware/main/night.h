@@ -24,4 +24,5 @@ void nightManual(bool on);         // start now (any hour, no idle wait) / end n
 bool nightEnabled();
 bool nightEngaged();
 void nightStatus(char *buf, uint32_t size);   // one line for the panel and the console
+void nightWindowText(char *buf, uint32_t size);   // "22:00-06:00 after 15 min" (from settings.h)
 void nightConsole(const char *args);          // `night [on|off|start|end|status]`

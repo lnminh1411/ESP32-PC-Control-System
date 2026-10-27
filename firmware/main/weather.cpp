@@ -24,7 +24,7 @@
 #include "owm.h"
 #include "owntracks.h"
 #include "pushover.h"
-#include "secrets_or_example.h"
+#include "settings_or_example.h"
 #include "sys.h"
 #include "views.h"
 
@@ -66,7 +66,7 @@ static volatile bool wxDirty;
 // Location configuration
 static double homeLat;
 static double homeLon;
-static char homeName[48] = "Home";
+static char homeName[48] = WEATHER_HOME_NAME;
 static bool homeConfigured;
 
 // Nowcast engines
@@ -206,7 +206,7 @@ static const char *calcDayName(int y, int m, int d) {
 static void loadDemo(int mode) {
   WeatherNow w = {};
   w.valid = true;
-  snprintf(w.place, sizeof(w.place), "%s", homeName[0] ? homeName : "Home");
+  snprintf(w.place, sizeof(w.place), "%s", homeName[0] ? homeName : WEATHER_HOME_NAME);
   strcpy(w.updated, "21:40");
   w.temp = 29.0f;
   w.tmax = 33;
@@ -576,10 +576,10 @@ static WxTier rainTier(const RainAlert &a) {
   for (int i = 0; i < nHours_; i++) {
     uint32_t hEnd = hours_[i].unix, hStart = hEnd - 3600;
     if (from ? (hEnd <= from || hStart >= to) : i > 1) continue;   // no clock: the next two hours
-    if (hours_[i].code >= 95 || hours_[i].gust >= 62) return TIER_STORM;
+    if (hours_[i].code >= 95 || hours_[i].gust >= WEATHER_STORM_GUST_KMH) return TIER_STORM;
     if (hours_[i].mm > mm) mm = hours_[i].mm;
   }
-  return mm >= 7.6f ? TIER_HEAVY_SHOWER : TIER_LIGHT_RAIN;
+  return mm >= WEATHER_HEAVY_SHOWER_MMH ? TIER_HEAVY_SHOWER : TIER_LIGHT_RAIN;
 }
 
 // OpenWeather's hour counts for 5 min after it was fetched, for its place only
@@ -693,7 +693,7 @@ static void rainWarnTick() {
     }
     snprintf(desc + n, sizeof desc - n, "\n%.1f mm/h%s%s\nSeen by %s", a.mmh, a.from[0] ? ", moving in from " : "", a.from,
              rainSrcName(a));
-    discordPost(DC_WEATHER, title, desc, eta > 20 ? COL_YELLOW : COL_RED);
+    discordPost(DC_WEATHER, title, desc, eta > WEATHER_RAIN_URGENT_MIN ? COL_YELLOW : COL_RED);
     logMsg("weather: warning posted: %s", title);
     warn.tier = a.tier;
     warn.raining = false;
@@ -784,11 +784,11 @@ static void cycloneTick() {
       long left = (long)best.arriveUnix - (long)now;
       fmtLong(when, sizeof when, left > 0 ? left : 0);
       fmtClock(clk, sizeof clk, best.arriveUnix, true);
-      if (left <= 6 * 3600) {
+      if (left <= WEATHER_TYPHOON_NEAR_S) {
         if (ty.minutePostMs && ms - ty.minutePostMs < 60 * 1000) return;
         snprintf(title, sizeof title, "%s %s in ~%s | %s", kind, best.name, when, homeName);
         snprintf(desc, sizeof desc, "Arrives ~%s, closest ~%u km\nPeak wind %u km/h", clk, best.closestKm, best.windKmh);
-        discordPost(DC_WEATHER, title, desc, left > 20 * 60 ? COL_YELLOW : COL_RED);
+        discordPost(DC_WEATHER, title, desc, left > WEATHER_TYPHOON_IMMINENT_S ? COL_YELLOW : COL_RED);
         ty.minutePostMs = ms;
       } else {
         if (ty.episodePosted == tr.episodeId) return;
@@ -888,7 +888,7 @@ static const char *iconWord(WxIcon i) {
 static void postWeatherUpdate() {
   struct tm t;
   if (!now_.valid || !boardLocalTime(&t)) return;
-  if (t.tm_hour < 6 || t.tm_hour > 20 || (t.tm_hour & 1)) return;
+  if (t.tm_hour < WEATHER_SUMMARY_FIRST_HOUR || t.tm_hour > WEATHER_SUMMARY_LAST_HOUR || (t.tm_hour & 1)) return;
   if (!forecastAtMs || nowMs() - forecastAtMs > 10 * 60 * 1000) return;   // wait for fresh data
   uint32_t slot = (uint32_t)(t.tm_year + 1900) * 10000 + t.tm_yday * 24 + t.tm_hour;
   static uint32_t posted;
@@ -930,14 +930,14 @@ static void postWeatherUpdate() {
       n += snprintf(desc + n, sizeof desc - n, "\nTyphoon %s expected ~%s", cyclone_.name, clk);
     }
   }
-  if (t.tm_hour == 6) {
+  if (t.tm_hour == WEATHER_MORNING_HOUR) {
     for (int i = 0; i < 3 && n < (int)sizeof desc; i++)
       if (w.days[i].name[0])
         n += snprintf(desc + n, sizeof desc - n, "\n%s: %d\u00b0 / %d\u00b0, %s", w.days[i].name, w.days[i].tmax,
                       w.days[i].tmin, iconWord(w.days[i].icon));
   }
   char title[96];
-  snprintf(title, sizeof title, "Currently in %s | %02d:%02d", w.place[0] ? w.place : "Home", t.tm_hour, t.tm_min);
+  snprintf(title, sizeof title, "Currently in %s | %02d:%02d", w.place[0] ? w.place : WEATHER_HOME_NAME, t.tm_hour, t.tm_min);
   discordPost(DC_WEATHER, title, desc, COL_BLUE);
   logMsg("weather: update posted (%02d:%02d)", t.tm_hour, t.tm_min);
 }
@@ -1015,7 +1015,7 @@ static void publishPhone() {
 static void setHomeLocation(double lat, double lon, const char *name) {
   homeLat = lat;
   homeLon = lon;
-  snprintf(homeName, sizeof(homeName), "%s", name ? name : "Home");
+  snprintf(homeName, sizeof(homeName), "%s", name ? name : WEATHER_HOME_NAME);
   homeConfigured = true;
 
   nvs_handle_t h;
@@ -1097,7 +1097,7 @@ static void owmTick(char *buf, size_t cap, bool force, uint32_t *lastMs, uint32_
   const RainAlert &t = onPhone ? rainPhone : rainHome;
   uint32_t now = (uint32_t)time(nullptr);
   bool alertNow = owmLast.valid && owmLast.nAlerts && now - owmLast.fetchedUnix < 10 * 60;
-  uint32_t every = (t.active || t.raining || alertNow) ? 90 * 1000 : 120 * 1000;
+  uint32_t every = (t.active || t.raining || alertNow) ? OWM_POLL_RAIN_MS : OWM_POLL_MS;
   if (onPhone != owmOnPhone) force = true;   // moved: the new place right away
   if (!force && *lastMs && curMs - *lastMs < every) return;
   if (!owmBudgetLeft()) return;
@@ -1169,19 +1169,19 @@ static void weatherTask(void *) {
 
     // 1. Forecast every 5 min, air quality every 30, both at once on Wi-Fi
     // connect or a home change
-    if (forceImmediate || lastForecastMs == 0 || (curMs - lastForecastMs >= 5 * 60 * 1000)) {
+    if (forceImmediate || lastForecastMs == 0 || (curMs - lastForecastMs >= WEATHER_FORECAST_POLL_MS)) {
       if (checkBudgetForecast()) fetchForecast(httpBuf, httpBufCap);
       lastForecastMs = curMs;
       // failed: try again in a minute
       if (loggedErrors & (ERR_FC_HTTP | ERR_FC_PARSE)) lastForecastMs = curMs - 4 * 60 * 1000;
     }
-    if (forceImmediate || lastAqiMs == 0 || (curMs - lastAqiMs >= 30 * 60 * 1000)) {
+    if (forceImmediate || lastAqiMs == 0 || (curMs - lastAqiMs >= WEATHER_AQI_POLL_MS)) {
       if (checkBudgetForecast()) fetchAirQuality(httpBuf, httpBufCap);
       lastAqiMs = curMs;
     }
 
     // 1b. Cyclones near home: GDACS list every 30 min (5 after a failure)
-    if (forceImmediate || cycloneRefresh || lastCycloneMs == 0 || (curMs - lastCycloneMs >= 30 * 60 * 1000)) {
+    if (forceImmediate || cycloneRefresh || lastCycloneMs == 0 || (curMs - lastCycloneMs >= WEATHER_CYCLONE_POLL_MS)) {
       if (cycloneRefresh && tracks_) memset(tracks_, 0, MAX_TRACKS * sizeof(CycloneTrack));   // refetch the tracks too
       cycloneRefresh = false;
       clearError(ERR_TC_HTTP | ERR_TC_TRACK);   // log this round's errors again
@@ -1242,7 +1242,7 @@ static void weatherTask(void *) {
   }
 }
 
-// WEATHER_HOME from secrets.h ("lat,lon[,name]"), when set, wins at boot.
+// WEATHER_HOME from settings.h ("lat,lon[,name]"), when set, wins at boot.
 // The name is everything after the second comma (commas allowed), trimmed,
 // with one pair of surrounding ' or " quotes removed.
 static void applyConfiguredHome() {
@@ -1254,7 +1254,7 @@ static void applyConfiguredHome() {
   const char *p = end + 1;
   double lon = ok ? strtod(p, &end) : 0;
   ok = ok && end != p && (*end == ',' || *end == 0 || isspace((unsigned char)*end));
-  char name[48] = "Home";
+  char name[48] = WEATHER_HOME_NAME;
   if (ok) {
     while (isspace((unsigned char)*end)) end++;
     if (*end == ',') {
@@ -1270,12 +1270,12 @@ static void applyConfiguredHome() {
     }
   }
   if (!ok || lat < -90.0 || lat > 90.0 || lon < -180.0 || lon > 180.0) {
-    logMsg("weather: WEATHER_HOME in secrets.h is not \"lat,lon[,name]\"; ignored");
+    logMsg("weather: WEATHER_HOME in settings.h is not \"lat,lon[,name]\"; ignored");
     return;
   }
   if (homeConfigured && fabs(homeLat - lat) < 1e-5 && fabs(homeLon - lon) < 1e-5 && !strcmp(homeName, name)) return;
   setHomeLocation(lat, lon, name);
-  logMsg("weather: home from secrets.h (%s)", homeName);
+  logMsg("weather: home from settings.h (%s)", homeName);
 }
 
 void weatherInit() {
@@ -1341,7 +1341,7 @@ void weatherCommand(const char *a1, const char *a2) {
     }
     *c1 = '\0';
     char *lonPart = c1 + 1;
-    char name[24] = "Home";
+    char name[24] = WEATHER_HOME_NAME;
     char *c2 = strchr(lonPart, ',');
     if (c2) {
       *c2 = '\0';
@@ -1403,7 +1403,7 @@ void weatherCommand(const char *a1, const char *a2) {
              now_.place, now_.temp, now_.tmax, now_.tmin, now_.windKmh, now_.windFromDeg,
              now_.aqi, rainHome.active ? "incoming" : "none");
     } else {
-      logMsg("weather: %s (no forecast data yet; %s)", homeConfigured ? homeName : "Home",
+      logMsg("weather: %s (no forecast data yet; %s)", homeConfigured ? homeName : WEATHER_HOME_NAME,
              !netUp() ? "needs Wi-Fi" : !homeConfigured ? "no home set" : "fetching");
     }
     if (loggedErrors) logMsg("weather: last error: %s [%s]", lastError, esp_err_to_name(lastHttpErr));

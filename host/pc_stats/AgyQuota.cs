@@ -1552,8 +1552,8 @@ static partial class AgyQuota {
   // screen, posts it to the #logging Discord webhook, and deletes the post
   // after 5 minutes. Every step is caught so the media loop never dies. ----
   static readonly string ShotPendingPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), @"ESP32PcStats\shot_pending.txt");
-  const double ShotDeleteMinutes = 5.0;
-  const int ShotBorderSeconds = 5;
+  const double ShotDeleteMinutes = HostSettings.SHOT_DELETE_MIN;
+  const int ShotBorderSeconds = HostSettings.SHOT_BORDER_S;
   static int shotBusy = 0;              // 0/1 guard so overlapping requests are coalesced (Interlocked)
 
   // Called from the media loop; cheap when idle. Claims the request the

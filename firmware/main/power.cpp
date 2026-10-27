@@ -15,7 +15,7 @@
 #include "sys.h"
 #include "usb.h"
 #include "views.h"
-#include "secrets_or_example.h"
+#include "settings_or_example.h"
 #include "wol.h"
 
 static const char *powerWakeSend();
@@ -23,7 +23,7 @@ static const char *powerWakeSend();
 // Motherboard quirk: the PC's power-on drags the USB 5 V rail down and the
 // board browns out. Every wake turns the backlights off while it goes out and
 // for this long after (always on since 2026-10-27, after it came back).
-static const uint32_t WAKE_DIM_MS = 200;
+static const uint32_t WAKE_DIM_MS = POWER_WAKE_DIM_MS;
 
 static bool s_pending = false;
 static char s_action[16] = "";
@@ -165,7 +165,7 @@ void powerPoll() {
 // forget over HID; the service (and its user-session helper) does the rest,
 // and auto-deletes the post after 5 minutes. No ack/retry here.
 const char *screenshotRequest() {
-  if (!DISCORD_SHOT_WEBHOOK[0]) return "no screenshot webhook in secrets.h";
+  if (!DISCORD_SHOT_WEBHOOK[0]) return "no screenshot webhook in settings.h";
   if (!pcStatsFresh()) return "PC offline (service not connected)";
   uint32_t r = esp_random();
   char nonce[16];

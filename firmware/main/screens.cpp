@@ -20,6 +20,7 @@
 #include "pcstats.h"
 #include "pcwarn.h"
 #include "sys.h"
+#include "settings_or_example.h"
 #include "textimg.h"
 #include "weather.h"
 
@@ -266,8 +267,8 @@ static void drawMarquee(LGFX_Sprite &c, const char *key, const char *s, int y, c
   }
 
   float travel = (float)(w - room);
-  const float speed = 30.0f;
-  const float pause = 1.5f;
+  const float speed = SCREEN_MARQUEE_PX_S;
+  const float pause = SCREEN_MARQUEE_PAUSE_S;
   float leg = travel / speed;
   float cyc = 2.0f * (leg + pause);
   if (cyc <= 0.0f) cyc = 1.0f;
@@ -400,7 +401,7 @@ static void drawWarnBox(LGFX_Sprite &c, const char *title, const char *sub) {
 
 // A typhoon in its last 6 h before arrival gets the box too
 static bool typhoonSoon(const Cyclone &cy) {
-  return cy.tracked && !cy.active && cy.arriveUnix && (long)cy.arriveUnix - (long)time(nullptr) <= 6 * 3600;
+  return cy.tracked && !cy.active && cy.arriveUnix && (long)cy.arriveUnix - (long)time(nullptr) <= WEATHER_TYPHOON_NEAR_S;
 }
 
 // Warning box: typhoon here or close, else rain on its way (not while it
@@ -429,7 +430,7 @@ static void drawWarnBox(LGFX_Sprite &c, int y) {
   const RainAlert &rain = rainAlertHome();
   bool typhoon = cy.active || typhoonSoon(cy);
   int eta = rainEtaMin(rain);
-  uint16_t col = (typhoon || eta <= 20) ? C_BAD : C_WARN;
+  uint16_t col = (typhoon || eta <= WEATHER_RAIN_URGENT_MIN) ? C_BAD : C_WARN;
   c.fillRoundRect(8, y, 224, 44, 6, col);
   c.fillRoundRect(10, y + 2, 220, 40, 5, C_BG);
 
@@ -714,13 +715,13 @@ static void drawPcStats(LGFX_Sprite &c) {
   // GPU cards (RX 6600 & RTX 3050, VRAM MB -> GB)
   double rxVram = pcStat("gpu1_vram");
   double rxVramT = pcStat("gpu1_vramt");
-  drawGpuCard(c, 4, 134, "RX 6600", C_AMD,
+  drawGpuCard(c, 4, 134, PC_GPU1_LABEL, C_AMD,
               pcStat("gpu1_temp"), smoothedStat(0, "gpu1_load"), pcStat("gpu1_clock"),
               isnan(rxVram) ? NAN : rxVram / 1024.0, isnan(rxVramT) ? NAN : rxVramT / 1024.0, rxLevel);
 
   double rtxVram = pcStat("gpu2_vram");
   double rtxVramT = pcStat("gpu2_vramt");
-  drawGpuCard(c, 122, 134, "RTX 3050", C_NV,
+  drawGpuCard(c, 122, 134, PC_GPU2_LABEL, C_NV,
               pcStat("gpu2_temp"), smoothedStat(1, "gpu2_load"), pcStat("gpu2_clock"),
               isnan(rtxVram) ? NAN : rtxVram / 1024.0, isnan(rtxVramT) ? NAN : rtxVramT / 1024.0, rtxLevel);
 
@@ -755,7 +756,7 @@ static void drawPcStats(LGFX_Sprite &c) {
   c.setFont(fontSmall());
   c.setTextColor(C_DISK);
   c.setTextDatum(lgfx::textdatum_t::top_left);
-  c.drawString("C:", 130, 244);
+  c.drawString(PC_DRIVE_LABEL, 130, 244);
 
   double cUsed = pcStat("c_used");
   double cTotal = pcStat("c_total");
@@ -765,7 +766,7 @@ static void drawPcStats(LGFX_Sprite &c) {
     c.setTextColor(C_DIM);
   } else {
     snprintf(buf, sizeof(buf), "%.0f%%", dp * 100.0);
-    c.setTextColor(sev(dp * 100.0, 85.0, 95.0));
+    c.setTextColor(sev(dp * 100.0, PC_DRIVE_WARN_PCT, PC_DRIVE_BAD_PCT));
   }
   c.setTextDatum(lgfx::textdatum_t::top_right);
   c.drawString(buf, 228, 244);
@@ -964,7 +965,7 @@ static void drawWeather(LGFX_Sprite &c) {
   c.setFont(fontBody());
   c.setTextColor(C_TEXT);
   c.setTextDatum(lgfx::textdatum_t::top_center);
-  textImgDraw(c, "wx.place", w.place[0] ? w.place : "Home", 120, 6);
+  textImgDraw(c, "wx.place", w.place[0] ? w.place : WEATHER_HOME_NAME, 120, 6);
 
   char upBuf[32];
   snprintf(upBuf, sizeof(upBuf), "updated %s", w.updated[0] ? w.updated : "--");
@@ -1023,9 +1024,9 @@ static void drawWeather(LGFX_Sprite &c) {
   if (w.aqi >= 0) {
     const char *lvl = "Low";
     uint16_t chipCol = C_GOOD;
-    if (w.aqi > 200) { lvl = "Dangerous"; chipCol = C_PURPLE; }
-    else if (w.aqi > 100) { lvl = "High"; chipCol = C_BAD; }
-    else if (w.aqi > 50) { lvl = "Moderate"; chipCol = C_WARN; }
+    if (w.aqi > WEATHER_AQI_DANGEROUS) { lvl = "Dangerous"; chipCol = C_PURPLE; }
+    else if (w.aqi > WEATHER_AQI_HIGH) { lvl = "High"; chipCol = C_BAD; }
+    else if (w.aqi > WEATHER_AQI_MODERATE) { lvl = "Moderate"; chipCol = C_WARN; }
 
     char aqiBuf[32];
     snprintf(aqiBuf, sizeof(aqiBuf), "AQI %d %s", w.aqi, lvl);
@@ -1136,7 +1137,7 @@ static void drawAiUsage(LGFX_Sprite &c) {
   if (isnan(sPct)) snprintf(buf, sizeof(buf), "--");
   else snprintf(buf, sizeof(buf), "%.0f%%", 100.0 - sPct);
   c.setFont(fontBody());
-  c.setTextColor(sev(sPct, 75.0, 90.0));
+  c.setTextColor(sev(sPct, QUOTA_SESSION_WARN_PCT, QUOTA_SESSION_BAD_PCT));
   c.setTextDatum(lgfx::textdatum_t::top_right);
   c.drawString(buf, 228, 30);
 
@@ -1153,7 +1154,7 @@ static void drawAiUsage(LGFX_Sprite &c) {
   if (isnan(wPct)) snprintf(buf, sizeof(buf), "--");
   else snprintf(buf, sizeof(buf), "%.0f%%", 100.0 - wPct);
   c.setFont(fontBody());
-  c.setTextColor(sev(wPct, 80.0, 95.0));
+  c.setTextColor(sev(wPct, QUOTA_WEEKLY_WARN_PCT, QUOTA_WEEKLY_BAD_PCT));
   c.setTextDatum(lgfx::textdatum_t::top_right);
   c.drawString(buf, 228, 82);
 
@@ -1199,8 +1200,8 @@ static void drawAiUsage(LGFX_Sprite &c) {
   snprintf(kwr, sizeof(kwr), "agy%d.flash_wk_reset_ts", agyN);
 
   struct Row { const char *label, *pctKey, *resetKey; double warn, bad; int y; bool weekly; };
-  const Row rows[2] = {{"Session Remaining", k5, k5r, 75.0, 90.0, 166, false},
-                       {"Weekly Remaining", kw, kwr, 80.0, 95.0, 218, true}};
+  const Row rows[2] = {{"Session Remaining", k5, k5r, QUOTA_SESSION_WARN_PCT, QUOTA_SESSION_BAD_PCT, 166, false},
+                       {"Weekly Remaining", kw, kwr, QUOTA_WEEKLY_WARN_PCT, QUOTA_WEEKLY_BAD_PCT, 218, true}};
   for (const Row &r : rows) {
     double left = pcStat(r.pctKey);
     double used = isnan(left) ? left : 100.0 - left;
@@ -1236,7 +1237,7 @@ static void drawAiUsage(LGFX_Sprite &c) {
   c.setFont(fontSmall());
   c.setTextColor(C_DIM);
   c.setTextDatum(lgfx::textdatum_t::top_left);
-  c.drawString("Occamy-1.0", 12, 298);
+  c.drawString(LOCAL_AI_MODEL_NAME, 12, 298);
   c.setTextColor(C_FAINT);
 
   double reqs = pcStat("ai.requests");
@@ -1262,7 +1263,7 @@ static void drawLocalAi(LGFX_Sprite &c) {
   c.setFont(fontBody());
   c.setTextColor(C_TEXT);
   c.setTextDatum(lgfx::textdatum_t::top_left);
-  c.drawString("Occamy-1.0 35B-A3B", 12, 26);
+  c.drawString(LOCAL_AI_MODEL_FULL, 12, 26);
 
   const char *phase = pcText("ai.phase_name");
   if (!strcmp(phase, "asleep")) phase = "Not Active";
@@ -1488,7 +1489,7 @@ bool screensIsGif(Face f) {
 }
 
 void screensDraw(Face f, LGFX_Sprite &c) {
-  // The weather place (secrets.h, may be non-ASCII): the PC renders it once
+  // The weather place (settings.h, may be non-ASCII): the PC renders it once
   // and the board keeps the image in flash for when the PC is off.
   textImgPin("wx.place");
   const WeatherNow &wx = weatherNow();

@@ -8,6 +8,7 @@
 #include "log.h"
 #include "net.h"
 #include "pcstats.h"
+#include "settings_or_example.h"
 
 static int32_t tzMin;          // local offset from UTC in minutes
 static bool tzLoaded;
@@ -35,7 +36,7 @@ void boardTimeStartSntp() {
   if (sntpStarted || !netUp()) return;
   sntpStarted = true;
   esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
-  esp_sntp_setservername(0, "pool.ntp.org");
+  esp_sntp_setservername(0, NET_NTP_SERVER);
   esp_sntp_set_time_sync_notification_cb(timeSyncNotificationCb);
   esp_sntp_init();
   logMsg("time: SNTP started (pool.ntp.org)");

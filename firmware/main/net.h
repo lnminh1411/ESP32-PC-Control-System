@@ -1,6 +1,6 @@
 // Wi-Fi station + over-the-air updates.
 //
-// Joins WIFI_SSID (secrets.h) in the background and keeps reconnecting; the
+// Joins WIFI_SSID (settings.h) in the background and keeps reconnecting; the
 // rest of the firmware runs whether or not the network is up. Once
 // connected: mDNS name NET_HOSTNAME.local and, when OTA_PASS is set, an
 // HTTP server endpoint for OTA updates on port 80 (POST /ota with header

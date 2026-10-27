@@ -13,7 +13,7 @@
 
 #include "log.h"
 #include "net.h"
-#include "secrets_or_example.h"
+#include "settings_or_example.h"
 #include "sys.h"
 
 #ifndef M_PI
@@ -160,9 +160,9 @@ bool owntracksValid() {
   time_t now = time(nullptr);
   if (now >= 1700000000) {
     int64_t diff = (int64_t)now - (int64_t)tst;
-    return (diff >= -120 && diff < 2 * 3600); // valid if < 2 hours old
+    return (diff >= -120 && diff < OWNTRACKS_MAX_AGE_S); // valid if < 2 hours old
   }
-  return (nowMs() - rxMs < 2 * 3600 * 1000);
+  return (nowMs() - rxMs < OWNTRACKS_MAX_AGE_S * 1000);
 }
 
 bool owntracksGetLocation(double *lat, double *lon, uint32_t *tst, uint32_t *acc) {
@@ -203,5 +203,5 @@ double owntracksDistanceTo(double homeLat, double homeLon) {
 bool owntracksIsMerged(double homeLat, double homeLon) {
   if (!owntracksEnabled() || !owntracksValid()) return true;
   double d = owntracksDistanceTo(homeLat, homeLon);
-  return (d >= 0.0 && d < 1.0);
+  return (d >= 0.0 && d < OWNTRACKS_HOME_KM);
 }

@@ -13,7 +13,7 @@
 // on the main loop, so the opto safety rules apply here too. Only
 // DISCORD_OWNER_ID may use it; anyone else gets a refusal.
 //
-// Channels (secrets.h, each optional):
+// Channels (settings.h, each optional):
 //   DISCORD_CH_PC       board online, PC state changes, restart/update/power,
 //                       door and reset notifications (discordNotify)
 //   DISCORD_CH_WEATHER  rain alerts (home and phone) and a morning forecast
@@ -22,7 +22,7 @@
 //                       buttons), edited in place and kept up to date
 // PC and weather fall back to DISCORD_CHANNEL_ID when their own is empty.
 //
-// Setup (secrets.h): create an application + bot at
+// Setup (settings.h): create an application + bot at
 // discord.com/developers, invite it to your server with the "bot" and
 // "applications.commands" scopes, then fill DISCORD_TOKEN, DISCORD_APP_ID,
 // DISCORD_GUILD_ID, DISCORD_OWNER_ID (your user id) and optionally

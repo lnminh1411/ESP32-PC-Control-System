@@ -14,6 +14,7 @@
 #include "views.h"
 #include "sys.h"
 #include "usb.h"
+#include "settings_or_example.h"
 
 static volatile PcState state = PC_UNKNOWN;
 static volatile uint32_t guardStartMs;
@@ -91,10 +92,10 @@ static void ledTask(void *) {
     bool loading = !readyMs || (st == PC_ON && !pcStatsFresh()) || (st == PC_UNKNOWN && t - readyMs < 5000);
     float level;   // 0..1 before brightness
     if (mode != LED_AUTO) level = (mode == LED_ON) ? 1.0f : 0.0f;
-    else if (restartish) level = (t % 400) < 200 ? 1.0f : 0.0f;
-    else if (loading) level = (t % 200) < 100 ? 1.0f : 0.0f;
+    else if (restartish) level = (t % LED_RESTART_BLINK_MS) < LED_RESTART_BLINK_MS / 2 ? 1.0f : 0.0f;
+    else if (loading) level = (t % LED_LOADING_BLINK_MS) < LED_LOADING_BLINK_MS / 2 ? 1.0f : 0.0f;
     else if (st == PC_ON) level = 1.0f;
-    else level = 0.5f - 0.5f * cosf((t % 3000) * (2.0f * (float)M_PI / 3000.0f));   // breathing
+    else level = 0.5f - 0.5f * cosf((t % LED_BREATHE_MS) * (2.0f * (float)M_PI / LED_BREATHE_MS));   // breathing
     pwmWrite(PWM_CH_LED, ledDuty(lvl * level));
     vTaskDelay(pdMS_TO_TICKS(10));
   }

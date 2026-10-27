@@ -23,20 +23,26 @@ using System.Text.RegularExpressions;
 using System.Threading;
 
 partial class PcStats {
-  const string LassoIni = @"C:\ProgramData\ProcessLasso\config\prolasso.ini";
+  const string LassoIni = HostSettings.LASSO_INI;
   const string LassoBackup = LassoIni + ".esp32-night";   // the original while night mode runs
-  const string NightCores = "12-17";                      // 6 of the 265K's E-cores (2-5, 10-17)
-  const long NightMask = 0x3F000;                         // bits 12-17
+  const string NightCores = HostSettings.NIGHT_CORES;    // Process Lasso core list, e.g. "12-17"
+  static readonly long NightMask = CoreMask(NightCores); // the same cores as an affinity mask
 
-  // Never pinned: the kernel and session processes, the desktop shell, audio,
-  // this stack and Process Lasso itself. Process Lasso's own ProBalance
+  // Never pinned (settings.h HOST_NIGHT_KEEP). Process Lasso's own ProBalance
   // exclusions (OocExclusions) are added from the ini.
-  static readonly HashSet<string> NightKeep = new HashSet<string>(StringComparer.OrdinalIgnoreCase) {
-    "system", "idle", "registry", "secure system", "memory compression", "smss", "csrss", "wininit", "winlogon",
-    "services", "lsass", "lsaiso", "fontdrvhost", "dwm", "audiodg", "explorer", "sihost", "ctfmon", "textinputhost",
-    "searchhost", "startmenuexperiencehost", "shellexperiencehost", "logonui", "lockapp", "esp32-helper", "pchwctl",
-    "localaihost", "llama-server", "processgovernor", "processlasso", "bitsumsessionagent", "msmpeng", "mpdefendercoreservice",
-  };
+  static readonly HashSet<string> NightKeep = new HashSet<string>(HostSettings.List(HostSettings.NIGHT_KEEP), StringComparer.OrdinalIgnoreCase);
+
+  // "12-17" or "2-5,10-17" -> one bit per core
+  static long CoreMask(string cores) {
+    long mask = 0;
+    foreach (string part in HostSettings.List(cores)) {
+      string[] ab = part.Split('-');
+      int a = int.Parse(ab[0].Trim(), CultureInfo.InvariantCulture);
+      int b = ab.Length > 1 ? int.Parse(ab[1].Trim(), CultureInfo.InvariantCulture) : a;
+      for (int i = a; i <= b; i++) mask |= 1L << i;
+    }
+    return mask;
+  }
 
   static readonly object nightLock = new object();
   static DateTime nightLastWordUtc = DateTime.UtcNow;
@@ -52,8 +58,8 @@ partial class PcStats {
     while (true) {
       try { PollDisplayRequests(); } catch (Exception) { dispReq = -1; }
       lock (nightLock) {
-        if (File.Exists(LassoBackup) && (DateTime.UtcNow - nightLastWordUtc).TotalMinutes >= 5) {
-          Log("night: no word from the board for 5 min, Process Lasso config restored");
+        if (File.Exists(LassoBackup) && (DateTime.UtcNow - nightLastWordUtc).TotalMinutes >= HostSettings.NIGHT_NO_WORD_MIN) {
+          Log("night: no word from the board for " + HostSettings.NIGHT_NO_WORD_MIN + " min, Process Lasso config restored");
           NightLasso(false);
         }
       }

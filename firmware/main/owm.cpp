@@ -10,9 +10,9 @@
 
 #include "log.h"
 #include "net.h"
-#include "secrets_or_example.h"
+#include "settings_or_example.h"
 
-static const float RAIN_MMH = 0.5f;   // what counts as rain: the Open-Meteo nowcast's threshold
+static const float RAIN_MMH = OWM_RAIN_MMH;   // what counts as rain: the Open-Meteo nowcast's threshold
 
 static uint32_t callDay;              // UTC day of callsToday
 static uint32_t callsToday;

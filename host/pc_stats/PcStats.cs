@@ -680,7 +680,7 @@ partial class PcStats : ServiceBase {
   static readonly Regex ShotCmdRegex = new Regex(@"^!shot\s+([0-9a-fA-F]{1,16})\s+(\S+)$");
 
   // The board asked for a screenshot and handed us the webhook from its
-  // secrets.h. The service runs as SYSTEM in session 0 and cannot see the
+  // settings.h. The service runs as SYSTEM in session 0 and cannot see the
   // user's desktop, so we pass the request (nonce + webhook) to the user half
   // over its pipe; it captures, posts to the webhook, and auto-deletes after
   // 5 min. If nobody is signed in there is nothing to capture, so just log and
@@ -751,7 +751,7 @@ partial class PcStats : ServiceBase {
 
   static string SendToPcHwCtl(string command) {
     Dictionary<string, object> data;
-    return PipeRequest("PcHwCtl", command, 2000, out data);
+    return PipeRequest(HostSettings.HWCTL_PIPE, command, HostSettings.HWCTL_TIMEOUT_MS, out data);
   }
 
   // One request, one JSON line back: {"ok":true,"data":...} or {"ok":false,"error":"..."}.
@@ -822,7 +822,7 @@ partial class PcStats : ServiceBase {
         lock (aiPipeLock) {
           Dictionary<string, object> data;
           // 20 s: a forced unload can take ~8 s, status ~2 s with the model asleep
-          string reply = PipeRequest("LocalAIHost", command, 20000, out data);
+          string reply = PipeRequest(HostSettings.LOCALAI_PIPE, command, HostSettings.LOCALAI_TIMEOUT_MS, out data);
           if (reply == "ok") {
             if (verb == "status") reply = "ok " + AiStatusLine(data);
             else if (data != null && data.ContainsKey("started")) reply = "ok started";
@@ -1286,16 +1286,13 @@ partial class PcStats : ServiceBase {
     }
   }
 
+  static readonly string[] NicSkip = HostSettings.List(HostSettings.NIC_SKIP);   // virtual / VPN adapters
+
   static bool IsVirtualAdapter(string desc) {
     if (string.IsNullOrEmpty(desc)) return false;
     string d = desc.ToLowerInvariant();
-    if (d.IndexOf("hyper-v", StringComparison.OrdinalIgnoreCase) >= 0) return true;
-    if (d.IndexOf("virtualbox", StringComparison.OrdinalIgnoreCase) >= 0) return true;
-    if (d.IndexOf("vmware", StringComparison.OrdinalIgnoreCase) >= 0) return true;
-    if (d.IndexOf("tap-", StringComparison.OrdinalIgnoreCase) >= 0) return true;   // TAP-Windows (VPN)
-    if (d.IndexOf("loopback", StringComparison.OrdinalIgnoreCase) >= 0) return true;
-    if (d.IndexOf("bluetooth", StringComparison.OrdinalIgnoreCase) >= 0) return true;
-    if (d.IndexOf("wan miniport", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+    foreach (string skip in NicSkip)
+      if (d.IndexOf(skip, StringComparison.OrdinalIgnoreCase) >= 0) return true;
     return false;
   }
 
@@ -2699,9 +2696,10 @@ partial class PcStats : ServiceBase {
 
   static Computer OpenComputer() {
     var c = new Computer {
-      IsCpuEnabled = true, IsGpuEnabled = true, IsMemoryEnabled = true, IsMotherboardEnabled = true,
-      IsStorageEnabled = true, IsNetworkEnabled = true, IsControllerEnabled = true,
-      IsPsuEnabled = true, IsBatteryEnabled = true
+      IsCpuEnabled = HostSettings.LHM_CPU, IsGpuEnabled = HostSettings.LHM_GPU, IsMemoryEnabled = HostSettings.LHM_MEMORY,
+      IsMotherboardEnabled = HostSettings.LHM_MOTHERBOARD, IsStorageEnabled = HostSettings.LHM_STORAGE,
+      IsNetworkEnabled = HostSettings.LHM_NETWORK, IsControllerEnabled = HostSettings.LHM_CONTROLLER,
+      IsPsuEnabled = HostSettings.LHM_PSU, IsBatteryEnabled = HostSettings.LHM_BATTERY
     };
     c.Open();
     return c;
@@ -3103,9 +3101,9 @@ partial class PcStats : ServiceBase {
       string boldPath = null;
 
       string winFonts = @"C:\Windows\Fonts";
-      string rWin = Path.Combine(winFonts, "ComicShannsMonoNerdFontPropo-Regular.otf");
+      string rWin = Path.Combine(winFonts, HostSettings.FONT_REGULAR);
       if (File.Exists(rWin)) regPath = rWin;
-      string bWin = Path.Combine(winFonts, "ComicShannsMonoNerdFontPropo-Bold.otf");
+      string bWin = Path.Combine(winFonts, HostSettings.FONT_BOLD);
       if (File.Exists(bWin)) boldPath = bWin;
 
       if (regPath == null || boldPath == null) {
@@ -3116,11 +3114,11 @@ partial class PcStats : ServiceBase {
               string uFonts = Path.Combine(userDirs[i], @"AppData\Local\Microsoft\Windows\Fonts");
               if (Directory.Exists(uFonts)) {
                 if (regPath == null) {
-                  string r = Path.Combine(uFonts, "ComicShannsMonoNerdFontPropo-Regular.otf");
+                  string r = Path.Combine(uFonts, HostSettings.FONT_REGULAR);
                   if (File.Exists(r)) regPath = r;
                 }
                 if (boldPath == null) {
-                  string b = Path.Combine(uFonts, "ComicShannsMonoNerdFontPropo-Bold.otf");
+                  string b = Path.Combine(uFonts, HostSettings.FONT_BOLD);
                   if (File.Exists(b)) boldPath = b;
                 }
                 if (regPath != null && boldPath != null) break;
@@ -3160,7 +3158,7 @@ partial class PcStats : ServiceBase {
 
       if (fontRegularFamily == null && fontBoldFamily == null) {
         if (!fontFallbackLogged) {
-          Log("txt: ComicShannsMonoNerdFontPropo font not found, using Segoe UI");
+          Log("txt: " + Path.GetFileNameWithoutExtension(HostSettings.FONT_REGULAR).Split('-')[0] + " font not found, using " + HostSettings.FONT_FALLBACK);
           fontFallbackLogged = true;
         }
       }
@@ -3181,7 +3179,7 @@ partial class PcStats : ServiceBase {
     EnsureFontsLoaded();
 
     string family = bold ? (fontBoldFamily ?? fontRegularFamily) : (fontRegularFamily ?? fontBoldFamily);
-    if (string.IsNullOrEmpty(family)) family = "Segoe UI";
+    if (string.IsNullOrEmpty(family)) family = HostSettings.FONT_FALLBACK;
 
     IntPtr memDC = CreateCompatibleDC(IntPtr.Zero);
     if (memDC == IntPtr.Zero) return null;

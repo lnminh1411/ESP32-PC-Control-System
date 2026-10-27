@@ -1,8 +1,10 @@
 """
-Checks that the firmware pin map (firmware/main/config.h) matches the
+Checks that the firmware pin map (the PIN_* settings) matches the
 netlist (pcb/main.ato): for every PIN_* the GPIO the firmware drives must be
 the one wired to that signal's part pin, directly or through one series
 resistor (the 33R on SCK/MOSI, the 270R in front of each opto and the LED).
+The pins are read the way the build sees them: settings.h when it exists
+(else settings_example.h), defaults from settings_or_example.h.
 
 Plain Python, no KiCad needed:
 
@@ -16,7 +18,11 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ATO = os.path.join(ROOT, "pcb", "main.ato")
-CONFIG = os.path.join(ROOT, "firmware", "main", "config.h")
+MAIN = os.path.join(ROOT, "firmware", "main")
+DEFAULTS = os.path.join(MAIN, "settings_or_example.h")
+SETTINGS = os.path.join(MAIN, "settings.h")
+if not os.path.exists(SETTINGS):
+    SETTINGS = os.path.join(MAIN, "settings_example.h")
 
 # firmware pin -> the part pin it has to reach on the board
 EXPECTED = {
@@ -69,10 +75,12 @@ def gpio_for(net_of, pin):
 
 
 def firmware_pins():
-    text = open(CONFIG, encoding="utf-8").read()
-    pins = {name: int(v) for name, v in re.findall(r"#define\s+(PIN_\w+)\s+(\d+)", text)}
-    for name, vals in re.findall(r"(PIN_\w+)\[\d+\]\s*=\s*\{([^}]*)\}", text):
-        pins[name] = [int(v) for v in vals.split(",")]
+    pins = {}
+    for path in (DEFAULTS, SETTINGS):   # settings.h wins over the defaults
+        text = open(path, encoding="utf-8").read()
+        pins.update({name: int(v) for name, v in re.findall(r"#define\s+(PIN_\w+)\s+(\d+)\b", text)})
+        for name, vals in re.findall(r"#define\s+(PIN_\w+)_LIST\s+\{([^}]*)\}", text):
+            pins[name] = [int(v) for v in vals.split(",")]
     return pins
 
 
@@ -82,12 +90,12 @@ def main():
     errors = []
     for name, want in EXPECTED.items():
         if name not in fw:
-            errors.append(f"{name}: not defined in config.h")
+            errors.append(f"{name}: not defined in the settings")
             continue
         targets = want if isinstance(want, list) else [want]
         values = fw[name] if isinstance(fw[name], list) else [fw[name]]
         if len(values) != len(targets):
-            errors.append(f"{name}: {len(values)} pins in config.h, {len(targets)} on the board")
+            errors.append(f"{name}: {len(values)} pins in the settings, {len(targets)} on the board")
             continue
         for gpio, target in zip(values, targets):
             board = gpio_for(net_of, target)
@@ -95,9 +103,9 @@ def main():
                 errors.append(f"{name}: firmware GPIO{gpio}, board wires {target} to "
                               + (", ".join(f"GPIO{g}" for g in sorted(board)) or "no GPIO"))
     for name in sorted(set(fw) - set(EXPECTED)):
-        errors.append(f"{name}: in config.h but not checked here -- add it to EXPECTED")
+        errors.append(f"{name}: in the settings but not checked here -- add it to EXPECTED")
     if errors:
-        print("pin map mismatch (firmware/main/config.h vs pcb/main.ato):")
+        print(f"pin map mismatch ({os.path.relpath(SETTINGS, ROOT)} vs pcb/main.ato):")
         for e in errors:
             print("  " + e)
         sys.exit(1)

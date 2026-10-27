@@ -7,13 +7,14 @@
 #include <time.h>
 
 #include "log.h"
+#include "settings_or_example.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
 
-static const float R1 = 10.0f;
-static const float R2 = 25.0f;
+static const float R1 = NOWCAST_RING1_KM;
+static const float R2 = NOWCAST_RING2_KM;
 static const float SQRT2_2 = 0.70710678f;
 
 // 17-point ring grid relative offsets in km: East (X) and North (Y)
@@ -243,10 +244,10 @@ bool NowcastEngine::processResponse(const char *json, RainAlert *outAlert, uint3
   };
 
   static const float HORIZON = 105.0f;   // slot 9's midpoint
-  bool rainingNow = rainAt(tNow) > 0.5f;
+  bool rainingNow = rainAt(tNow) > NOWCAST_RAIN_MMH;
   float tStart = -1.0f;
   for (float t = tNow; t <= HORIZON; t += 5.0f)
-    if (rainAt(t) > 0.5f) { tStart = t; break; }
+    if (rainAt(t) > NOWCAST_RAIN_MMH) { tStart = t; break; }
 
   alert_ = {};
   if (tStart >= 0.0f) {
@@ -254,22 +255,22 @@ bool NowcastEngine::processResponse(const char *json, RainAlert *outAlert, uint3
     float tEnd = -1.0f, maxInt = 0.0f;
     for (float t = tStart; t <= HORIZON; t += 5.0f) {
       float r = rainAt(t);
-      if (r < 0.3f) { tEnd = t; break; }
+      if (r < NOWCAST_RAIN_END_MMH) { tEnd = t; break; }
       if (r > maxInt) maxInt = r;
     }
     uint16_t eta = (uint16_t)(tStart - tNow + 0.5f);
     alert_.raining = rainingNow;
-    alert_.active = !rainingNow && eta <= 60;
+    alert_.active = !rainingNow && eta <= NOWCAST_ALERT_ETA_MIN;
     alert_.etaMin = rainingNow ? 0 : eta;
     alert_.startUnix = clockOk ? (rainingNow ? (uint32_t)nowT : base + (uint32_t)(tStart * 60.0f)) : 0;
     alert_.endUnix = (clockOk && tEnd >= 0.0f) ? base + (uint32_t)(tEnd * 60.0f) : 0;
     alert_.mmh = maxInt;
     snprintf(alert_.from, sizeof(alert_.from), "%s", fromCompass);
     // warning or rain: 5 min catches an hourly model update soon after it lands
-    cadenceMs_ = (alert_.active || alert_.raining) ? 5 * 60 * 1000 : 10 * 60 * 1000;
+    cadenceMs_ = (alert_.active || alert_.raining) ? NOWCAST_POLL_RAIN_MS : NOWCAST_POLL_NEAR_MS;
   } else {
     alert_.dryKm = anyRainInGrid ? 0 : 25;
-    cadenceMs_ = anyRainInGrid ? (10 * 60 * 1000) : (15 * 60 * 1000);
+    cadenceMs_ = anyRainInGrid ? NOWCAST_POLL_NEAR_MS : NOWCAST_POLL_DRY_MS;
   }
 
   if (outAlert) *outAlert = alert_;

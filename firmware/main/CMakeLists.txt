@@ -7,13 +7,13 @@ idf_component_register(
     fatfs wear_levelling vfs app_update esp_partition spi_flash esp_psram bootloader_support
     esp_http_client esp_http_server esp-tls mbedtls json lovyangfx mqtt espcoredump)
 
-# secrets_or_example.h picks secrets.h with __has_include, which neither ninja nor
-# ccache's direct mode notices when secrets.h appears or goes away (a placeholder
+# settings_or_example.h picks settings.h with __has_include, which neither ninja nor
+# ccache's direct mode notices when settings.h appears or goes away (a placeholder
 # image was flashed once). The glob re-runs CMake when it does, and the define
 # changes main's compile line, so every object that could include it recompiles.
 if(NOT CMAKE_BUILD_EARLY_EXPANSION)
-  file(GLOB secrets_h CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/secrets.h")
-  if(secrets_h)
-    target_compile_definitions(${COMPONENT_LIB} PRIVATE HAVE_SECRETS_H=1)
+  file(GLOB settings_h CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/settings.h")
+  if(settings_h)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE HAVE_SETTINGS_H=1)
   endif()
 endif()

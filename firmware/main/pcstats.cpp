@@ -11,6 +11,7 @@
 #include "board_time.h"
 #include "pc_going.h"
 #include "sys.h"
+#include "settings_or_example.h"
 
 struct StatEntry {
   char key[24];
@@ -138,7 +139,7 @@ void pcStatsLine(const char *line) {
 }
 
 double pcStat(const char *key) {
-  if (!lastSampleMs || (uint32_t)(nowMs() - lastSampleMs) >= 5000) return NAN;
+  if (!lastSampleMs || (uint32_t)(nowMs() - lastSampleMs) >= PCSTATS_STALE_MS) return NAN;
   if (!key) return NAN;
   for (int i = 0; i < count; i++) {
     if (!strcmp(table[i].key, key)) return table[i].val;
@@ -147,7 +148,7 @@ double pcStat(const char *key) {
 }
 
 bool pcStatsFresh() {
-  return lastSampleMs && (uint32_t)(nowMs() - lastSampleMs) < 3000;
+  return lastSampleMs && (uint32_t)(nowMs() - lastSampleMs) < PCSTATS_FRESH_MS;
 }
 
 int pcStatsCount() {
@@ -163,7 +164,7 @@ double pcStatAt(int i) {
 }
 
 const char *pcText(const char *key) {
-  if (!lastSampleMs || (uint32_t)(nowMs() - lastSampleMs) >= 5000) return "";
+  if (!lastSampleMs || (uint32_t)(nowMs() - lastSampleMs) >= PCSTATS_STALE_MS) return "";
   if (!key) return "";
   for (int i = 0; i < textCount; i++) {
     if (!strcmp(textTable[i].key, key)) return textTable[i].val;

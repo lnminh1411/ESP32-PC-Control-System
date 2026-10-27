@@ -16,7 +16,7 @@
 #include "config.h"
 #include "layout.h"
 #include "log.h"
-#include "secrets_or_example.h"
+#include "settings_or_example.h"
 #include "sys.h"
 
 static bool otaStarted;
@@ -240,7 +240,7 @@ static void wifiEventHandler(void *, esp_event_base_t event_base, int32_t event_
 
 void netInit() {
   if (!strcmp(WIFI_SSID, "your-wifi") || !strcmp(WIFI_PASS, "your-wifi-password")) {
-    logMsg("wifi: off -- fill in WIFI_SSID / WIFI_PASS in secrets.h");
+    logMsg("wifi: off -- fill in WIFI_SSID / WIFI_PASS in settings.h");
     return;
   }
 
@@ -265,7 +265,7 @@ void netInit() {
 
   e = esp_wifi_start();
   if (e != ESP_OK) logMsg("wifi: start failed (%s)", esp_err_to_name(e));
-  esp_wifi_set_ps(WIFI_PS_NONE);
+  esp_wifi_set_ps(NET_WIFI_PS);
   e = esp_wifi_connect();
   if (e != ESP_OK) logMsg("wifi: connect failed (%s)", esp_err_to_name(e));
   downSinceMs = lastWifiEventMs = nowMs();
@@ -347,7 +347,7 @@ void netPoll() {
     wifi_ap_record_t ap;
     if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) rssiCached = ap.rssi;
   }
-  if (nowMs() >= 120000) {
+  if (nowMs() >= NET_OTA_VALIDATE_MS) {
     markAppValidOnce();
   }
   if (!netUp()) return;

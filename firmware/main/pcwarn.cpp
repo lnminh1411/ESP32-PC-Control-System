@@ -10,8 +10,9 @@
 #include "log.h"
 #include "pcstats.h"
 #include "sys.h"
+#include "settings_or_example.h"
 
-#define AVG_MS_DEFAULT 2000
+#define AVG_MS_DEFAULT PCWARN_AVG_MS
 #define AVG_MS_MIN 500
 #define AVG_MS_MAX 5000
 #define SAMPLES 12   // the PC sends a sample every 500 ms: room for a 5 s window
@@ -32,16 +33,16 @@ struct Metric {
 };
 
 static Metric metrics[] = {
-  {"ram_load", "RAM", false, 80.0f, 90.0f, NAN, NAN},
-  {"cpu_load", "CPU", false, 90.0f, NAN, NAN, NAN},
-  {"gpu1_load", "GPU1", false, 90.0f, NAN, NAN, NAN},
-  {"gpu2_load", "GPU2", false, 90.0f, NAN, NAN, NAN},
-  {"gpu1_vram_pct", "VRAM", false, 90.0f, NAN, NAN, NAN},   // RX 6600 only: used / total
-  {"cpu_temp", "CPU", true, NAN, 80.0f, NAN, NAN},
-  {"gpu1_temp", "GPU1", true, NAN, 80.0f, NAN, NAN},
-  {"gpu2_temp", "GPU2", true, NAN, 75.0f, NAN, NAN},
-  {"ram_temp", "RAM", true, NAN, 75.0f, NAN, NAN},
-  {"vrm_temp", "VRM", true, NAN, 75.0f, NAN, NAN},
+  {"ram_load", "RAM", false, PCWARN_RAM_LOAD_HIGH, PCWARN_RAM_LOAD_CRIT, NAN, NAN},
+  {"cpu_load", "CPU", false, PCWARN_CPU_LOAD_HIGH, NAN, NAN, NAN},
+  {"gpu1_load", "GPU1", false, PCWARN_GPU1_LOAD_HIGH, NAN, NAN, NAN},
+  {"gpu2_load", "GPU2", false, PCWARN_GPU2_LOAD_HIGH, NAN, NAN, NAN},
+  {"gpu1_vram_pct", "VRAM", false, PCWARN_GPU1_VRAM_HIGH, NAN, NAN, NAN},   // RX 6600 only: used / total
+  {"cpu_temp", "CPU", true, NAN, PCWARN_CPU_TEMP_CRIT, NAN, NAN},
+  {"gpu1_temp", "GPU1", true, NAN, PCWARN_GPU1_TEMP_CRIT, NAN, NAN},
+  {"gpu2_temp", "GPU2", true, NAN, PCWARN_GPU2_TEMP_CRIT, NAN, NAN},
+  {"ram_temp", "RAM", true, NAN, PCWARN_RAM_TEMP_CRIT, NAN, NAN},
+  {"vrm_temp", "VRM", true, NAN, PCWARN_VRM_TEMP_CRIT, NAN, NAN},
 };
 #define N_METRICS ((int)(sizeof metrics / sizeof metrics[0]))
 

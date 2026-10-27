@@ -32,7 +32,7 @@
 #include "night.h"
 #include "pcstats.h"
 #include "screens.h"
-#include "secrets_or_example.h"
+#include "settings_or_example.h"
 #include "sys.h"
 
 #define API "https://discord.com/api/v10"
@@ -511,7 +511,7 @@ static void addBrightnessSelect(cJSON *comps) {
 // names: all, main (motherboard + ARGB headers) or ram. A pick here holds
 // until "Auto" hands the group back to PcHwCtl's own rules.
 struct RgbOpt { const char *value, *label; };
-static const RgbOpt RGB_GROUPS[] = {{"all", "All"}, {"main", "Motherboard"}, {"ram", "RAM"}};
+static const RgbOpt RGB_GROUPS[] = {HW_RGB_GROUPS};
 static const RgbOpt RGB_MODES[] = {
   {"auto", "Auto (PcHwCtl rules)"}, {"off", "Off"}, {"static", "Static color"},
   {"breathing", "Breathing"}, {"rainbow", "Rainbow"}, {"gradient", "Gradient"}};
@@ -584,7 +584,7 @@ static bool rgbCommand(const char *cmd, const char *what) {
 // and after each action; live model state comes from the hub's ai.* keys.
 static char aiStatus[121] = "";          // last status words, "" = unknown
 static char aiStatusErr[64] = "";        // why the last status failed
-static int aiIdleOn = 20;                // auto-unload minutes to restore after "off"
+static int aiIdleOn = LOCAL_AI_IDLE_MIN; // auto-unload minutes to restore after "off"
 
 static void aiRefreshStatus() {
   char out[121];
@@ -657,19 +657,15 @@ static void addAiRows(cJSON *comps, cJSON *r) {
 // command each. The GPU fans run their own curves (RX 6600 through the
 // driver's OD8 fan curve, RTX 3050 through LHM) and get a Zero RPM menu in
 // place of the curve menu.
-static const RgbOpt FAN_TARGETS[] = {
-  {"all", "All fans"}, {"case", "Case fans"}, {"cpu-fans", "CPU fans"}, {"rear-fan", "Rear fan"},
-  {"front-fans", "Front fans"}, {"gpu-amd", "RX 6600 fan"}, {"gpu-nvidia", "RTX 3050 fan"}};
-static const char *const FAN_CASE_KEYS[] = {"cpu-fans", "rear-fan", "front-fans"};
-static const RgbOpt FAN_SHOWN[] = {   // embed rows: state.txt keys use _ for -
-  {"cpu_fans", "CPU fans"}, {"rear_fan", "Rear fan"}, {"front_fans", "Front fans"}, {"water_pump", "Water pump"},
-  {"gpu_amd", "RX 6600"}, {"gpu_nvidia", "RTX 3050"}};
+static const RgbOpt FAN_TARGETS[] = {HW_FAN_TARGETS};
+static const char *const FAN_CASE_KEYS[] = {HW_FAN_CASE_KEYS};
+static const RgbOpt FAN_SHOWN[] = {HW_FAN_SHOWN};   // embed rows: state.txt keys use _ for -
 static const RgbOpt FAN_ZERO_RPM[] = {{"on", "Zero RPM: on (stops when cool)"}, {"off", "Zero RPM: off (always spins)"},
   {"default", "Zero RPM: config default"}};
 static const RgbOpt FAN_SPEEDS[] = {{"20", "Speed 20 %"}, {"30", "Speed 30 %"}, {"40", "Speed 40 %"}, {"50", "Speed 50 %"},
   {"60", "Speed 60 %"}, {"70", "Speed 70 %"}, {"80", "Speed 80 %"}, {"90", "Speed 90 %"}, {"100", "Speed 100 %"}};
 static const RgbOpt FAN_CURVES[] = {{"graph", "Curve: graph"}, {"flat", "Curve: flat"}, {"auto", "Curve: auto"}};
-static const int FAN_HOLD_MIN[] = {5, 15, 60};
+static const int FAN_HOLD_MIN[] = {HW_FAN_HOLD_MIN};
 static uint8_t fanTarget = 0;            // index into FAN_TARGETS
 static uint8_t fanHold = 1;              // index into FAN_HOLD_MIN
 
@@ -891,7 +887,8 @@ static void buildEmbed(cJSON *embed, const char *footerText, bool standing) {
     addField(fields, "PSRAM", v);
     addField(fields, "Last restart", resetReasonText());
     if (ledMode() == LED_OFF) snprintf(v, sizeof v, "off");
-    else snprintf(v, sizeof v, "on, max %u %%%s", (unsigned)ledBrightness(), nightEngaged() ? " (night: 20 %)" : "");
+    else if (nightEngaged()) snprintf(v, sizeof v, "on, max %u %% (night: %d %%)", (unsigned)ledBrightness(), NIGHT_STATUS_LED_PCT);
+    else snprintf(v, sizeof v, "on, max %u %%", (unsigned)ledBrightness());
     addField(fields, "Status LED", v);
   } else {
     for (int i = 0; i < N_PANELS; i++) {
@@ -900,8 +897,10 @@ static void buildEmbed(cJSON *embed, const char *footerText, bool standing) {
       snprintf(v, sizeof v, "%s, %u %%", screensForce[i] == FACE_NONE ? "auto" : faceLabel(screensForce[i]), backlightPct(i));
       addField(fields, name, v);
     }
+    char nightDisp[40];
+    snprintf(nightDisp, sizeof nightDisp, "night mode (%d %%, PC-off screens)", NIGHT_PANEL_PCT);
     addField(fields, "Displays", backlightForcedOff() ? "off" : backlightIsIdle() ? "dark (PC asleep)" :
-                                 nightEngaged() ? "night mode (10 %, PC-off screens)" : "on");
+                                 nightEngaged() ? nightDisp : "on");
   }
 
   const char *ft = (footerText && footerText[0]) ? footerText :
@@ -1518,8 +1517,10 @@ static void onInteraction(cJSON *d) {
       sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
     } else if (!strcmp(cid, "night")) {
       nightSetEnabled(!nightEnabled());
-      snprintf(lastPanelResult, sizeof lastPanelResult, "Night mode %s",
-               nightEnabled() ? "on: 22:00-06:00 after 15 min without input" : "off");
+      char win[40];
+      nightWindowText(win, sizeof win);
+      if (nightEnabled()) snprintf(lastPanelResult, sizeof lastPanelResult, "Night mode on: %s without input", win);
+      else snprintf(lastPanelResult, sizeof lastPanelResult, "Night mode off");
       sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
     } else if (!strcmp(cid, "led_toggle")) {
       bool off = ledMode() != LED_OFF;
@@ -1954,7 +1955,7 @@ static void botTask(void *) {
 }
 
 void discordInit() {
-  if (!DISCORD_TOKEN[0]) { logMsg("discord: off (no DISCORD_TOKEN in secrets.h)"); return; }
+  if (!DISCORD_TOKEN[0]) { logMsg("discord: off (no DISCORD_TOKEN in settings.h)"); return; }
   reqDone = xSemaphoreCreateBinary();
   restMutex[0] = xSemaphoreCreateMutex();
   restMutex[1] = xSemaphoreCreateMutex();

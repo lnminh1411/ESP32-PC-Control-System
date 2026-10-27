@@ -205,7 +205,7 @@ static partial class AgyQuota {
   static void MonitorLoop() {
     while (true) {
       try { SendMonitorFeed(); } catch (Exception ex) { Log("mon: " + ex.Message); }
-      Thread.Sleep(5000);
+      Thread.Sleep(HostSettings.MON_POLL_MS);
     }
   }
 

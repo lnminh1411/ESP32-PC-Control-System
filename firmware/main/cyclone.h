@@ -8,10 +8,12 @@
 #include <stdint.h>
 #include <time.h>
 
+#include "settings_or_example.h"
+
 #include "weather.h"
 
-constexpr float CYCLONE_RANGE_KM = 300.0f;    // "at home": centre within this distance
-constexpr float CYCLONE_WATCH_KM = 3000.0f;   // storms further away are not fetched
+constexpr float CYCLONE_RANGE_KM = CYCLONE_HOME_KM;     // "at home": centre within this distance
+constexpr float CYCLONE_WATCH_KM = CYCLONE_FETCH_KM;    // storms further away are not fetched
 constexpr int CYCLONE_MAX_POINTS = 64;
 
 struct CycloneCandidate {

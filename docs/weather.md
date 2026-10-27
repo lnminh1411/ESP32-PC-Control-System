@@ -18,7 +18,7 @@ Runs on the carrier firmware (ESP-IDF 5.5) in its own FreeRTOS task.
 
 ## 2. Setting Home Location
 
-Put it in `main/secrets.h` (applied at every boot):
+Put it in `main/settings.h` (applied at every boot):
 
 ```c
 #define WEATHER_HOME "21.0285,105.8542,Home"   // "lat,lon" or "lat,lon,name"
@@ -84,7 +84,7 @@ EMQX Cloud's Serverless broker is free up to a monthly allowance of session minu
 3. On the deployment's **Overview**, copy the **Address** and the **MQTT over TLS/SSL port** (8883).
 4. **Access Control -> Client Authentication -> Add**: one username and password, or one each for the board and the phone.
 5. The server certificate chains to DigiCert Global Root G2. It is in ESP-IDF's full certificate bundle (`CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL`), so no CA file is needed on the board.
-6. Add the credentials to your `secrets.h`:
+6. Add the credentials to your `settings.h`:
    ```c
    #define MQTT_URI        "mqtts://<address>:8883"
    #define MQTT_USER       "your_username"
@@ -109,7 +109,7 @@ Pushover sends push notifications directly to your phone when rain is heading to
 2. Copy your **User Key** (`PUSHOVER_USER`).
 3. Under **Your Applications**, click **Create an Application / API Token** (e.g. name "Desk Controller Rain Alert").
 4. Copy your **API Token** (`PUSHOVER_TOKEN`).
-5. Add keys to `secrets.h`:
+5. Add keys to `settings.h`:
    ```c
    #define PUSHOVER_TOKEN  "your_pushover_app_token"
    #define PUSHOVER_USER   "your_pushover_user_key"
@@ -283,7 +283,7 @@ A second rain source next to Open-Meteo: `timeline/1min` gives precipitation (mm
 
 1. Create an account at openweathermap.org and subscribe to **One Call API 4.0** ("One Call by Call"). A One Call 3.0 subscription does not carry over, and 3.0 can no longer be subscribed to.
 2. In the account's billing settings, cap the daily calls at **1000** (the free tier), so OpenWeather itself never bills for more.
-3. Copy the API key into secrets.h: `#define OWM_API_KEY "..."`. Empty = Open-Meteo only.
+3. Copy the API key into settings.h: `#define OWM_API_KEY "..."`. Empty = Open-Meteo only.
 
 **Which place**: the phone while it is away (more than 1 km from home) and OwnTracks has reported in the last 30 min; home otherwise. The other place keeps Open-Meteo alone. A move switches on the next poll.
 

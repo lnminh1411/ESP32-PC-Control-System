@@ -1,16 +1,17 @@
 // OpenWeather One Call 4.0: the next 60 minutes of rain, minute by minute,
 // for one place (home, or the phone while it is away), plus the IDs of the
 // weather alerts in force there. A second source next to Open-Meteo's
-// nowcast; weather.cpp merges the two. Needs OWM_API_KEY in secrets.h (empty
-// = off). Calls are budgeted on the board: 960 a day (UTC), the account's
+// nowcast; weather.cpp merges the two. Needs OWM_API_KEY in settings.h (empty
+// = off). Calls are budgeted on the board: OWM_CALLS_PER_DAY (960) a day (UTC), the account's
 // free tier is 1000.
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
 
+#include "settings_or_example.h"
 #include "weather.h"
 
-constexpr uint32_t OWM_DAILY_CALLS = 960;
+constexpr uint32_t OWM_DAILY_CALLS = OWM_CALLS_PER_DAY;
 
 struct OwmMinutely {
   bool valid;

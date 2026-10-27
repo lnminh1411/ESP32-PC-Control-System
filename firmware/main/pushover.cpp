@@ -7,7 +7,7 @@
 #include <string.h>
 
 #include "log.h"
-#include "secrets_or_example.h"
+#include "settings_or_example.h"
 
 static bool errLogged;
 
