@@ -337,6 +337,11 @@ PcHwCtl answer. Each change is posted to #pc-announcement. "Night auto" is the
 automatic engage; "Start night now" engages it at once, at any hour, until
 input on the PC or "End night now".
 
+Both night mode and Low power mode also switch Windows to PcHwCtl's "PcHwCtl
+Night" power plan (5 % processor cap, half the cores parked; PcHwCtl
+`docs/ipc.md`, "The PcHwCtl Night plan"), and back to PcHwCtl's day plan
+(High performance) when they end. The PC Control tab shows the active plan.
+
 **Low power mode** (PC Control button "Low power", console `night low on|off`)
 is the night's power side by hand, at any hour, until turned off: Process
 Lasso's night config (E-cores in efficiency mode, heavy exes left alone, the

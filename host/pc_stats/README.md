@@ -5,7 +5,7 @@ Windows service that collects configured PC stats (hardware sensors from [PcHwCt
 ## Two processes, one exe
 
 `ESP32-Helper.exe` runs as two processes, each with its own worker threads:
-- **Service** (`ESP32PcStats`, SYSTEM, session 0): stats, the HID/serial link, power actions, shutdown announcements, `@source` and `@claude` polling, text rendering, cover-art streaming. It runs before sign-in and after sign-out.
+- **Service** (`ESP32PcStats`, SYSTEM, session 0): stats, the HID/serial link, power actions, shutdown announcements, `@source` and `@claude` polling, text rendering, cover-art streaming. It runs before sign-in and after sign-out, at High CPU priority so the board's frames and replies stay on time while the PC is busy (the user-session half stays Normal).
 - **User-session half** (`ESP32-Helper.exe --user`): Antigravity quota, Claude Code token refresh, media session and cover art, screenshots. Windows keeps session 0 away from the desktop and the user's media sessions, so this part has to run in the user's session. The service starts it there with the signed-in user's token (normal user rights, not elevated) once someone signs in. It restarts the half if it dies (after 2 s, or 30 s if it died within 15 s of starting) and moves it on a user switch. In `--console` mode it starts the half as the current user (`--no-user` skips it).
 
 The two talk over a pair of anonymous pipes (UTF-8 lines):

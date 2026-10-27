@@ -2676,6 +2676,9 @@ partial class PcStats : ServiceBase {
       if (args[i] == "--port" && i + 1 < args.Length) fixedPort = args[++i];
       else if (args[i] == "--transport" && i + 1 < args.Length) transportMode = args[++i].ToLowerInvariant();
     }
+    // High priority: the board's frames and replies stay on time while the PC is busy
+    try { System.Diagnostics.Process.GetCurrentProcess().PriorityClass = System.Diagnostics.ProcessPriorityClass.High; }
+    catch (Exception ex) { Log("service: High priority refused: " + ex.Message); }
     worker = new Thread(Run) { IsBackground = true, Name = "pcstats" };
     worker.Start();
     StartUserHalf();

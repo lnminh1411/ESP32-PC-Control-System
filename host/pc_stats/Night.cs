@@ -16,8 +16,12 @@
 // foreground full-screen app (pc.fg_full / pc.fg_exe from the user half: a
 // game can be GPU-bound and CPU-light). Exes in HOST_NIGHT_ALWAYS stay pinned
 // even while heavy. New process names are picked up every 10 s.
+// Then `power plan night`: PcHwCtl's "PcHwCtl Night" Windows power plan (5 %
+// processor cap, half the cores parked, docs/ipc.md#the-pchwctl-night-plan).
 // "!night 0": `lasso load day` puts the normal config back (every process on
-// its own rule, or every CPU) and `eco off all` lifts efficiency mode.
+// its own rule, or every CPU), `eco off all` lifts efficiency mode and
+// `power plan day` switches to PcHwCtl's day plan (power.dayPlan, High
+// performance).
 //
 // pc.heavy / pc.heavy_by (every exe, kept ones too, all day): how many exes
 // are heavy and the busiest one. The board's night mode won't sleep or
@@ -236,6 +240,8 @@ partial class PcStats {
       nightOn = true;
       NightSave();   // before the first change
       NightPass(true, c);
+      r = c.Request("power plan night", out data);
+      Log("night: power plan night -> " + r);
     }
   }
 
@@ -342,13 +348,15 @@ partial class PcStats {
     }
     int moved = Changed(data);
     string e = PipeRequest(HostSettings.HWCTL_PIPE, "eco off all", NightTimeoutMs, out data);
+    int ecoChanged = Changed(data);
+    string plan = PipeRequest(HostSettings.HWCTL_PIPE, "power plan day", NightTimeoutMs, out data);
     nightOn = false;
     nightPinned.Clear();
     nightDayRules.Clear();
     nightLeft.Clear();
     File.Delete(NightMarker);
     Log("night: " + why + ": " + (r == "ok" ? "normal Process Lasso config back (lasso load day), " + moved + " processes moved" : "lasso load day -> " + r) +
-        ", efficiency mode off (" + e + (e == "ok" ? ", " + Changed(data) + " processes" : "") + ")");
+        ", efficiency mode off (" + e + (e == "ok" ? ", " + ecoChanged + " processes" : "") + "), power plan day -> " + plan);
   }
 
   // night.on: "on <time>", then "pin <exe>\t<name>" and "day <exe>\t<rule>\t<cpus>" lines

@@ -855,6 +855,8 @@ static void buildEmbed(cJSON *embed, const char *footerText, bool standing) {
     addField(fields, "Night mode", v);
     nightLowPowerStatus(v, sizeof v);
     addField(fields, "Low power mode", v);
+    const char *plan = pcText("hw.plan");
+    addField(fields, "Power plan", *plan ? plan : "--");
     addPcStatsFields(fields);
   } else if (cat == CAT_RGB) {
     const char *mainRule = pcText("hw.rgb.main"), *ramRule = pcText("hw.rgb.ram");
