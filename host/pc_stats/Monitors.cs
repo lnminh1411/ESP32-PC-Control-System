@@ -112,10 +112,10 @@ static partial class AgyQuota {
   static readonly Dictionary<int, KeyValuePair<int, DateTime>> setPower = new Dictionary<int, KeyValuePair<int, DateTime>>();
 
   // Models whose DDC/CI power (VCP 0xD6) follows "power on|off", next to
-  // Windows' display off. Off is DPM off (4): the monitor still answers DDC
-  // and wakes on power on or on input.
-  static readonly string[] DdcPowerModels = { "DELL E1715S" };
-  const uint DdcPowerOff = 4;
+  // Windows' display off (settings.h HOST_MON_DDC_POWER_MODELS). Off is DPM
+  // off (4): the monitor still answers DDC and wakes on power on or on input.
+  static readonly string[] DdcPowerModels = HostSettings.List(HostSettings.MON_DDC_POWER_MODELS);
+  const uint DdcPowerOff = HostSettings.MON_DDC_POWER_OFF;
 
   static int Held(Dictionary<int, KeyValuePair<int, DateTime>> held, int i, int read) {
     KeyValuePair<int, DateTime> v;

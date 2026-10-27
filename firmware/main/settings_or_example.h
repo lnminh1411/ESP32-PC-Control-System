@@ -534,3 +534,9 @@
 #ifndef HOST_MON_POLL_MS
 #define HOST_MON_POLL_MS 5000                     // monitor DDC/CI state feed (mon.*) period
 #endif
+#ifndef HOST_MON_DDC_POWER_MODELS
+#define HOST_MON_DDC_POWER_MODELS "DELL E1715S"   // monitor models (DDC name, comma list) that also get DDC/CI power on/off; the rest only get Windows' display off
+#endif
+#ifndef HOST_MON_DDC_POWER_OFF
+#define HOST_MON_DDC_POWER_OFF 4                  // VCP 0xD6 value for off on those (4 = DPM off: still answers DDC, wakes on input)
+#endif
