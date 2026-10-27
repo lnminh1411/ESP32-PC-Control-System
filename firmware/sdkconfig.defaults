@@ -82,8 +82,12 @@ CONFIG_MBEDTLS_HARDWARE_AES=n
 CONFIG_ESP_WIFI_IRAM_OPT=n
 CONFIG_ESP_WIFI_RX_IRAM_OPT=n
 CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=8
-# static TX buffers (the PSRAM default) sit in internal RAM for good: 8, not 16
+# static TX buffers sit in internal RAM for good: 8, not 16. Static was the default only
+# while SPIRAM_TRY_ALLOCATE_WIFI_LWIP was on, so it is spelled out (a fresh build got dynamic)
+CONFIG_ESP_WIFI_STATIC_TX_BUFFER=y
 CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=8
+# the running board's value, also left over from SPIRAM_TRY_ALLOCATE_WIFI_LWIP (a fresh build got 4)
+CONFIG_LWIP_TCP_OOSEQ_MAX_PBUFS=0
 CONFIG_ESP_WIFI_RX_BA_WIN=8
 # mDNS packets in PSRAM: at boot the TLS handshakes left no internal RAM and mDNS sends failed
 CONFIG_MDNS_MEMORY_ALLOC_SPIRAM=y
