@@ -27,6 +27,7 @@
 #include "log.h"
 #include "monctl.h"
 #include "net.h"
+#include "pushover.h"
 #include "optos.h"
 #include "pc_state.h"
 #include "night.h"
@@ -285,6 +286,8 @@ static int rest(const char *method, const char *path, const char *body, char *ou
 }
 
 static void postChannelEmbed(DiscordChannel ch, const char *title, const char *desc, uint32_t color) {
+  // #pc-announcement and #weather-announcement go to the phone too
+  if (ch == DC_PC || ch == DC_WEATHER) pushoverQueue(title, desc);
   const char *chId = channelId(ch);
   if (!chId[0]) return;
   cJSON *root = cJSON_CreateObject();

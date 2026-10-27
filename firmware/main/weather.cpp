@@ -994,8 +994,8 @@ static void publishPhone() {
       }
       size_t n = strlen(msg);
       snprintf(msg + n, sizeof msg - n, " [%s]", rainSrcName(alert));
-      discordPost(DC_WEATHER, "Rain soon where you are", msg, 0x3498DB);
-      pushoverSend("Rain soon", msg);
+      discordPost(DC_WEATHER, "Rain soon where you are", msg, 0x3498DB);   // Pushover too, via the post
+      if (!DISCORD_TOKEN[0]) pushoverQueue("Rain soon where you are", msg);
       phoneAlertSent = true;
       logMsg("weather: phone rain alert sent: %s", msg);
     }
@@ -1157,9 +1157,10 @@ static void weatherTask(void *) {
       testAlertPending = false;
       const char *testMsg = "Rain at your location in ~25 min (2.5 mm/h, from NW) [TEST]";
       discordPost(DC_WEATHER, "Rain soon where you are", testMsg, 0x3498DB);
-      pushoverSend("Rain soon", testMsg);
+      if (!DISCORD_TOKEN[0]) pushoverQueue("Rain soon where you are", testMsg);
       logMsg("weather: test-alert sent");
     }
+    if (currentNet) pushoverService();
 
     if (!currentNet || !homeConfigured || !httpBuf) {
       continue;

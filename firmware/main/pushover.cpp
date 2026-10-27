@@ -3,6 +3,9 @@
 #include <ctype.h>
 #include <esp_crt_bundle.h>
 #include <esp_http_client.h>
+#include <esp_heap_caps.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -26,8 +29,29 @@ static void urlEncode(const char *src, char *dst, size_t dstSize) {
   dst[di] = '\0';
 }
 
+struct PushMsg {
+  char title[96];
+  char message[320];
+};
+static QueueHandle_t pushQueue;   // storage in PSRAM: only the weather task reads it
+
 void pushoverInit() {
   errLogged = false;
+  if (PUSHOVER_TOKEN[0] && PUSHOVER_USER[0] && !pushQueue)
+    pushQueue = xQueueCreateWithCaps(6, sizeof(PushMsg), MALLOC_CAP_SPIRAM);
+}
+
+void pushoverQueue(const char *title, const char *message) {
+  if (!pushQueue || !title) return;
+  PushMsg m = {};
+  snprintf(m.title, sizeof m.title, "%s", title);
+  snprintf(m.message, sizeof m.message, "%s", message && message[0] ? message : title);
+  if (xQueueSend(pushQueue, &m, 0) != pdTRUE) logMsg("pushover: queue full, dropped \"%s\"", m.title);
+}
+
+void pushoverService() {
+  static PushMsg m;   // 416 B: off the weather task's stack
+  if (pushQueue && xQueueReceive(pushQueue, &m, 0) == pdTRUE) pushoverSend(m.title, m.message);
 }
 
 bool pushoverSend(const char *title, const char *message) {

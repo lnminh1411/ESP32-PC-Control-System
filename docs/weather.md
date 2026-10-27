@@ -104,7 +104,7 @@ EMQX Cloud's Serverless broker is free up to a monthly allowance of session minu
 
 ## 5. Pushover Notification Setup
 
-Pushover sends push notifications directly to your phone when rain is heading towards your current location:
+Pushover sends every #pc-announcement and #weather-announcement post to your phone as a push notification: rain heading your way, weather alerts, cyclones, PC on/off, night mode, board restarts. The Discord title becomes the notification title, and the embed text the message (or the title when there is none). Posts are queued (6 at most) and sent one per second by the weather task. Without a Discord token, only the phone rain alert goes out, straight to Pushover.
 
 1. Create an account at [Pushover](https://pushover.net/) and install the mobile app.
 2. Copy your **User Key** (`PUSHOVER_USER`).

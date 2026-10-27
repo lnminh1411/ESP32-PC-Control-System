@@ -191,7 +191,7 @@ sprite; the transport underneath is esp_lcd with RGB444 on the wire.
 | `pcwarn` | PC usage warnings: 2 s averages against limits saved in NVS |
 | `pc_state`, `pc_going` | PC power state from USB events; restart/update detection; status LED |
 | `optos`, `power` | Door presses and the reset pulse; Wake-on-LAN and USB power commands |
-| `weather`, `nowcast`, `owm`, `cyclone`, `owntracks`, `pushover` | Open-Meteo forecast and AQI, rain nowcast and warnings, OpenWeather One Call 4.0 minute-by-minute rain and alerts, GDACS typhoon tracking, phone location over MQTT, rain alerts ([docs/weather.md](docs/weather.md)) |
+| `weather`, `nowcast`, `owm`, `cyclone`, `owntracks`, `pushover` | Open-Meteo forecast and AQI, rain nowcast and warnings, OpenWeather One Call 4.0 minute-by-minute rain and alerts, GDACS typhoon tracking, phone location over MQTT, Pushover copies of the PC and weather announcements ([docs/weather.md](docs/weather.md)) |
 | `board_time` | Wall clock: SNTP over Wi-Fi, else the time the PC sends |
 | `net`, `discord` | Wi-Fi, mDNS, HTTP OTA and layout upload; Discord bot with an `/actions` panel |
 | `gif_store` | GIF frames pre-packed as RGB444 with per-frame dirty rects, saved to FAT |
