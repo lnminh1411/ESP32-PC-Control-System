@@ -27,6 +27,18 @@ public:
   bool isDry() const { return isDry_; }
   float lastSpeed() const { return lastSpeed_; }
 
+  // Upwind probe: N_PROBE points along the motion vector, where the rain that
+  // reaches home in PROBE_MIN[i] minutes is now. Needs a nowcast that found
+  // the rain moving (5+ km/h).
+  static constexpr int N_PROBE = 8;
+  bool canProbe() const { return hasLoc_ && !isDry_ && lastSpeed_ >= 5.0f; }
+  int buildProbeUrl(char *out, size_t maxLen) const;
+  // Rain end at home from the probe's current values, carried home unchanged
+  // at the rain's speed: halfway between the last wet point and the first dry
+  // one after it. Returns PROBE_* below; *endUnix set for PROBE_END.
+  enum { PROBE_BAD, PROBE_NO_RAIN, PROBE_END, PROBE_BEYOND };
+  int processProbe(const char *json, uint32_t nowUnix, bool rainingNow, uint32_t *endUnix) const;
+
 private:
   static constexpr int N_POINTS = 17;
   static constexpr int N_STEPS = 10; // k = -2..7
@@ -37,6 +49,7 @@ private:
   uint32_t cadenceMs_;
   bool isDry_;
   float lastSpeed_;
+  float lastVx_, lastVy_;   // motion vector, km/h east and north (where the rain goes)
 
   // Field values in mm/h: F_[step_idx][point_idx]
   // step_idx = k + 2 (k = -2..7 -> step_idx 0..9)

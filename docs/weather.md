@@ -221,9 +221,40 @@ Rain (home engine) to #weather-announcement:
 - **Watch**: rain only one source sees, and not convincingly (see 11b), is shown on the
   weather face (`Rain possible ~19:31`, `OpenWeather only, 0.6 mm/h`), in `weather show`
   and in the "Currently" update, but never posted as a warning.
-- **Length**: the end comes from the nowcasts, else from the hourly forecast, but only when
-  the hourly forecast has rain at that time. When it has none (a shower it misses), the
-  post says the length is unknown instead of making one up.
+- **Length**: see 8b. Posts name where the end comes from: `Lasts ~35 min (until ~14:40, upwind)`.
+
+### 8b. Rain end
+
+No source sees a rain's end reliably more than about an hour out. The end is taken, first
+that has one:
+
+1. **Nowcast and OpenWeather**: Open-Meteo's nowcast end (about 105 min ahead) and
+   OpenWeather's minute-by-minute end (inside its hour, with 10+ dry minutes after). The
+   OpenWeather end counts only once two of its hours in a row agree on it within 5 min.
+   With both, the later one.
+2. **Upwind probe** (home only): while rain is coming or falling and the nowcast found it
+   moving (5+ km/h), every 10 min (`WEATHER_UPWIND_POLL_MS`) one Open-Meteo call for 8
+   points along the motion vector, where the rain that reaches home in 10, 20, 30, 45, 60,
+   75, 90 and 120 min is now. Each point's current 15-min value is carried home unchanged
+   at the rain's speed; the end is halfway between the last wet point and the first dry one
+   after it. 8 calls each time, counted in the home budget. Open-Meteo's 15-min field
+   outside Europe and North America is model data, not radar, so this reads the model's
+   rain band further upstream than the 25 km nowcast grid.
+3. **Hourly forecast**: the first dry hour 30+ min after the start, only when the hourly
+   forecast has the rain at all.
+4. **Usual length** when nothing has an end, by the kind of rain in the hourly weather
+   codes around the start: a shower (80-82, or rain the forecast misses altogether)
+   `usually 20-60 min (until ~14:20-15:00)`, a thunderstorm (95-99) 30-90 min
+   (`WEATHER_SHOWER_*`, `WEATHER_TSTORM_*`), steady rain (51-67) `no end in the 12 h forecast`.
+
+**Accuracy tracking**: for each rain at home, the board keeps every source's first end
+estimate (nowcast, OpenWeather, upwind, hourly, and the middle of the usual range) and
+scores it against when the rain was seen to stop: the first poll in which no source sees
+rain at that minute, once it has stayed so for 10 min. Per source it keeps the number of
+rains, the mean minutes off, the bias (+ = guessed too late) and how far ahead the first
+guess came, in NVS (`endst`), so they survive reboots. `weather show` prints them and the
+last rain's errors; `weather end-reset` clears them. Each finished rain also logs
+`weather: rain 14:02-14:47 over; first end guesses off by (min): nowcast +5, upwind -3`.
 
 Typhoons:
 
@@ -309,7 +340,7 @@ A second rain source next to Open-Meteo: `timeline/1min` gives precipitation (mm
   - The other source fresh and dry over that time: a watch; a warning only once it rains and the lone source has seen it for 3 polls in a row.
   - Otherwise: a warning when it starts within 30 min (`WEATHER_RAIN_SURE_MIN`) or the lone source has seen it for 2 polls in a row; a watch before that.
 - **Neither**: dry. "Cleared" follows two polls without a warning.
-- An end inside the hour (10+ dry minutes after the rain) fills in when Open-Meteo has none.
+- The end: see 8b (OpenWeather's counts once two hours in a row agree on it).
 - During a watch OpenWeather polls at the rain cadence, to confirm or drop it sooner.
 
 Discord rain posts and the media screen's rain box say who saw it: Open-Meteo, OpenWeather or both.
@@ -329,7 +360,8 @@ Access commands via USB-UART or Discord `/actions` command:
 | `weather demo [rain\|typhoon]` | Loads sample weather onto the display for 5 min: dry, a heavy shower in 25 min, or a typhoon at home. Polls leave it alone and nothing is posted. |
 | `weather clear` | Clears all weather, rain alert and cyclone buffers. |
 | `weather storms` | Fetches the GDACS list and every nearby storm's track again now. |
-| `weather owm-check [minute][L]` | Runs the merge on a made-up OpenWeather hour, 20 min of rain from that minute (4 mm/h; `L` = 0.6 mm/h), against home's Open-Meteo result, and prints the verdict (warning, watch, raining, dry), start, end and sources. Nothing is stored or posted. |
+| `weather owm-check [minute][L]` | Runs the merge on a made-up OpenWeather hour, 20 min of rain from that minute (4 mm/h; `L` = 0.6 mm/h), against home's Open-Meteo result, and prints the verdict (warning, watch, raining, dry), start, end, where the end comes from, the kind of rain and the sources. Nothing is stored or posted. |
+| `weather end-reset` | Clears the rain-end accuracy stats (8b). |
 | `weather test-alert` | Sends an immediate test notification through both Discord and Pushover channels. |
 
 ---

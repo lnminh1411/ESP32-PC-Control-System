@@ -377,6 +377,21 @@
 #ifndef OWM_RAIN_SOLID_MIN
 #define OWM_RAIN_SOLID_MIN 3                      // ...or this many rain minutes in a row to be more than a watch
 #endif
+#ifndef WEATHER_SHOWER_MIN
+#define WEATHER_SHOWER_MIN 20                     // a shower usually lasts this many minutes...
+#endif
+#ifndef WEATHER_SHOWER_MAX
+#define WEATHER_SHOWER_MAX 60                     // ...to this many (shown when no source has an end)
+#endif
+#ifndef WEATHER_TSTORM_MIN
+#define WEATHER_TSTORM_MIN 30                     // a thunderstorm's rain: this many minutes...
+#endif
+#ifndef WEATHER_TSTORM_MAX
+#define WEATHER_TSTORM_MAX 90                     // ...to this many
+#endif
+#ifndef WEATHER_UPWIND_POLL_MS
+#define WEATHER_UPWIND_POLL_MS (10 * 60 * 1000)   // upwind probe (8 Open-Meteo calls) this often while rain is coming or falling at home
+#endif
 #ifndef WEATHER_TYPHOON_NEAR_S
 #define WEATHER_TYPHOON_NEAR_S (6 * 3600)         // a typhoon arriving within this shows on the screens and gets per-minute posts
 #endif

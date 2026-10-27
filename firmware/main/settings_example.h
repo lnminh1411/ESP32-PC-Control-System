@@ -188,6 +188,11 @@
 #define WEATHER_RAIN_SURE_MMH 2.0f                // ...or at this mm/h and up, whatever the other source says
 #define OWM_RAIN_SOLID_MMH 0.8f                   // OpenWeather alone: needs this peak mm/h...
 #define OWM_RAIN_SOLID_MIN 3                      // ...or this many rain minutes in a row to be more than a watch
+#define WEATHER_SHOWER_MIN 20                     // a shower usually lasts this many minutes...
+#define WEATHER_SHOWER_MAX 60                     // ...to this many (shown when no source has an end)
+#define WEATHER_TSTORM_MIN 30                     // a thunderstorm's rain: this many minutes...
+#define WEATHER_TSTORM_MAX 90                     // ...to this many
+#define WEATHER_UPWIND_POLL_MS (10 * 60 * 1000)   // upwind probe (8 Open-Meteo calls) this often while rain is coming or falling at home
 #define WEATHER_TYPHOON_NEAR_S (6 * 3600)         // a typhoon arriving within this shows on the screens and gets per-minute posts
 #define WEATHER_AQI_MODERATE 50                   // air quality index above this: Moderate
 #define WEATHER_AQI_HIGH 100                      // above this: High

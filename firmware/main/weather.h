@@ -47,7 +47,19 @@ struct RainAlert {
   bool watch;            // rain possible but unconfirmed (one source, light or far off):
                          // shown, never posted; active and raining stay false
   bool endUnknown;       // no end, and the hourly forecast has no rain then (a shower)
+  uint8_t endSrc;        // RAIN_END_*: where endUnix comes from
+  uint8_t kind;          // RAIN_KIND_*: from the hourly weather codes around the start
 };
+
+// Rain end sources, also the slots of the end tracker (`weather show`).
+// RANGE: the middle of the shower's usual length, when nothing else has an end
+enum : uint8_t { RAIN_END_NONE, RAIN_END_NOWCAST, RAIN_END_OWM, RAIN_END_UPWIND, RAIN_END_HOURLY, RAIN_END_RANGE, RAIN_END_N };
+const char *rainEndSrcName(uint8_t src);   // "nowcast", "OpenWeather", "upwind", "hourly", "range"
+// Steady rain (WMO 51-67) can last hours; a shower (80-82, or rain the hourly
+// forecast misses) and a thunderstorm (95-99) have a usual length
+enum : uint8_t { RAIN_KIND_STEADY, RAIN_KIND_SHOWER, RAIN_KIND_THUNDER };
+// The usual length of a shower or thunderstorm in minutes; false for steady rain
+bool rainKindRange(uint8_t kind, int *loMin, int *hiMin);
 
 enum : uint8_t { RAIN_SRC_OPEN_METEO = 1, RAIN_SRC_OPENWEATHER = 2 };
 const char *rainSrcName(const RainAlert &a);   // "Open-Meteo", "OpenWeather", "both"

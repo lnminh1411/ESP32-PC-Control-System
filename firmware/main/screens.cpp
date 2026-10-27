@@ -1056,8 +1056,10 @@ static void drawWeather(LGFX_Sprite &c) {
     struct tm at;
     if (rain.endUnix && boardLocalTimeAt((time_t)rain.endUnix, &at))
       snprintf(line, sizeof line, "%s until ~%02d:%02d", wxTierName(rain.tier), at.tm_hour, at.tm_min);
+    else if (int lo, hi; rainKindRange(rain.kind, &lo, &hi))
+      snprintf(line, sizeof line, "%s, usually %d-%d min", wxTierName(rain.tier), lo, hi);
     else
-      snprintf(line, sizeof line, rain.endUnknown ? "%s, length unknown" : "%s, no end in sight", wxTierName(rain.tier));
+      snprintf(line, sizeof line, "%s, no end in sight", wxTierName(rain.tier));
     c.drawString(line, 18, 210);
     int left = rainLeftMin(rain);
     if (left >= 0) {

@@ -32,7 +32,7 @@ static const float GRID_Y[17] = {
 
 NowcastEngine::NowcastEngine()
   : lat_(0.0), lon_(0.0), hasLoc_(false), alert_{}, cadenceMs_(30 * 60 * 1000),
-    isDry_(true), lastSpeed_(0.0f) {
+    isDry_(true), lastSpeed_(0.0f), lastVx_(0.0f), lastVy_(0.0f) {
   memset(F_, 0, sizeof(F_));
 }
 
@@ -69,6 +69,72 @@ int NowcastEngine::buildUrl(char *out, size_t maxLen) const {
   len += snprintf(out + len, maxLen - len,
                   "&minutely_15=precipitation&past_minutely_15=2&forecast_minutely_15=8&timeformat=unixtime");
   return len;
+}
+
+// Minutes until the rain at each probe point reaches home
+static const float PROBE_MIN[NowcastEngine::N_PROBE] = {10, 20, 30, 45, 60, 75, 90, 120};
+
+int NowcastEngine::buildProbeUrl(char *out, size_t maxLen) const {
+  if (!canProbe()) return 0;
+  double cosLat = cos(lat_ * (M_PI / 180.0));
+  if (fabs(cosLat) < 0.01) cosLat = 0.01;
+  double lats[N_PROBE], lons[N_PROBE];
+  for (int i = 0; i < N_PROBE; i++) {
+    // upwind: against the motion, as far as the rain travels in PROBE_MIN[i]
+    float x = -lastVx_ * PROBE_MIN[i] / 60.0f, y = -lastVy_ * PROBE_MIN[i] / 60.0f;
+    lats[i] = lat_ + (double)y / 111.139;
+    double lon = lon_ + (double)x / (111.139 * cosLat);
+    while (lon > 180.0) lon -= 360.0;
+    while (lon < -180.0) lon += 360.0;
+    lons[i] = lon;
+  }
+  int len = snprintf(out, maxLen, "https://api.open-meteo.com/v1/forecast?latitude=");
+  for (int i = 0; i < N_PROBE; i++) len += snprintf(out + len, maxLen - len, "%s%.5f", i ? "," : "", lats[i]);
+  len += snprintf(out + len, maxLen - len, "&longitude=");
+  for (int i = 0; i < N_PROBE; i++) len += snprintf(out + len, maxLen - len, "%s%.5f", i ? "," : "", lons[i]);
+  len += snprintf(out + len, maxLen - len,
+                  "&minutely_15=precipitation&past_minutely_15=1&forecast_minutely_15=2&timeformat=unixtime");
+  return len < (int)maxLen ? len : 0;
+}
+
+int NowcastEngine::processProbe(const char *json, uint32_t nowUnix, bool rainingNow, uint32_t *endUnix) const {
+  cJSON *root = json ? cJSON_Parse(json) : nullptr;
+  if (!cJSON_IsArray(root) || cJSON_GetArraySize(root) < N_PROBE) {
+    cJSON_Delete(root);
+    return PROBE_BAD;
+  }
+  // each point's rain now: the slot whose 15 min (ending at its time) hold now
+  float mmh[N_PROBE];
+  for (int i = 0; i < N_PROBE; i++) {
+    cJSON *m15 = cJSON_GetObjectItem(cJSON_GetArrayItem(root, i), "minutely_15");
+    cJSON *times = cJSON_GetObjectItem(m15, "time"), *pr = cJSON_GetObjectItem(m15, "precipitation");
+    int n = cJSON_GetArraySize(pr);
+    if (!cJSON_IsArray(times) || !n || cJSON_GetArraySize(times) != n) {
+      cJSON_Delete(root);
+      return PROBE_BAD;
+    }
+    int pick = n - 1;
+    for (int j = 0; j < n; j++) {
+      cJSON *t = cJSON_GetArrayItem(times, j);
+      if (cJSON_IsNumber(t) && (uint32_t)t->valuedouble >= nowUnix) { pick = j; break; }
+    }
+    cJSON *v = cJSON_GetArrayItem(pr, pick);
+    mmh[i] = cJSON_IsNumber(v) && v->valuedouble > 0 ? (float)v->valuedouble * 4.0f : 0.0f;
+  }
+  cJSON_Delete(root);
+
+  bool wet = rainingNow;
+  float prevT = 0.0f;
+  for (int i = 0; i < N_PROBE; i++) {
+    if (mmh[i] >= NOWCAST_RAIN_MMH) {
+      wet = true;
+    } else if (wet && mmh[i] < NOWCAST_RAIN_END_MMH) {
+      *endUnix = nowUnix + (uint32_t)((prevT + PROBE_MIN[i]) * 30.0f);   // halfway, in seconds
+      return PROBE_END;
+    }
+    prevT = PROBE_MIN[i];
+  }
+  return wet ? PROBE_BEYOND : PROBE_NO_RAIN;
 }
 
 float NowcastEngine::interpolateField(int kIdx, float px, float py) const {
@@ -210,6 +276,8 @@ bool NowcastEngine::processResponse(const char *json, RainAlert *outAlert, uint3
   }
 
   lastSpeed_ = bestSpeed;
+  lastVx_ = bestVx;
+  lastVy_ = bestVy;
   char fromCompass[3] = "";
   if (bestSpeed >= 1.0f) {
     float fromX = -bestVx;
