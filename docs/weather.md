@@ -56,13 +56,13 @@ OwnTracks sends GPS updates from your smartphone to your private MQTT broker.
 ### App Configuration:
 1. **Preferences -> Connection**:
    - **Mode**: MQTT
-   - **Host**: Your HiveMQ cluster hostname (e.g. `xxxx.s1.eu.hivemq.cloud`)
+   - **Host**: your EMQX Serverless deployment address (e.g. `xxxxxxxx.ala.asia-southeast1.emqxsl.com`)
    - **Port**: `8883`
    - **WebSockets**: Disabled (native TCP/TLS MQTT)
    - **TLS / SSL**: Enabled
 2. **Identification**:
-   - **Username**: HiveMQ cluster username
-   - **Password**: HiveMQ cluster password
+   - **Username**: an EMQX client-authentication user (the phone's own, or shared with the board)
+   - **Password**: that user's password
    - **Device ID**: (e.g. `phone`)
    - **Tracker ID**: (e.g. `p1`)
 3. **Topic**:
@@ -75,23 +75,23 @@ OwnTracks sends GPS updates from your smartphone to your private MQTT broker.
 
 ---
 
-## 4. HiveMQ Cloud Free-Tier Setup
+## 4. EMQX Cloud Serverless Setup
 
-HiveMQ Cloud provides a free serverless MQTT broker suitable for OwnTracks:
+EMQX Cloud's Serverless broker is free up to a monthly allowance of session minutes and traffic. One always-connected board is about 44,600 minutes a month, and OwnTracks messages are tiny, so the board and a phone fit with room to spare.
 
-1. Sign up at [HiveMQ Cloud](https://www.hivemq.com/cloud/).
-2. Create a **Serverless** cluster (Free, up to 100 client connections).
-3. Under **Cluster Overview**, copy your cluster URL:
-   `mqtts://<cluster-id>.s1.eu.hivemq.cloud:8883`
-4. Under **Access Management**, add an MQTT user credentials (username and password).
-5. Add these credentials to your `secrets.h`:
+1. Sign in at [EMQX Cloud](https://cloud-intl.emqx.com/) and open the project (here **ESP32 Control**).
+2. **EMQX Broker -> New**, then **Serverless**. Pick the region nearest the board, e.g. Singapore (`ap-southeast-1`) from Vietnam, and keep the free spend limit.
+3. On the deployment's **Overview**, copy the **Address** and the **MQTT over TLS/SSL port** (8883).
+4. **Access Control -> Client Authentication -> Add**: one username and password, or one each for the board and the phone.
+5. The server certificate chains to DigiCert Global Root G2. It is in ESP-IDF's full certificate bundle (`CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL`), so no CA file is needed on the board.
+6. Add the credentials to your `secrets.h`:
    ```c
-   #define MQTT_URI        "mqtts://<cluster-id>.s1.eu.hivemq.cloud:8883"
+   #define MQTT_URI        "mqtts://<address>:8883"
    #define MQTT_USER       "your_username"
    #define MQTT_PASS       "your_password"
    #define OWNTRACKS_TOPIC "owntracks/your_username/phone"
    ```
-6. Leaving `MQTT_URI` empty (`""`) keeps the phone engine disabled. Secrets are never logged to console or UART.
+7. Leaving `MQTT_URI` empty (`""`) keeps the phone engine disabled. Secrets are never logged to console or UART.
 
 **Client footprint** (`owntracks.cpp`):
 - TLS over TCP only. The WebSocket transports are off in sdkconfig.defaults.
