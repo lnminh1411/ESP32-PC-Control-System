@@ -263,6 +263,13 @@ with a 1200-baud touch, flashes over the ROM's USB-Serial-JTAG port and
 starts the service again. `--idf coredump-info` runs any other `idf.py`
 action on that port instead. Wi-Fi, Discord and OTA settings go in
 `main/secrets.h` (copy `secrets_example.h`; the real file is gitignored).
+Adding or removing `secrets.h` re-runs CMake and recompiles `main` by itself;
+the image is about 1.5 MB with it and about 1.1 MB without.
+
+The build compiles only the ESP-IDF components `main` needs (`MINIMAL_BUILD`).
+`idf.cmd` caches what ESP-IDF's `export.bat` sets in
+`%LOCALAPPDATA%\esp-idf-env\` (it saves about 3.5 s per call); delete that folder
+after reinstalling or moving ESP-IDF.
 
 The Discord bot uses up to four channels, each set by its channel id in
 `secrets.h` and off when empty:
