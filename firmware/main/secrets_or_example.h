@@ -46,6 +46,9 @@
 #ifndef WOL_TARGET
 #define WOL_TARGET ""
 #endif
+#ifndef OWM_API_KEY
+#define OWM_API_KEY ""
+#endif
 #ifndef WEATHER_HOME
 #define WEATHER_HOME ""
 #endif

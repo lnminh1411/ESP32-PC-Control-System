@@ -42,7 +42,11 @@ struct RainAlert {
   char from[3];          // compass direction it moves in from ("NW")
   uint16_t dryKm;        // when inactive: radius known to be dry (0 = unknown)
   WxTier tier;           // home only: LIGHT_RAIN..STORM while active or raining
+  uint8_t src;           // RAIN_SRC_* bits: who sees the rain
 };
+
+enum : uint8_t { RAIN_SRC_OPEN_METEO = 1, RAIN_SRC_OPENWEATHER = 2 };
+const char *rainSrcName(const RainAlert &a);   // "Open-Meteo", "OpenWeather", "both"
 
 // Tropical cyclone near home (GDACS track + forecast)
 struct Cyclone {

@@ -21,6 +21,7 @@
 #include "log.h"
 #include "net.h"
 #include "nowcast.h"
+#include "owm.h"
 #include "owntracks.h"
 #include "pushover.h"
 #include "secrets_or_example.h"
@@ -97,6 +98,7 @@ enum ErrMask : uint16_t {
   ERR_PHONE_PARSE = 1 << 7,
   ERR_TC_HTTP     = 1 << 8,
   ERR_TC_TRACK    = 1 << 9,
+  ERR_OWM         = 1 << 10,
 };
 static uint16_t loggedErrors;
 static char lastError[96];               // shown by `weather show`
@@ -120,6 +122,19 @@ static void clearError(uint16_t mask) {
 const WeatherNow &weatherNow() { return now_; }
 const RainAlert &rainAlertHome() { return rainHome; }
 const RainAlert &rainAlertPhone() { return rainPhone; }
+
+const char *rainSrcName(const RainAlert &a) {
+  uint8_t s = a.src & (RAIN_SRC_OPEN_METEO | RAIN_SRC_OPENWEATHER);
+  return s == RAIN_SRC_OPENWEATHER ? "OpenWeather" : s == RAIN_SRC_OPEN_METEO ? "Open-Meteo" : s ? "both" : "--";
+}
+
+// Open-Meteo's own nowcast results; rainHome / rainPhone are these merged
+// with OpenWeather's minute-by-minute hour (owm.h) for the place it covers
+static RainAlert omHome, omPhone;
+static OwmMinutely owmLast;          // the last good OpenWeather hour
+static bool owmOnPhone;              // ...for the phone, not home
+static char owmSeen[8][40];          // alert IDs already posted
+static uint8_t owmSeenNext;
 const Cyclone &weatherCyclone() { return cyclone_; }
 
 const char *wxTierName(WxTier t) {
@@ -217,6 +232,7 @@ static void loadDemo(int mode) {
     rainHome.endUnix = clock ? (uint32_t)now + 95 * 60 : 0;
     rainHome.mmh = 9.2f;
     rainHome.tier = TIER_HEAVY_SHOWER;
+    rainHome.src = RAIN_SRC_OPEN_METEO | RAIN_SRC_OPENWEATHER;
     strcpy(rainHome.from, "NW");
   } else if (mode == 2) {
     cyclone_.tracked = cyclone_.active = true;
@@ -565,6 +581,31 @@ static WxTier rainTier(const RainAlert &a) {
   return mm >= 7.6f ? TIER_HEAVY_SHOWER : TIER_LIGHT_RAIN;
 }
 
+// OpenWeather's hour counts for 5 min after it was fetched, for its place only
+static bool owmFresh(bool phone, uint32_t now) {
+  return owmLast.valid && owmOnPhone == phone && now - owmLast.fetchedUnix < 5 * 60;
+}
+
+static void mergeOwm(RainAlert *a, bool phone) {
+  a->src = (a->active || a->raining) ? RAIN_SRC_OPEN_METEO : 0;
+  uint32_t now = (uint32_t)time(nullptr);
+  if (owmFresh(phone, now)) owmMergeRain(a, owmLast, now);
+}
+
+// rainHome from Open-Meteo's nowcast and OpenWeather's hour, after either
+static void publishHome() {
+  RainAlert a = omHome;
+  mergeOwm(&a, false);
+  if ((a.active || a.raining) && a.startUnix && !a.endUnix) a.endUnix = endFromHourly(a.startUnix);
+  if (a.active || a.raining) a.tier = rainTier(a);
+  if (demoOn()) return;
+  if (wxMutex) xSemaphoreTake(wxMutex, portMAX_DELAY);
+  rainHome = a;
+  homePolls++;
+  if (wxMutex) xSemaphoreGive(wxMutex);
+  wxDirty = true;
+}
+
 static void runHomeNowcast(char *buf, size_t cap) {
   char url[1024];
   homeNowcast.setLocation(homeLat, homeLon);
@@ -588,15 +629,8 @@ static void runHomeNowcast(char *buf, size_t cap) {
     return;
   }
   clearError(ERR_HOME_PARSE);
-
-  if ((alert.active || alert.raining) && alert.startUnix && !alert.endUnix) alert.endUnix = endFromHourly(alert.startUnix);
-  if (alert.active || alert.raining) alert.tier = rainTier(alert);
-  if (demoOn()) return;
-  if (wxMutex) xSemaphoreTake(wxMutex, portMAX_DELAY);
-  rainHome = alert;
-  homePolls++;
-  if (wxMutex) xSemaphoreGive(wxMutex);
-  wxDirty = true;
+  omHome = alert;
+  publishHome();
 }
 
 // "35 min", "1 h 10 min", "2 h"
@@ -656,7 +690,8 @@ static void rainWarnTick() {
     } else {
       n = snprintf(desc, sizeof desc, a.startUnix ? "No end in the 12 h forecast" : "Length unknown (no clock yet)");
     }
-    snprintf(desc + n, sizeof desc - n, "\n%.1f mm/h%s%s", a.mmh, a.from[0] ? ", moving in from " : "", a.from);
+    snprintf(desc + n, sizeof desc - n, "\n%.1f mm/h%s%s\nSeen by %s", a.mmh, a.from[0] ? ", moving in from " : "", a.from,
+             rainSrcName(a));
     discordPost(DC_WEATHER, title, desc, eta > 20 ? COL_YELLOW : COL_RED);
     logMsg("weather: warning posted: %s", title);
     warn.tier = a.tier;
@@ -677,7 +712,7 @@ static void rainWarnTick() {
     } else {
       n = snprintf(desc, sizeof desc, "No end in the 12 h forecast");
     }
-    snprintf(desc + n, sizeof desc - n, "\n%.1f mm/h", a.mmh);
+    snprintf(desc + n, sizeof desc - n, "\n%.1f mm/h\nSeen by %s", a.mmh, rainSrcName(a));
     discordPost(DC_WEATHER, title, desc, COL_RED);
     logMsg("weather: warning posted: %s", title);
     warn.tier = a.tier;
@@ -906,6 +941,8 @@ static void postWeatherUpdate() {
   logMsg("weather: update posted (%02d:%02d)", t.tm_hour, t.tm_min);
 }
 
+static void publishPhone();
+
 static void runPhoneNowcast(char *buf, size_t cap) {
   char url[1024];
   if (!phoneNowcast.buildUrl(url, sizeof(url))) return;
@@ -928,7 +965,14 @@ static void runPhoneNowcast(char *buf, size_t cap) {
     return;
   }
   clearError(ERR_PHONE_PARSE);
+  omPhone = alert;
+  publishPhone();
+}
 
+// rainPhone from both sources, and the "rain where you are" notification
+static void publishPhone() {
+  RainAlert alert = omPhone;
+  mergeOwm(&alert, true);
   if (wxMutex) xSemaphoreTake(wxMutex, portMAX_DELAY);
   rainPhone = alert;
   if (wxMutex) xSemaphoreGive(wxMutex);
@@ -947,6 +991,8 @@ static void runPhoneNowcast(char *buf, size_t cap) {
         snprintf(msg, sizeof(msg), "Rain at your location in ~%u min (%.1f mm/h)",
                  (unsigned)alert.etaMin, alert.mmh);
       }
+      size_t n = strlen(msg);
+      snprintf(msg + n, sizeof msg - n, " [%s]", rainSrcName(alert));
       discordPost(DC_WEATHER, "Rain soon where you are", msg, 0x3498DB);
       pushoverSend("Rain soon", msg);
       phoneAlertSent = true;
@@ -1019,6 +1065,58 @@ static void loadNvsConfig() {
   }
 }
 
+// A weather alert OpenWeather names for the first time: its details once, to
+// #weather-announcement (one alert call per poll at most)
+static void owmAlertsTick(char *buf, size_t cap) {
+  for (int i = 0; i < owmLast.nAlerts; i++) {
+    const char *id = owmLast.alerts[i];
+    bool seen = false;
+    for (auto &s : owmSeen) seen = seen || !strcmp(s, id);
+    if (seen) continue;
+    OwmAlert al;
+    if (!owmFetchAlert(id, buf, cap, &al)) return;   // budget or error: next poll
+    snprintf(owmSeen[owmSeenNext], sizeof owmSeen[0], "%s", id);
+    owmSeenNext = (owmSeenNext + 1) % 8;
+    char title[112], desc[320], s[24], e[24];
+    fmtClock(s, sizeof s, al.startUnix, true);
+    fmtClock(e, sizeof e, al.endUnix, true);
+    snprintf(title, sizeof title, "%.60s | %s", al.event, owmOnPhone ? "where you are" : homeName);
+    snprintf(desc, sizeof desc, "%s to %s%s%.48s\n%.200s", s, e, al.sender[0] ? ", from " : "", al.sender, al.text);
+    discordPost(DC_WEATHER, title, desc, COL_RED);
+    logMsg("weather: OpenWeather alert posted: %s", al.event);
+    return;
+  }
+}
+
+static void owmTick(char *buf, size_t cap, bool force, uint32_t *lastMs, uint32_t curMs) {
+  bool onPhone = owntracksEnabled() && owntracksValid() && owntracksAgeSec() < 30 * 60 &&
+                 !owntracksIsMerged(homeLat, homeLon);
+  double lat = homeLat, lon = homeLon;
+  if (onPhone) owntracksGetLocation(&lat, &lon, nullptr, nullptr);
+  const RainAlert &t = onPhone ? rainPhone : rainHome;
+  uint32_t now = (uint32_t)time(nullptr);
+  bool alertNow = owmLast.valid && owmLast.nAlerts && now - owmLast.fetchedUnix < 10 * 60;
+  uint32_t every = (t.active || t.raining || alertNow) ? 90 * 1000 : 120 * 1000;
+  if (onPhone != owmOnPhone) force = true;   // moved: the new place right away
+  if (!force && *lastMs && curMs - *lastMs < every) return;
+  if (!owmBudgetLeft()) return;
+  *lastMs = curMs;
+  OwmMinutely m;
+  if (!owmFetchMinutely(lat, lon, buf, cap, &m)) {
+    char err[96];
+    snprintf(err, sizeof err, "weather: OpenWeather: %s", owmLastError());
+    logErrorOnce(ERR_OWM, err);
+    return;
+  }
+  clearError(ERR_OWM);
+  bool moved = onPhone != owmOnPhone;
+  owmLast = m;
+  owmOnPhone = onPhone;
+  publishHome();                        // home gains or loses OpenWeather
+  if (onPhone || moved) publishPhone();
+  owmAlertsTick(buf, cap);
+}
+
 static void weatherTask(void *) {
   size_t httpBufCap = 48 * 1024;
   char *httpBuf = (char *)heap_caps_malloc(httpBufCap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -1033,6 +1131,7 @@ static void weatherTask(void *) {
   uint32_t lastJudgeMs = 0;
   uint32_t lastHomeNowcastMs = 0;
   uint32_t lastPhoneNowcastMs = 0;
+  uint32_t lastOwmMs = 0;
   uint32_t lastNvsSaveMs = nowMs();
   bool prevNetUp = false;
   uint32_t netUpMs = 0;
@@ -1118,6 +1217,11 @@ static void weatherTask(void *) {
       phoneDryStartMs = 0;
     }
 
+    // 3b. OpenWeather's minute-by-minute hour for one place: the phone while
+    // it is away and reported in the last 30 min, else home. Every 2 min,
+    // every 90 s while rain or a weather alert is near; 960 calls a day.
+    if (owmEnabled()) owmTick(httpBuf, httpBufCap, forceImmediate, &lastOwmMs, curMs);
+
     forceImmediate = false;
 
     // 4. Warnings and the 2-hourly update; storms re-judged every 30 s
@@ -1131,6 +1235,7 @@ static void weatherTask(void *) {
     // 5. Budget persistence every 15 min
     if (curMs - lastNvsSaveMs >= 15 * 60 * 1000) {
       saveBudgetNvs();
+      owmSaveCount();
       lastNvsSaveMs = curMs;
     }
   }
@@ -1175,6 +1280,7 @@ static void applyConfiguredHome() {
 void weatherInit() {
   wxMutex = xSemaphoreCreateMutex();
   loadNvsConfig();
+  owmInit();
   applyConfiguredHome();
   owntracksInit();
   pushoverInit();
@@ -1267,6 +1373,25 @@ void weatherCommand(const char *a1, const char *a2) {
     if (wxTaskHandle) xTaskNotifyGive(wxTaskHandle);
     logMsg("weather: cyclone refresh queued");
     return;
+  } else if (a1 && !strcmp(a1, "owm-check")) {
+    // the merge on a made-up OpenWeather hour (rain from minute N), home's
+    // Open-Meteo result untouched and nothing posted: `weather owm-check 12`
+    int from = a2 ? atoi(a2) : 10;
+    OwmMinutely m = {};
+    m.valid = true;
+    m.fetchedUnix = (uint32_t)time(nullptr);
+    m.dt0 = m.fetchedUnix;
+    m.n = 60;
+    for (int i = 0; i < 60; i++) m.mm[i] = (i >= from && i < from + 20) ? 4.0f : 0.0f;
+    RainAlert r = omHome;
+    r.src = (r.active || r.raining) ? RAIN_SRC_OPEN_METEO : 0;
+    owmMergeRain(&r, m, m.fetchedUnix);
+    char st[16], en[16];
+    fmtClock(st, sizeof st, r.startUnix, false);
+    fmtClock(en, sizeof en, r.endUnix, false);
+    logMsg("weather: owm-check rain from min %d: active %d raining %d eta %u start %s end %s %.1f mm/h, seen by %s", from,
+           r.active, r.raining, (unsigned)r.etaMin, st, en, r.mmh, rainSrcName(r));
+    return;
   } else if (a1 && !strcmp(a1, "test-alert")) {
     testAlertPending = true;
     if (wxTaskHandle) xTaskNotifyGive(wxTaskHandle);
@@ -1325,6 +1450,25 @@ void weatherCommand(const char *a1, const char *a2) {
                (unsigned)(phoneNowcast.cadenceMs() / 60000));
       }
     }
+
+    // OpenWeather
+    if (!owmEnabled()) {
+      logMsg("weather: OpenWeather: off (OWM_API_KEY empty)");
+    } else {
+      int first = -1;
+      float peak = 0;
+      for (int i = 0; i < owmLast.n; i++) {
+        if (owmLast.mm[i] >= 0.5f && first < 0) first = i;
+        if (owmLast.mm[i] > peak) peak = owmLast.mm[i];
+      }
+      char when[24] = "--";
+      if (owmLast.valid) fmtClock(when, sizeof when, owmLast.fetchedUnix, false);
+      logMsg("weather: OpenWeather: %s, last %s: %s, peak %.1f mm/h, %u alert(s) | %u/%u calls today%s%s",
+             owmOnPhone ? "phone" : "home", when, !owmLast.valid ? "no data yet" : first < 0 ? "dry for 60 min" :
+             first == 0 ? "raining" : "rain within the hour", peak, (unsigned)owmLast.nAlerts,
+             (unsigned)owmCallsToday(), (unsigned)OWM_DAILY_CALLS, owmLastError()[0] ? " | " : "", owmLastError());
+    }
+    logMsg("weather: rain seen by: home %s, phone %s", rainSrcName(rainHome), rainSrcName(rainPhone));
 
     // Cyclones (GDACS)
     int nTracks = 0;

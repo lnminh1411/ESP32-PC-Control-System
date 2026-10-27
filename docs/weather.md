@@ -11,6 +11,7 @@ Runs on the carrier firmware (ESP-IDF 5.5) in its own FreeRTOS task.
 - **Home Weather Display**: Displayed on Screen 2 (Media face) whenever the host PC is off, asleep, or restarting. Shows current temperature, min/max, weather icon, wind speed/direction, US AQI, and a 3-day forecast with daily highs/lows.
 - **Dedicated Network Task**: All network transactions (Open-Meteo HTTP requests, Pushover HTTPS POSTs, MQTT processing) run in a dedicated FreeRTOS task on Core 0 (`stack = 12 KB`, 48 KB PSRAM buffer), never blocking the main loop or display rendering.
 - **Thread Safety**: Finished structs (`WeatherNow`, `RainAlert`) are published to the main loop under mutex. When changed, `viewsMarkDirty(-1)` is triggered from `weatherPoll()` on the main loop.
+- **Two sources**: Open-Meteo (forecast, AQI, the 17-point nowcast) and, with `OWM_API_KEY` set, OpenWeather One Call 4.0's minute-by-minute rain for the next hour (section 11b). Rain alerts use both.
 - **SNTP Synchronization**: Once Wi-Fi connects, `board_time.cpp` starts `esp_sntp` pointing to `pool.ntp.org`. Time from the PC stats service (`pc.epoch`) only overrides time if SNTP has never synced. Forecast `utc_offset_seconds` automatically sets local timezone offset if PC stats has not provided `pc.tz_min`.
 
 ---
@@ -267,17 +268,45 @@ Open-Meteo allows up to 10,000 calls per UTC day. The firmware enforces a conser
 
 ---
 
+## 11b. OpenWeather One Call 4.0
+
+A second rain source next to Open-Meteo: `timeline/1min` gives precipitation (mm/h) for each of the next 60 minutes, measured for the exact place, plus the IDs of the weather alerts in force there (`firmware/main/owm.cpp`).
+
+**Setup**
+
+1. Create an account at openweathermap.org and subscribe to **One Call API 4.0** ("One Call by Call"). A One Call 3.0 subscription does not carry over, and 3.0 can no longer be subscribed to.
+2. In the account's billing settings, cap the daily calls at **1000** (the free tier), so OpenWeather itself never bills for more.
+3. Copy the API key into secrets.h: `#define OWM_API_KEY "..."`. Empty = Open-Meteo only.
+
+**Which place**: the phone while it is away (more than 1 km from home) and OwnTracks has reported in the last 30 min; home otherwise. The other place keeps Open-Meteo alone. A move switches on the next poll.
+
+**Cadence and budget**: one call every 2 min; every 90 s while rain is expected or falling at that place, or a weather alert is in force. At most **960 calls per UTC day**, counted on the board (NVS `o_day`, `o_calls`, saved every 10 calls and with the Open-Meteo counters). At 960 it stops until 00:00 UTC. A rejected key (401) pauses it for 30 min, a rate limit (429) for 15. The key is in the URL, so URLs are never logged.
+
+**Merging** (`owmMergeRain`): rain counts from 0.5 mm/h, Open-Meteo's nowcast threshold.
+
+- Rain anywhere in OpenWeather's hour makes the alert active, or raining when it is the current minute. Its start time wins, and the intensity is the higher of the two sources.
+- With OpenWeather dry, Open-Meteo's verdict stands. "Cleared" therefore needs both sources dry.
+- An end inside the hour (10+ dry minutes after the rain) fills in when Open-Meteo has none.
+- An OpenWeather hour counts for 5 min after it was fetched.
+
+Discord rain posts and the media screen's rain box say who saw it: Open-Meteo, OpenWeather or both.
+
+**Weather alerts**: a new alert ID gets one `alert/{id}` call (one per poll at most) and a red post in #weather-announcement: the event, the issuer, start and end, and the first 200 characters of the text.
+
+---
+
 ## 12. Console Commands
 
 Access commands via USB-UART or Discord `/actions` command:
 
 | Command | Description |
 |---|---|
-| `weather show` | Prints current weather, home engine status (tier, start and end), phone engine status, tracked cyclones, and budget usage. |
+| `weather show` | Prints current weather, home engine status (tier, start and end), phone engine status, OpenWeather (place, last hour, alerts, calls today), which source sees the rain, tracked cyclones, and budget usage. |
 | `weather home <lat>,<lon> [name]` | Sets home coordinates and location name. Persists to NVS and triggers immediate poll. |
 | `weather demo [rain\|typhoon]` | Loads sample weather onto the display for 5 min: dry, a heavy shower in 25 min, or a typhoon at home. Polls leave it alone and nothing is posted. |
 | `weather clear` | Clears all weather, rain alert and cyclone buffers. |
 | `weather storms` | Fetches the GDACS list and every nearby storm's track again now. |
+| `weather owm-check [minute]` | Runs the OpenWeather merge on a made-up hour with rain from that minute against home's Open-Meteo result and prints the outcome. Nothing is stored or posted. |
 | `weather test-alert` | Sends an immediate test notification through both Discord and Pushover channels. |
 
 ---

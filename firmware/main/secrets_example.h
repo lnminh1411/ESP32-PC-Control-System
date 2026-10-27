@@ -49,3 +49,8 @@
 // Weather home location, "lat,lon" or "lat,lon,name" (e.g. "21.0285,105.8542,Home").
 // Applied at every boot; empty = use the one set with `weather home <lat>,<lon> [name]`.
 #define WEATHER_HOME    ""
+
+// OpenWeather One Call 4.0 key: minute-by-minute rain for the next hour next
+// to Open-Meteo (docs/weather.md). Empty = Open-Meteo only. The board makes at
+// most 960 calls a day; set the account's own daily cap to 1000 as well.
+#define OWM_API_KEY     ""
