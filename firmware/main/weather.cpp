@@ -1705,7 +1705,10 @@ void weatherPoll() {
   if (netUp()) {
     boardTimeStartSntp();
     owntracksStart();
-    owntracksAskIfStale();
+    // last seen at home: no asking; the phone reports by itself once it moves away
+    double hLat, hLon;
+    double d = weatherHomeLocation(&hLat, &hLon) ? owntracksDistanceTo(hLat, hLon) : -1.0;
+    if (!(d >= 0.0 && d < OWNTRACKS_HOME_KM)) owntracksAskIfStale();
   }
 
   // live countdowns: redraw once a minute while a warning is up

@@ -19,7 +19,6 @@ static uint32_t shownId, incomingId;
 static size_t incomingLen, incomingSize;   // incomingSize: RGB444 (packed) or RGB565 bytes expected
 static uint32_t lastRequestMs;
 static uint32_t lastRequestId;
-static uint32_t incomingStartMs;   // for the transfer time in the log
 
 static bool ensureBuffers() {
   if (shown) return true;
@@ -43,7 +42,6 @@ void artLine(const char *line) {
       return;
     }
     incomingId = (uint32_t)id;
-    incomingStartMs = nowMs();
     incomingLen = 0;
     incomingSize = fmt == 444 ? ART_BYTES * 3 / 4 : ART_BYTES;
   } else if (!strncmp(rest, "d ", 2)) {
@@ -83,7 +81,6 @@ void artLine(const char *line) {
     shown = incoming;
     incoming = t;
     shownId = incomingId;
-    logMsg("art: %lu in %lu ms", (unsigned long)shownId, (unsigned long)(nowMs() - incomingStartMs));
     incomingId = 0;
   }
 }
