@@ -405,6 +405,97 @@ static bool checkBudgetForecast() {
   return true;
 }
 
+// Open-Meteo "current" + "daily" into a WeatherNow (no AQI: -1)
+static bool parseNow(cJSON *root, const char *place, WeatherNow *out) {
+  cJSON *curr = cJSON_GetObjectItem(root, "current");
+  cJSON *daily = cJSON_GetObjectItem(root, "daily");
+
+  if (!curr || !daily) return false;
+  {
+    WeatherNow &w = *out;
+    w = {};
+    w.valid = true;
+    w.aqi = -1;
+    snprintf(w.place, sizeof(w.place), "%s", place);
+
+    struct tm tmNow;
+    if (boardLocalTime(&tmNow)) {
+      snprintf(w.updated, sizeof(w.updated), "%02d:%02d", tmNow.tm_hour, tmNow.tm_min);
+    } else {
+      strcpy(w.updated, "--:--");
+    }
+
+    cJSON *temp = cJSON_GetObjectItem(curr, "temperature_2m");
+    cJSON *wcode = cJSON_GetObjectItem(curr, "weather_code");
+    cJSON *isDay = cJSON_GetObjectItem(curr, "is_day");
+    cJSON *wspd = cJSON_GetObjectItem(curr, "wind_speed_10m");
+    cJSON *wdir = cJSON_GetObjectItem(curr, "wind_direction_10m");
+
+    w.temp = temp ? (float)temp->valuedouble : 0.0f;
+    w.icon = wcode ? wmoToWxIcon(wcode->valueint) : WX_CLEAR;
+    w.isDay = isDay ? (isDay->valueint == 1) : true;
+    w.windKmh = wspd ? (float)wspd->valuedouble : 0.0f;
+    w.windFromDeg = wdir ? (uint16_t)wdir->valuedouble : 0;
+
+    cJSON *tmaxArr = cJSON_GetObjectItem(daily, "temperature_2m_max");
+    cJSON *tminArr = cJSON_GetObjectItem(daily, "temperature_2m_min");
+    cJSON *codeArr = cJSON_GetObjectItem(daily, "weather_code");
+    cJSON *timeArr = cJSON_GetObjectItem(daily, "time");
+
+    if (tmaxArr && cJSON_GetArraySize(tmaxArr) > 0) {
+      w.tmax = (int8_t)round(cJSON_GetArrayItem(tmaxArr, 0)->valuedouble);
+    }
+    if (tminArr && cJSON_GetArraySize(tminArr) > 0) {
+      w.tmin = (int8_t)round(cJSON_GetArrayItem(tminArr, 0)->valuedouble);
+    }
+
+    for (int i = 0; i < 3; i++) {
+      int idx = i + 1;
+      if (timeArr && idx < cJSON_GetArraySize(timeArr)) {
+        const char *ts = cJSON_GetArrayItem(timeArr, idx)->valuestring;
+        int y = 0, m = 0, d = 0;
+        if (ts && sscanf(ts, "%d-%d-%d", &y, &m, &d) == 3) {
+          snprintf(w.days[i].name, sizeof(w.days[i].name), "%s", calcDayName(y, m, d));
+        }
+      }
+      if (codeArr && idx < cJSON_GetArraySize(codeArr)) {
+        w.days[i].icon = wmoToWxIcon(cJSON_GetArrayItem(codeArr, idx)->valueint);
+      }
+      if (tmaxArr && idx < cJSON_GetArraySize(tmaxArr)) {
+        w.days[i].tmax = (int8_t)round(cJSON_GetArrayItem(tmaxArr, idx)->valuedouble);
+      }
+      if (tminArr && idx < cJSON_GetArraySize(tminArr)) {
+        w.days[i].tmin = (int8_t)round(cJSON_GetArrayItem(tminArr, idx)->valuedouble);
+      }
+    }
+  }
+  return true;
+}
+
+// The weather now (and the next days) at the phone's location, for the
+// 2-hourly update while you are away: one forecast call
+static bool fetchNowAt(double lat, double lon, char *buf, size_t cap, WeatherNow *w) {
+  if (!buf || !checkBudgetForecast()) return false;
+  char url[256];
+  snprintf(url, sizeof(url),
+           "https://api.open-meteo.com/v1/forecast?latitude=%.5f&longitude=%.5f"
+           "&current=temperature_2m,weather_code,is_day,wind_speed_10m,wind_direction_10m"
+           "&daily=weather_code,temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=4",
+           lat, lon);
+  int status = 0;
+  if (!httpGet(url, buf, cap, &status)) {
+    logMsg("weather: phone update: HTTP failed (%d)", status);
+    return false;
+  }
+  budgetTotalCalls++;
+  budgetFcCalls++;
+  cJSON *root = cJSON_Parse(buf);
+  if (!root) return false;
+  bool ok = parseNow(root, "where you are", w);
+  cJSON_Delete(root);
+  return ok;
+}
+
 static void fetchForecast(char *buf, size_t cap) {
   char url[320];
   snprintf(url, sizeof(url),
@@ -477,65 +568,8 @@ static void fetchForecast(char *buf, size_t cap) {
     if (wxMutex) xSemaphoreGive(wxMutex);
   }
 
-  cJSON *curr = cJSON_GetObjectItem(root, "current");
-  cJSON *daily = cJSON_GetObjectItem(root, "daily");
-
-  if (curr && daily) {
-    WeatherNow w = {};
-    w.valid = true;
-    snprintf(w.place, sizeof(w.place), "%s", homeName);
-
-    struct tm tmNow;
-    if (boardLocalTime(&tmNow)) {
-      snprintf(w.updated, sizeof(w.updated), "%02d:%02d", tmNow.tm_hour, tmNow.tm_min);
-    } else {
-      strcpy(w.updated, "--:--");
-    }
-
-    cJSON *temp = cJSON_GetObjectItem(curr, "temperature_2m");
-    cJSON *wcode = cJSON_GetObjectItem(curr, "weather_code");
-    cJSON *isDay = cJSON_GetObjectItem(curr, "is_day");
-    cJSON *wspd = cJSON_GetObjectItem(curr, "wind_speed_10m");
-    cJSON *wdir = cJSON_GetObjectItem(curr, "wind_direction_10m");
-
-    w.temp = temp ? (float)temp->valuedouble : 0.0f;
-    w.icon = wcode ? wmoToWxIcon(wcode->valueint) : WX_CLEAR;
-    w.isDay = isDay ? (isDay->valueint == 1) : true;
-    w.windKmh = wspd ? (float)wspd->valuedouble : 0.0f;
-    w.windFromDeg = wdir ? (uint16_t)wdir->valuedouble : 0;
-
-    cJSON *tmaxArr = cJSON_GetObjectItem(daily, "temperature_2m_max");
-    cJSON *tminArr = cJSON_GetObjectItem(daily, "temperature_2m_min");
-    cJSON *codeArr = cJSON_GetObjectItem(daily, "weather_code");
-    cJSON *timeArr = cJSON_GetObjectItem(daily, "time");
-
-    if (tmaxArr && cJSON_GetArraySize(tmaxArr) > 0) {
-      w.tmax = (int8_t)round(cJSON_GetArrayItem(tmaxArr, 0)->valuedouble);
-    }
-    if (tminArr && cJSON_GetArraySize(tminArr) > 0) {
-      w.tmin = (int8_t)round(cJSON_GetArrayItem(tminArr, 0)->valuedouble);
-    }
-
-    for (int i = 0; i < 3; i++) {
-      int idx = i + 1;
-      if (timeArr && idx < cJSON_GetArraySize(timeArr)) {
-        const char *ts = cJSON_GetArrayItem(timeArr, idx)->valuestring;
-        int y = 0, m = 0, d = 0;
-        if (ts && sscanf(ts, "%d-%d-%d", &y, &m, &d) == 3) {
-          snprintf(w.days[i].name, sizeof(w.days[i].name), "%s", calcDayName(y, m, d));
-        }
-      }
-      if (codeArr && idx < cJSON_GetArraySize(codeArr)) {
-        w.days[i].icon = wmoToWxIcon(cJSON_GetArrayItem(codeArr, idx)->valueint);
-      }
-      if (tmaxArr && idx < cJSON_GetArraySize(tmaxArr)) {
-        w.days[i].tmax = (int8_t)round(cJSON_GetArrayItem(tmaxArr, idx)->valuedouble);
-      }
-      if (tminArr && idx < cJSON_GetArraySize(tminArr)) {
-        w.days[i].tmin = (int8_t)round(cJSON_GetArrayItem(tminArr, idx)->valuedouble);
-      }
-    }
-
+  WeatherNow w;
+  if (parseNow(root, homeName, &w)) {
     if (wxMutex) xSemaphoreTake(wxMutex, portMAX_DELAY);
     w.aqi = now_.aqi; // preserve existing AQI until AQI call completes
     now_ = w;
@@ -990,7 +1024,8 @@ static struct {
   uint8_t dryPolls;     // polls without rain since
 } warn;
 
-static int rainPrio(WxTier t) { return t <= TIER_LIGHT_RAIN ? -1 : 0; }
+// Pushover priority: warnings high (WEATHER_ALERT_PRIO), all-clears normal
+static int rainPrio(WxTier) { return WEATHER_ALERT_PRIO; }
 
 static void rainWarnTick() {
   RainAlert a = rainHome;   // this task is the only writer
@@ -1036,7 +1071,7 @@ static void rainWarnTick() {
     if (warn.raining) snprintf(desc, sizeof desc, "The rain is over.");
     else if (a.watch) snprintf(desc, sizeof desc, "The rain is no longer expected (only %s still shows a chance).", rainSrcName(a));
     else snprintf(desc, sizeof desc, "The rain is no longer expected.");
-    discordPost(DC_WEATHER, title, desc, COL_GREEN, rainPrio(warn.tier));
+    discordPost(DC_WEATHER, title, desc, COL_GREEN, 0);
     logMsg("weather: warning cleared");
     uint32_t seen = warn.pollsSeen;
     warn = {};
@@ -1092,7 +1127,7 @@ static void cycloneTick() {
       if (ty.activePosted && ms - ty.hourPostMs < 3600 * 1000) return;
       snprintf(title, sizeof title, "%s %s Active | %s", kind, best.name, homeName);
       snprintf(desc, sizeof desc, "Centre ~%u km away, peak wind %u km/h", best.distKm, best.windKmh);
-      discordPost(DC_WEATHER, title, desc, COL_RED);
+      discordPost(DC_WEATHER, title, desc, COL_RED, WEATHER_ALERT_PRIO);
       ty.activePosted = ty.warned = true;
       ty.hourPostMs = ms;
     } else {
@@ -1103,14 +1138,14 @@ static void cycloneTick() {
         if (ty.minutePostMs && ms - ty.minutePostMs < 60 * 1000) return;
         snprintf(title, sizeof title, "%s %s in ~%s | %s", kind, best.name, when, homeName);
         snprintf(desc, sizeof desc, "Arrives ~%s, closest ~%u km\nPeak wind %u km/h", clk, best.closestKm, best.windKmh);
-        discordPost(DC_WEATHER, title, desc, left > WEATHER_TYPHOON_IMMINENT_S ? COL_YELLOW : COL_RED);
+        discordPost(DC_WEATHER, title, desc, left > WEATHER_TYPHOON_IMMINENT_S ? COL_YELLOW : COL_RED, WEATHER_ALERT_PRIO);
         ty.minutePostMs = ms;
       } else {
         if (ty.episodePosted == tr.episodeId) return;
         snprintf(title, sizeof title, "%s %s heading for %s", kind, best.name, homeName);
         snprintf(desc, sizeof desc, "Arrives ~%s (in ~%s), closest ~%u km\nPeak wind %u km/h (GDACS advisory %u)", clk,
                  when, best.closestKm, best.windKmh, (unsigned)tr.episodeId);
-        discordPost(DC_WEATHER, title, desc, COL_YELLOW);
+        discordPost(DC_WEATHER, title, desc, COL_YELLOW, WEATHER_ALERT_PRIO);
         ty.episodePosted = tr.episodeId;
         logMsg("weather: %s", title);
       }
@@ -1200,7 +1235,7 @@ static const char *iconWord(WxIcon i) {
 // Weather update to #weather-announcement every 2 h from 06:00 to 20:00; the
 // 06:00 one adds the 3-day forecast. The slot is kept in NVS so a reboot in
 // the same hour does not post it twice.
-static void postWeatherUpdate() {
+static void postWeatherUpdate(char *buf, size_t cap) {
   struct tm t;
   if (!now_.valid || !boardLocalTime(&t)) return;
   if (t.tm_hour < WEATHER_SUMMARY_FIRST_HOUR || t.tm_hour > WEATHER_SUMMARY_LAST_HOUR || (t.tm_hour & 1)) return;
@@ -1220,15 +1255,26 @@ static void postWeatherUpdate() {
     nvs_close(h);
   }
 
+  // where you are: the phone's location while it is away from home (a valid
+  // OwnTracks fix), else home
   WeatherNow w;
-  if (wxMutex) xSemaphoreTake(wxMutex, portMAX_DELAY);
-  w = now_;
-  if (wxMutex) xSemaphoreGive(wxMutex);
+  bool onPhone = false;
+  if (owntracksEnabled() && owntracksValid() && !owntracksIsMerged(homeLat, homeLon)) {
+    double pLat, pLon;
+    owntracksGetLocation(&pLat, &pLon, nullptr, nullptr);
+    onPhone = fetchNowAt(pLat, pLon, buf, cap, &w);
+    if (!onPhone) logMsg("weather: 2-hourly update: phone forecast failed, home instead");
+  }
+  if (!onPhone) {
+    if (wxMutex) xSemaphoreTake(wxMutex, portMAX_DELAY);
+    w = now_;
+    if (wxMutex) xSemaphoreGive(wxMutex);
+  }
   char desc[480], clk[16];
   int n = snprintf(desc, sizeof desc, "%.0f\u00b0 (%d\u00b0 / %d\u00b0), %s\nWind %.0f km/h", (double)w.temp, w.tmax, w.tmin,
                    iconWord(w.icon), w.windKmh);
   if (w.aqi >= 0) n += snprintf(desc + n, sizeof desc - n, ", AQI %d", w.aqi);
-  const RainAlert &r = rainHome;
+  const RainAlert &r = onPhone ? rainPhone : rainHome;
   if (r.raining) {
     fmtClock(clk, sizeof clk, r.endUnix, false);
     n += snprintf(desc + n, sizeof desc - n, r.endUnix ? "\n%s now, until ~%s" : "\n%s now", wxTierName(r.tier), clk);
@@ -1258,7 +1304,11 @@ static void postWeatherUpdate() {
                       w.days[i].tmin, iconWord(w.days[i].icon));
   }
   char title[96];
-  snprintf(title, sizeof title, "Currently in %s | %02d:%02d", w.place[0] ? w.place : WEATHER_HOME_NAME, t.tm_hour, t.tm_min);
+  if (onPhone)
+    snprintf(title, sizeof title, "Currently where you are (%.0f km from home) | %02d:%02d",
+             owntracksDistanceTo(homeLat, homeLon), t.tm_hour, t.tm_min);
+  else
+    snprintf(title, sizeof title, "Currently in %s | %02d:%02d", w.place[0] ? w.place : WEATHER_HOME_NAME, t.tm_hour, t.tm_min);
   discordPost(DC_WEATHER, title, desc, COL_BLUE, -1);   // routine: quiet on the phone
   logMsg("weather: update posted (%02d:%02d)", t.tm_hour, t.tm_min);
 }
@@ -1318,8 +1368,8 @@ static void publishPhone() {
       }
       size_t n = strlen(msg);
       snprintf(msg + n, sizeof msg - n, " [%s]", rainSrcName(alert));
-      discordPost(DC_WEATHER, "Rain soon where you are", msg, 0x3498DB);   // Pushover too, via the post
-      if (!DISCORD_TOKEN[0]) pushoverQueue("Rain soon where you are", msg);
+      discordPost(DC_WEATHER, "Rain soon where you are", msg, 0x3498DB, WEATHER_ALERT_PRIO);   // Pushover too, via the post
+      if (!DISCORD_TOKEN[0]) pushoverQueue("Rain soon where you are", msg, WEATHER_ALERT_PRIO);
       phoneAlertSent = true;
       logMsg("weather: phone rain alert sent: %s", msg);
     }
@@ -1416,7 +1466,7 @@ static void owmAlertsTick(char *buf, size_t cap) {
     fmtClock(e, sizeof e, al.endUnix, true);
     snprintf(title, sizeof title, "%.60s | %s", al.event, owmOnPhone ? "where you are" : homeName);
     snprintf(desc, sizeof desc, "%s to %s%s%.48s\n%.200s", s, e, al.sender[0] ? ", from " : "", al.sender, al.text);
-    discordPost(DC_WEATHER, title, desc, COL_RED);
+    discordPost(DC_WEATHER, title, desc, COL_RED, WEATHER_ALERT_PRIO);
     logMsg("weather: OpenWeather alert posted: %s", al.event);
     return;
   }
@@ -1496,8 +1546,8 @@ static void weatherTask(void *) {
     if (currentNet && testAlertPending) {
       testAlertPending = false;
       const char *testMsg = "Rain at your location in ~25 min (2.5 mm/h, from NW) [TEST]";
-      discordPost(DC_WEATHER, "Rain soon where you are", testMsg, 0x3498DB);
-      if (!DISCORD_TOKEN[0]) pushoverQueue("Rain soon where you are", testMsg);
+      discordPost(DC_WEATHER, "Rain soon where you are", testMsg, 0x3498DB, WEATHER_ALERT_PRIO);
+      if (!DISCORD_TOKEN[0]) pushoverQueue("Rain soon where you are", testMsg, WEATHER_ALERT_PRIO);
       logMsg("weather: test-alert sent");
     }
     if (currentNet) pushoverService();
@@ -1581,7 +1631,7 @@ static void weatherTask(void *) {
       lastJudgeMs = curMs;
     }
     rainWarnTick();
-    postWeatherUpdate();
+    postWeatherUpdate(httpBuf, httpBufCap);
 
     // 5. Budget persistence every 15 min
     if (curMs - lastNvsSaveMs >= 15 * 60 * 1000) {

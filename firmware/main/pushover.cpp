@@ -94,7 +94,7 @@ bool pushoverSend(const char *title, const char *message, int priority) {
 
   if (err == ESP_OK && code >= 200 && code < 300) {
     errLogged = false;
-    logMsg("pushover: message sent");
+    logMsg("pushover: message sent (priority %d)", priority);
     return true;
   }
 

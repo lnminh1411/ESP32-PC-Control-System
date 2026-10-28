@@ -106,7 +106,7 @@ EMQX Cloud's Serverless broker is free up to a monthly allowance of session minu
 
 Pushover sends every #pc-announcement and #weather-announcement post to your phone as a push notification: rain heading your way, weather alerts, cyclones, PC on/off, night mode, board restarts. The Discord title becomes the notification title, and the embed text the message (or the title when there is none). Posts are queued (6 at most) and sent one per second by the weather task. Without a Discord token, only the phone rain alert goes out, straight to Pushover.
 
-Priority: Light Rain warnings, their "cleared" and the 2-hourly "Currently" updates go out quiet (Pushover priority -1: no sound or vibration); everything else is normal (0).
+Priority: every weather warning (rain at any tier, "Rain soon where you are", typhoon posts, OpenWeather alerts) goes out high (Pushover priority 1, `WEATHER_ALERT_PRIO`: rings through quiet hours). "Cleared" posts are normal (0). The 2-hourly "Currently" updates are for where you are: while the phone (OwnTracks, a fix under 2 h old) is away from home, one extra Open-Meteo call fetches the weather at its location ("Currently where you are (10 km from home)", with the phone engine's rain), else home's. They go out quiet (-1: no sound or vibration).
 
 1. Create an account at [Pushover](https://pushover.net/) and install the mobile app.
 2. Copy your **User Key** (`PUSHOVER_USER`).

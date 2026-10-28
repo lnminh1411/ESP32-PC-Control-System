@@ -191,6 +191,7 @@
 // ---- Weather (board) ----
 #define WEATHER_HOME_NAME "Home"                  // place name until WEATHER_HOME or `weather home` gives one
 #define WEATHER_RAIN_URGENT_MIN 20                // rain ETA at or under this: red banner / red Discord post
+#define WEATHER_ALERT_PRIO 1                      // Pushover priority of weather warnings (rain, typhoon, OpenWeather alerts); 1 = high, rings through quiet hours
 #define WEATHER_RAIN_SURE_MIN 30                  // rain one source alone sees: a warning at this ETA or closer (else a quiet watch)
 #define WEATHER_RAIN_SURE_MMH 2.0f                // ...or at this mm/h and up, whatever the other source says
 #define OWM_RAIN_SOLID_MMH 0.8f                   // OpenWeather alone: needs this peak mm/h...

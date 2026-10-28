@@ -386,6 +386,9 @@
 #ifndef WEATHER_RAIN_URGENT_MIN
 #define WEATHER_RAIN_URGENT_MIN 20                // rain ETA at or under this: red banner / red Discord post
 #endif
+#ifndef WEATHER_ALERT_PRIO
+#define WEATHER_ALERT_PRIO 1                      // Pushover priority of weather warnings (rain, typhoon, OpenWeather alerts); 1 = high, rings through quiet hours
+#endif
 #ifndef WEATHER_RAIN_SURE_MIN
 #define WEATHER_RAIN_SURE_MIN 30                  // rain one source alone sees: a warning at this ETA or closer (else a quiet watch)
 #endif
