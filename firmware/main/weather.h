@@ -80,6 +80,7 @@ struct Cyclone {
 
 const WeatherNow &weatherNow();
 const RainAlert &rainAlertHome();
+bool weatherHomeLocation(double *lat, double *lon);   // false while no home is set
 const RainAlert &rainAlertPhone();
 const Cyclone &weatherCyclone();
 const char *wxTierName(WxTier t);         // "Heavy Shower"

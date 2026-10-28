@@ -2025,7 +2025,8 @@ static void botTask(void *) {
     PcState pc = pcState();
     if (pc != lastPc && ready) {
       lastPc = pc;
-      if (pc == PC_ON) postChannelEmbed(DC_PC, "PC is on", nullptr, 0x57F287);
+      if (nightPowerQuiet()) logMsg("discord: PC state change not posted, night mode's own post covers it");
+      else if (pc == PC_ON) postChannelEmbed(DC_PC, "PC is on", nullptr, 0x57F287);
       else if (pc == PC_OFF) postChannelEmbed(DC_PC, "PC is asleep or off", nullptr, 0xE67E22);
       else postChannelEmbed(DC_PC, "PC state unknown", nullptr, 0x99AAB5);
       lastCtlSyncMs = 0;   // the panel shows the PC state too

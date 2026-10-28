@@ -327,11 +327,12 @@ fills all five of Discord's action rows with dropdowns, so Refresh there is an
 entry inside the category dropdown instead of a button.
 
 **Night mode** (PC Control, console `night`) engages between 22:00 and 06:00
-once the PC has had no keyboard or mouse input for 15 minutes (the service's
+once the PC has had no keyboard or mouse input for 5 minutes (the service's
 user-session half reads Windows' idle counter, stat `pc.idle_s`). It sets the
 PC's RGB LEDs to 10 %, the board's panels to 10 % on their PC-off screens, and
-caps the status LED at 20 %. It also turns the PC's displays off. Input on the
-PC puts everything back, and 15 more idle minutes engage it again. At 06:00 the
+caps the status LED at 20 %. It also turns the PC's displays off, and back on when
+it ends. Input on the
+PC puts everything back, and 5 more idle minutes engage it again. At 06:00 the
 board side goes back at once, and the LEDs go back as soon as the PC and
 PcHwCtl answer. Each change is posted to #pc-announcement. "Night auto" is the
 automatic engage; "Start night now" engages it at once, at any hour, until
@@ -352,11 +353,13 @@ to #pc-announcement and Pushover; a night that ends while it is on leaves it on.
 
 Guards against false triggers:
 
-- **Wake check.** Input during the night only ends it if the next 10 s show a
-  real return: more than 50 px of mouse travel, or 3 key / mouse button
-  presses (`pc.in_px`, `pc.in_press` from the user-session half; gamepad
-  buttons and sticks count too). A bumped mouse turns the displays off again
-  and the night carries on.
+- **Wake check.** Input during the night ends it at once: the PC's displays
+  come back on, with everything else. If the next 10 s show no real return
+  (more than 50 px of mouse travel, or 3 key / mouse button presses;
+  `pc.in_px`, `pc.in_press` from the user-session half, gamepad buttons and
+  sticks count too), a bumped mouse, the night comes straight back, with no
+  post, and its sleep clock carries on. A real return keeps it off and posts
+  "Back to normal".
 - **Video.** No automatic start while a process keeps the display on (a video
   playing, a presentation): PcHwCtl reads `powercfg /requests` every 10 s and
   the PC service passes it on (`pc.disp_req`, `pc.disp_req_by`). The PC
@@ -378,17 +381,25 @@ under 0.3 cores for 5 minutes. When the night ends, `lasso load day` puts the
 normal config back and `eco off all` lifts efficiency mode. If the board stops
 confirming the night for 5 minutes, the service does that by itself.
 
-Sleep and hibernate (Windows' own timers off; the board keeps them, in the
-night window only): 1 hour after the last real input on the PC (false wakes
-don't count) the board sleeps the PC, after 2 hours it hibernates it. Both
-wait, with the displays off, while an exe is heavy (`pc.heavy`, kept ones such
+Sleep (Windows' own timers off; the board keeps it, in the night window only):
+1 hour after the last real input on the PC (false wakes don't count) the board
+sleeps the PC. There is no timed hibernate. It waits, with the displays off, while an exe is heavy (`pc.heavy`, kept ones such
 as Defender scans included), a power request keeps the PC up (`pc.disp_req`,
 `pc.sys_req`, `pc.exec_req`, minus `NIGHT_REQ_IGNORE`: `claude.exe` always
-holds one) or the network averages more than 1 MB/s either way. A PC that
-night mode put to sleep is woken and hibernated an hour later, after 06:00
-too, unless someone powers it on first; a hibernated one stays so until it is
-powered on. When the PC comes back the board sends its night state at once,
-so the day config is back right after power-on.
+holds one) or the network averages more than 1 MB/s either way.
+
+Hibernate happens when you leave home: the phone (OwnTracks, the weather
+phone engine's location) goes from within 1 km of home to beyond it
+(`NIGHT_LEAVE_KM`), at any hour, with Night auto on. A PC night mode put to
+sleep is woken and hibernated; a PC that is on is hibernated only if nobody
+used it for 5 min (`NIGHT_LEAVE_IDLE_S`), else a post says it was left on. A PC
+that is off for another reason is left alone. It needs a home (`weather home`)
+and a phone fix under 30 min old. A hibernated PC stays so until it is powered
+on. When the PC comes back the board sends its night state at once,
+so the day config is back right after power-on. Night mode posts its own
+sleep, wake and hibernate messages; for 3.5 min after each of its requests the
+generic ones ("wake PC", "PC accepted hibernate", "PC is asleep or off", "PC is
+on") are left out of Discord and Pushover.
 
 Lock needs the PC stats service: the board has no keyboard to send Win+L, so
 the service starts `LockWorkStation` in the signed-in session.

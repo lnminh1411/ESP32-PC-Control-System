@@ -1336,6 +1336,13 @@ static void publishPhone() {
   }
 }
 
+bool weatherHomeLocation(double *lat, double *lon) {
+  if (!homeConfigured) return false;
+  *lat = homeLat;
+  *lon = homeLon;
+  return true;
+}
+
 static void setHomeLocation(double lat, double lon, const char *name) {
   homeLat = lat;
   homeLon = lon;

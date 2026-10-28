@@ -174,7 +174,7 @@
 // ---- Night mode (board side; night.cpp) ----
 #define NIGHT_START_HOUR 22                       // local hour the night window opens
 #define NIGHT_END_HOUR 6                          // local hour it closes
-#define NIGHT_IDLE_ENGAGE_S (15 * 60)             // s without keyboard/mouse input on the PC before it engages in the window
+#define NIGHT_IDLE_ENGAGE_S (5 * 60)              // s without keyboard/mouse input on the PC before it engages in the window
 #define NIGHT_PANEL_PCT 10                        // board panel backlight % while engaged
 #define NIGHT_STATUS_LED_PCT 20                   // status LED cap % while engaged
 #define NIGHT_RGB_PCT 10                          // PC case RGB % while engaged (PcHwCtl)
@@ -183,7 +183,8 @@
 #define NIGHT_GUARD_PRESSES 3                     //   or this many key / button presses
 #define NIGHT_LASSO_REPEAT_MS 30000               // !night state resent to the PC this often (Process Lasso profile)
 #define NIGHT_SLEEP_S (60 * 60)                   // s without real input on the PC (false wakes don't count) before night mode sleeps it
-#define NIGHT_HIBERNATE_S (2 * 60 * 60)           // s without input before it hibernates; a PC night mode put to sleep is woken and hibernated after (this - NIGHT_SLEEP_S), even after the night
+#define NIGHT_LEAVE_KM 1.0                        // the phone (OwnTracks) going beyond this from home hibernates the PC (woken first if night mode put it to sleep)
+#define NIGHT_LEAVE_IDLE_S (5 * 60)               // ...but a PC that is on only if nobody used it for this long
 #define NIGHT_NET_HOLD_BPS 1000000                // sleep / hibernate wait while net_down or net_up averages more than this (bytes/s, ~1 min)
 #define NIGHT_REQ_IGNORE "claude.exe"             // power request holders that don't hold sleep (comma list; claude.exe always holds EXECUTION)
 

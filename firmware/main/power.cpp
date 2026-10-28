@@ -10,6 +10,7 @@
 #include "display.h"
 #include "log.h"
 #include "net.h"
+#include "night.h"
 #include "pc_state.h"
 #include "pcstats.h"
 #include "sys.h"
@@ -105,7 +106,7 @@ void powerPoll() {
         char note[48];
         snprintf(note, sizeof(note), "PC accepted %s", s_action);
         viewsNoteAction(note);
-        discordNotify(note);
+        if (!nightPowerQuiet()) discordNotify(note);   // night mode posts its own
         s_pending = false;
         s_nonce[0] = '\0';
         return;
@@ -209,7 +210,7 @@ static const char *powerWakeSend() {
 
   if ((usbAttempted && usbOk) || (wolAttempted && !wolErr)) {
     viewsNoteAction("wake PC");
-    discordNotify("wake PC");
+    if (!nightPowerQuiet()) discordNotify("wake PC");   // night mode posts its own
     return nullptr;
   }
 

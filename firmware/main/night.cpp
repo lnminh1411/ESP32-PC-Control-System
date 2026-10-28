@@ -13,6 +13,7 @@
 #include "hwctl.h"
 #include "log.h"
 #include "monctl.h"
+#include "owntracks.h"
 #include "pc_state.h"
 #include "pcstats.h"
 #include "power.h"
@@ -21,6 +22,7 @@
 #include "sys.h"
 #include "usb.h"
 #include "views.h"
+#include "weather.h"
 
 static const int IDLE_ENGAGE_S = NIGHT_IDLE_ENGAGE_S;
 static const int START_HOUR = NIGHT_START_HOUR, END_HOUR = NIGHT_END_HOUR;
@@ -42,25 +44,25 @@ static uint32_t engagedMs;               // input newer than this ends it
 // the displays go off again and the night carries on
 static const uint32_t GUARD_MS = NIGHT_GUARD_MS;
 static const double GUARD_PX = NIGHT_GUARD_PX, GUARD_PRESSES = NIGHT_GUARD_PRESSES;
-static uint32_t guardUntilMs;            // 0 = no wake being checked
+static uint32_t guardUntilMs;            // 0 = no wake being checked (night is off meanwhile)
+static bool guardManual;                 // the night being checked was started by hand
 static double guardPx0, guardPress0;     // pc.in_px / pc.in_press when the wake was seen
 static uint32_t falseWakes;              // this night, for the status line
 
-// Sleep and hibernate (in the night window, while engaged): NIGHT_SLEEP_S
-// after the last real input on the PC, NIGHT_HIBERNATE_S for hibernate.
-// False wakes don't move the clock. Held while an exe is heavy (pc.heavy),
+// Sleep (in the night window, while engaged): NIGHT_SLEEP_S after the last
+// real input on the PC. False wakes don't move the clock. Held while an exe is heavy (pc.heavy),
 // a power request keeps the PC up (pc.disp_req / sys_req / exec_req, minus
 // NIGHT_REQ_IGNORE), or the network is busy (net_down / net_up over
-// NIGHT_NET_HOLD_BPS, ~1 min average); the displays stay off meanwhile. A PC
-// night mode put to sleep is woken and hibernated (NIGHT_HIBERNATE_S -
-// NIGHT_SLEEP_S) later, after 06:00 too, unless someone powers it on first.
-static const uint32_t SLEEP_MS = NIGHT_SLEEP_S * 1000UL, HIBERNATE_MS = NIGHT_HIBERNATE_S * 1000UL;
+// NIGHT_NET_HOLD_BPS, ~1 min average); the displays stay off meanwhile.
+// Hibernate only when the phone leaves home (leaveCheck).
+static const uint32_t SLEEP_MS = NIGHT_SLEEP_S * 1000UL;
 static const uint32_t POWER_WAIT_MS = 3 * 60 * 1000;   // for the PC to go down, or to come up when woken
 static uint32_t inputAtMs;               // last real input on the PC
 static uint32_t sleepReqMs, hibReqMs;    // asked for, PC not down yet
-static uint32_t sleptAtMs;               // asleep for night mode: hibernate due later
+static uint32_t sleptAtMs;               // asleep for night mode: hibernated if the phone leaves home
 static uint32_t wokeMs;                  // woken by us to hibernate
 static bool offByNight;                  // asleep or hibernating because of night mode
+static uint32_t quietFromMs;             // night mode's last sleep / hibernate / wake request (nightPowerQuiet)
 static uint32_t powerTryMs;              // last sleep / hibernate request
 static float netAvg;                     // bytes/s, the busier of net_down / net_up, ~1 min average
 static char holdWhy[64];                 // why sleep waits, "" = it doesn't
@@ -147,7 +149,7 @@ static void rgbRestoreTry(bool post) {
   saveNvs();
 }
 
-static void disengage(const char *why);
+static void disengage(const char *why, bool post = true);
 
 // "claude.exe" in NIGHT_REQ_IGNORE
 static bool reqIgnored(const char *by) {
@@ -193,7 +195,8 @@ static void netAverage() {
   netAvg += (v - netAvg) / 60;   // polled every second
 }
 
-// While engaged, in the window, no wake being checked: sleep, or hibernate
+// While engaged, in the window, no wake being checked: sleep (never hibernate;
+// that waits for the phone to leave home, leaveCheck)
 static void sleepCheck(uint32_t now) {
   static char lastHold[64];
   if (sleepReqMs || hibReqMs || sleptAtMs || offByNight) return;
@@ -208,16 +211,15 @@ static void sleepCheck(uint32_t now) {
   }
   if (*why || now - powerTryMs < 60000) return;
   powerTryMs = now;
-  bool hib = inactive >= HIBERNATE_MS;
-  const char *err = powerRequest(hib ? "hibernate" : "sleep");
-  if (err) { logMsg("night: %s not sent (%s)", hib ? "hibernate" : "sleep", err); return; }
-  if (hib) hibReqMs = now;
-  else sleepReqMs = now;
-  logMsg("night: %lu min without input, %s", (unsigned long)(inactive / 60000), hib ? "hibernating the PC" : "putting the PC to sleep");
+  quietFromMs = now | 1;
+  const char *err = powerRequest("sleep");
+  if (err) { logMsg("night: sleep not sent (%s)", err); return; }
+  sleepReqMs = now;
+  logMsg("night: %lu min without input, putting the PC to sleep", (unsigned long)(inactive / 60000));
 }
 
-// Every second, engaged or not: did the PC go down, is a hibernate due, did
-// someone power it on
+// Every second, engaged or not: did the PC go down, did a woken PC come up
+// to hibernate, did someone power it on
 static void powerFollow(uint32_t now) {
   bool on = pcState() == PC_ON;
   if (sleepReqMs) {
@@ -225,9 +227,7 @@ static void powerFollow(uint32_t now) {
       sleepReqMs = 0;
       sleptAtMs = now;
       offByNight = true;
-      char what[96];
-      snprintf(what, sizeof what, "PC asleep; it is woken and hibernated in %d min unless someone powers it on",
-               (int)((HIBERNATE_MS - SLEEP_MS) / 60000));
+      const char *what = "PC asleep; hibernated when you leave home";
       logMsg("night: %s", what);
       announce(what, 0x2C3E50);
     } else if (now - sleepReqMs > POWER_WAIT_MS) {
@@ -252,6 +252,7 @@ static void powerFollow(uint32_t now) {
     if (on && pcStatsFresh()) {
       if (now - powerTryMs >= 5000) {
         powerTryMs = now;
+        quietFromMs = now | 1;
         const char *err = powerRequest("hibernate");
         if (!err) { hibReqMs = now; wokeMs = 0; logMsg("night: woken, hibernating"); }
       }
@@ -268,16 +269,66 @@ static void powerFollow(uint32_t now) {
     sleptAtMs = 0;
     logMsg("night: PC powered on");
     if (engaged) disengage("PC powered on");
-    return;
-  }
-  if (sleptAtMs && !on && now - sleptAtMs >= HIBERNATE_MS - SLEEP_MS) {
-    sleptAtMs = 0;
-    wokeMs = now;
-    logMsg("night: asleep for %d min, waking the PC to hibernate it", (int)((HIBERNATE_MS - SLEEP_MS) / 60000));
-    const char *err = powerWake();
-    if (err) logMsg("night: wake: %s", err);
   }
 }
+
+// Leaving home (the phone, OwnTracks, goes from within NIGHT_LEAVE_KM of home
+// to beyond it, any hour): hibernate the PC. Asleep for night mode: woken
+// first, then hibernated (powerFollow). On: only when nobody has used it for
+// NIGHT_LEAVE_IDLE_S. Off for any other reason: left alone (a wake could boot
+// a PC that was shut down). Needs a home (`weather home`) and a phone fix
+// under 30 min old; a stale fix just waits for the next one.
+static void leaveCheck(uint32_t now) {
+  static int8_t atHome = -1;   // -1: not known yet
+  double hLat, hLon;
+  if (!owntracksEnabled() || !owntracksValid() || owntracksAgeSec() > 30 * 60 || !weatherHomeLocation(&hLat, &hLon)) return;
+  double d = owntracksDistanceTo(hLat, hLon);
+  if (d < 0) return;
+  bool home = d <= NIGHT_LEAVE_KM;
+  bool left = atHome == 1 && !home;
+  atHome = home ? 1 : 0;
+  if (!left) return;
+  if (!enabled && !engaged && !sleptAtMs) {
+    logMsg("night: left home, night mode off, PC left as it is");
+    return;
+  }
+  if (wokeMs || hibReqMs) return;
+  if (sleptAtMs && pcState() != PC_ON) {
+    sleptAtMs = 0;
+    wokeMs = now;
+    quietFromMs = now | 1;
+    const char *err = powerWake();
+    logMsg("night: left home, waking the PC to hibernate it%s%s", err ? ": " : "", err ? err : "");
+    announce(err ? "You left home; the PC could not be woken to hibernate" : "You left home: waking the PC to hibernate it",
+             0x2C3E50);
+    if (err) wokeMs = 0;
+    return;
+  }
+  if (pcState() != PC_ON) {
+    logMsg("night: left home, PC off (not by night mode), left as it is");
+    return;
+  }
+  float idle = pcStat("pc.idle_s");
+  if (!isnan(idle) && idle < NIGHT_LEAVE_IDLE_S) {
+    char what[96];
+    snprintf(what, sizeof what, "You left home, but the PC was used %.0f s ago: not hibernated", idle);
+    logMsg("night: %s", what);
+    announce(what, 0xF1C40F);
+    return;
+  }
+  powerTryMs = now;
+  quietFromMs = now | 1;
+  const char *err = powerRequest("hibernate");
+  if (err) {
+    logMsg("night: left home, hibernate not sent (%s)", err);
+    return;
+  }
+  hibReqMs = now;
+  logMsg("night: left home, hibernating the PC");
+  announce("You left home: hibernating the PC", 0x2C3E50);
+}
+
+bool nightPowerQuiet() { return quietFromMs && nowMs() - quietFromMs < POWER_WAIT_MS + 30000; }
 
 static void engage(bool byHand) {
   engaged = true;
@@ -304,12 +355,9 @@ static void engage(bool byHand) {
   lassoSend();
 }
 
-static void disengage(const char *why) {
-  engaged = false;
-  manual = false;
-  guardUntilMs = 0;
-  boardSide();
-  lassoSend();
+// Everything back, PC displays on. post = false: a wake being checked, whose
+// outcome is posted when known (backToNormal or a quiet re-engage).
+static void backToNormal(const char *why) {
   if (lowPower) {
     logMsg("night: off again (%s), low power mode stays on", why);
     char what[160];
@@ -317,11 +365,37 @@ static void disengage(const char *why) {
     announce(what, 0xF1C40F);
     return;
   }
-  rgbRestoreTry(false);   // the "back to normal" post covers it
   logMsg("night: off again (%s)%s", why, rgbLowered ? ", PC LEDs go back when PcHwCtl answers" : "");
   char what[160];
   snprintf(what, sizeof what, "Back to normal (%s)%s", why, rgbLowered ? "; PC LEDs go back once the PC is on" : "");
   announce(what, 0xF1C40F);
+}
+
+static void disengage(const char *why, bool post) {
+  engaged = false;
+  manual = false;
+  guardUntilMs = 0;
+  boardSide();
+  lassoSend();
+  uint32_t id;
+  const char *err = monSend("power all on", &id);
+  if (err) logMsg("night: displays on: %s", err);
+  if (!lowPower) rgbRestoreTry(false);   // the "back to normal" post covers it
+  if (post) backToNormal(why);
+}
+
+// A false wake: night again at once, as it was. The sleep clock (inputAtMs),
+// the start time and the false-wake count carry on.
+static void reengage() {
+  engaged = true;
+  manual = guardManual;
+  engagedMs = nowMs();   // the next input is a new wake
+  boardSide();
+  rgbLower();
+  uint32_t id;
+  const char *err = monSend("power all off", &id);
+  lassoSend();
+  logMsg("night: back on after a false wake (displays %s)", err ? err : "off");
 }
 
 void nightPoll() {
@@ -339,6 +413,7 @@ void nightPoll() {
   wasFresh = fresh;
   netAverage();
   powerFollow(now);
+  leaveCheck(now);
   static bool lowApplied;
   if (lowPower && !lowApplied) boardSide();   // after a restart in low power mode
   lowApplied = true;
@@ -347,6 +422,23 @@ void nightPoll() {
     rgbLower();
   }
   if (!engaged && !lowPower) rgbRestoreTry(true);   // owed from a morning or a restart
+
+  // Wake check: the night went off at the first input; a real return
+  // (> GUARD_PX of mouse travel or GUARD_PRESSES presses in GUARD_MS) keeps it
+  // off, anything less brings it back
+  if (guardUntilMs) {
+    double px = counted("pc.in_px", guardPx0), presses = counted("pc.in_press", guardPress0);
+    if (px > GUARD_PX || presses >= GUARD_PRESSES) {
+      guardUntilMs = 0;
+      backToNormal("input on the PC");
+    } else if ((int32_t)(now - guardUntilMs) >= 0) {
+      guardUntilMs = 0;
+      falseWakes++;
+      logMsg("night: false wake (%.0f px, %.0f presses in %lu s)", px, presses, (unsigned long)(GUARD_MS / 1000));
+      reengage();
+    }
+    return;
+  }
   if (!enabled && !engaged) return;
   struct tm t;
   bool haveTime = boardLocalTime(&t);
@@ -360,26 +452,16 @@ void nightPoll() {
     float since = (now - engagedMs) / 1000.0f;
     if (!enabled && !manual) disengage("turned off");
     else if (!inWindow && !manual) disengage("06:00");
-    else if (guardUntilMs) {
-      double px = counted("pc.in_px", guardPx0), presses = counted("pc.in_press", guardPress0);
-      if (px > GUARD_PX || presses >= GUARD_PRESSES) {
-        disengage("input on the PC");
-      } else if ((int32_t)(now - guardUntilMs) >= 0) {
-        guardUntilMs = 0;
-        engagedMs = now;   // the next input is a new wake
-        falseWakes++;
-        uint32_t id;
-        monSend("power all off", &id);
-        logMsg("night: false wake (%.0f px, %.0f presses in 10 s), displays off again", px, presses);
-      }
-    } else if (idleKnown && idle + 3 < since && !wokeMs && !hibReqMs) {
+    else if (idleKnown && idle + 3 < since && !wokeMs && !hibReqMs) {
       guardPx0 = pcStat("pc.in_px");
       guardPress0 = pcStat("pc.in_press");
       if (isnan(guardPx0) || isnan(guardPress0)) {
         disengage("input on the PC");   // a helper without the counters: no guard
       } else {
+        guardManual = manual;
+        disengage("input on the PC", false);
         guardUntilMs = now + GUARD_MS;
-        logMsg("night: input on the PC, checking for 10 s");
+        logMsg("night: input on the PC, off at once, checking for %lu s", (unsigned long)(GUARD_MS / 1000));
       }
     } else if (inWindow) {
       sleepCheck(now);
@@ -399,10 +481,18 @@ void nightSetEnabled(bool on) {
   nightWindowText(win, sizeof win);
   snprintf(what, sizeof what, "Turned on: engages %s without input on the PC", win);
   announce(on ? what : "Turned off", 0x95A5A6);
+  if (!on && guardUntilMs && !guardManual) {
+    guardUntilMs = 0;   // the wake being checked can't bring an automatic night back now
+    backToNormal("turned off");
+  }
   if (!on && engaged) disengage("turned off");
 }
 
 void nightManual(bool on) {
+  if (guardUntilMs) {
+    guardUntilMs = 0;   // a wake being checked: decided by hand
+    if (!on) backToNormal("ended by hand");
+  }
   if (on && !engaged) engage(true);
   else if (!on && engaged) disengage("ended by hand");
 }
@@ -455,7 +545,10 @@ bool nightEngaged() { return engaged; }
 void nightStatus(char *buf, uint32_t size) {
   uint32_t now = nowMs();
   if (sleptAtMs || wokeMs)
-    snprintf(buf, size, "PC asleep, hibernates %s", wokeMs ? "now" : "later");
+    snprintf(buf, size, wokeMs ? "PC woken to hibernate (you left home)" : "PC asleep, hibernated when you leave home");
+  else if (guardUntilMs)
+    snprintf(buf, size, "off for input on the PC, back on in %lu s unless it is used",
+             (unsigned long)((int32_t)(guardUntilMs - now) > 0 ? (guardUntilMs - now) / 1000 + 1 : 0));
   else if (engaged) {
     char sleep[48] = "";
     uint32_t inactive = now - inputAtMs;
@@ -463,7 +556,7 @@ void nightStatus(char *buf, uint32_t size) {
     else if (inactive < SLEEP_MS) snprintf(sleep, sizeof sleep, ", sleep in %lu min", (unsigned long)((SLEEP_MS - inactive) / 60000 + 1));
     snprintf(buf, size, "engaged since %02lu:%02lu%s%s%s", (unsigned long)(engagedAtMin / 60),
              (unsigned long)(engagedAtMin % 60), manual ? ", by hand" : "",
-             guardUntilMs ? ", checking a wake" : falseWakes ? ", false wakes ignored" : "", sleep);
+             falseWakes ? ", false wakes ignored" : "", sleep);
   }
   else if (enabled && pcStat("pc.disp_req") >= 1)
     snprintf(buf, size, "on, held off: %.20s keeps the display on", pcText("pc.disp_req_by"));
