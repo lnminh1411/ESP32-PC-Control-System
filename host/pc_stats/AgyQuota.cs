@@ -361,8 +361,11 @@ static partial class AgyQuota {
       } else if (b[i] == '.' && Matches(b, i, dom)) {
         int st = i;
         while (st > 0 && i - st < 80 && (char.IsLetterOrDigit((char)b[st - 1]) || b[st - 1] == '-')) st--;
-        string v = Encoding.ASCII.GetString(b, st, i - st + dom.Length);
-        if (Regex.IsMatch(v, @"^[0-9]{6,}-[a-z0-9]{20,}\.apps\.googleusercontent\.com$") && !ids.Contains(v)) ids.Add(v);
+        // Go packs its strings back to back: the id can follow other letters
+        // ("...ime<digits>-<hash>.apps.googleusercontent.com"), so match it at the end
+        Match idm = Regex.Match(Encoding.ASCII.GetString(b, st, i - st + dom.Length),
+                                @"[0-9]{6,}-[a-z0-9]{20,}\.apps\.googleusercontent\.com$");
+        if (idm.Success && !ids.Contains(idm.Value)) ids.Add(idm.Value);
       }
     }
     foreach (string id in ids)
