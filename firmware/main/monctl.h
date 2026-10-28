@@ -23,6 +23,9 @@ const char *monSend(const char *command, uint32_t *id);
 // call it from the main loop.
 bool monRun(const char *command, uint32_t timeoutMs, char *out, size_t outSize);
 
+// The answer to request id, once monctl.reply carries it ("ok", "err <why>")
+bool monReplyFor(uint32_t id, char *out, size_t outSize);
+
 void monPoll();                          // main loop: logs new replies
 void monConsole(const char *command);    // console `mon <command>`
 

@@ -31,7 +31,7 @@ const char *monSend(const char *command, uint32_t *id) {
 }
 
 // Copies monctl.reply's text into out when it answers request id
-static bool replyFor(uint32_t id, char *out, size_t outSize) {
+bool monReplyFor(uint32_t id, char *out, size_t outSize) {
   char buf[121];
   strncpy(buf, pcText("monctl.reply"), sizeof buf - 1);   // copy: the table changes under us
   buf[sizeof buf - 1] = 0;
@@ -48,7 +48,7 @@ bool monRun(const char *command, uint32_t timeoutMs, char *out, size_t outSize) 
   if (err) { snprintf(out, outSize, "err %s", err); return false; }
   uint32_t t0 = nowMs();
   while ((uint32_t)(nowMs() - t0) < timeoutMs) {
-    if (replyFor(id, out, outSize)) return !strncmp(out, "ok", 2);
+    if (monReplyFor(id, out, outSize)) return !strncmp(out, "ok", 2);
     discordWaitTick();   // the bot task keeps acking clicks and heartbeating
     vTaskDelay(pdMS_TO_TICKS(50));
   }

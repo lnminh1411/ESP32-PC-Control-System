@@ -331,7 +331,8 @@ once the PC has had no keyboard or mouse input for 5 minutes (the service's
 user-session half reads Windows' idle counter, stat `pc.idle_s`). It sets the
 PC's RGB LEDs to 10 %, the board's panels to 10 % on their PC-off screens, and
 caps the status LED at 20 %. It also turns the PC's displays off, and back on when
-it ends. Input on the
+it ends (or interrupted): a PC asleep or hibernated then gets them on as soon as
+it is back, retried every 30 s until the PC service says ok. Input on the
 PC puts everything back, and 5 more idle minutes engage it again. At 06:00 the
 board side goes back at once, and the LEDs go back as soon as the PC and
 PcHwCtl answer. Each change is posted to #pc-announcement. "Night auto" is the

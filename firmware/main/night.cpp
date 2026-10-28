@@ -75,6 +75,11 @@ static double counted(const char *key, double from) {
   double d = pcStat(key) - from;
   return d < 0 ? d + 1000000.0 : d;
 }
+// PC displays: night mode turned them off and owes turning them on, until
+// the PC service answers "ok" (a PC asleep or hibernated at 06:00, or one
+// powered on mid-night before its user half is up, gets it when it is back)
+static bool monOnOwed;                   // NVS
+static uint32_t monOnId, monOnSentMs;    // the request in flight
 static int8_t savedRgb = -1;             // PC LED brightness to put back, -1 = nothing owed (NVS)
 static bool rgbLowered;                  // our 10 % is on the LEDs right now (NVS with savedRgb)
 
@@ -86,6 +91,7 @@ static void saveNvs() {
   if (nvs_open("night", NVS_READWRITE, &h) != ESP_OK) return;
   nvs_set_u8(h, "on", enabled ? 1 : 0);
   nvs_set_i8(h, "rgb", savedRgb);
+  nvs_set_u8(h, "monon", monOnOwed ? 1 : 0);
   nvs_set_u8(h, "low", lowPower ? 1 : 0);
   nvs_commit(h);
   nvs_close(h);
@@ -97,6 +103,8 @@ void nightInit() {
   uint8_t on = 0;
   if (nvs_get_u8(h, "on", &on) == ESP_OK) enabled = on;
   nvs_get_i8(h, "rgb", &savedRgb);
+  uint8_t mon = 0;
+  if (nvs_get_u8(h, "monon", &mon) == ESP_OK) monOnOwed = mon;
   uint8_t low = 0;
   if (nvs_get_u8(h, "low", &low) == ESP_OK) lowPower = low;
   nvs_close(h);
@@ -150,6 +158,43 @@ static void rgbRestoreTry(bool post) {
 }
 
 static void disengage(const char *why, bool post = true);
+
+// PC displays off for the night; turning them on is owed from now on
+static const char *displaysOff() {
+  monOnOwed = true;
+  monOnId = 0;
+  saveNvs();
+  uint32_t id;
+  return monSend("power all off", &id);
+}
+
+// Owed displays on: sent while the night is off and the PC service is there,
+// again every 30 s until it answers ok
+static void monOnTry(uint32_t now) {
+  if (!monOnOwed || engaged || !pcReachable()) return;
+  if (monOnId) {
+    char r[64];
+    if (monReplyFor(monOnId, r, sizeof r)) {
+      monOnId = 0;
+      if (!strncmp(r, "ok", 2)) {
+        monOnOwed = false;
+        saveNvs();
+        logMsg("night: PC displays on");
+        return;
+      }
+      logMsg("night: displays on: %s, again in 30 s", r);
+    } else if (now - monOnSentMs < 30000) {
+      return;   // waiting for the answer
+    }
+  }
+  if (monOnSentMs && now - monOnSentMs < 30000) return;
+  monOnSentMs = now;
+  const char *err = monSend("power all on", &monOnId);
+  if (err) {
+    monOnId = 0;
+    logMsg("night: displays on: %s, again in 30 s", err);
+  }
+}
 
 // "claude.exe" in NIGHT_REQ_IGNORE
 static bool reqIgnored(const char *by) {
@@ -276,12 +321,12 @@ static void powerFollow(uint32_t now) {
 // to beyond it, any hour): hibernate the PC. Asleep for night mode: woken
 // first, then hibernated (powerFollow). On: only when nobody has used it for
 // NIGHT_LEAVE_IDLE_S. Off for any other reason: left alone (a wake could boot
-// a PC that was shut down). Needs a home (`weather home`) and a phone fix
-// under 30 min old; a stale fix just waits for the next one.
+// a PC that was shut down). Needs a home (`weather home`) and a valid phone
+// fix (OWNTRACKS_MAX_AGE_S); the phone reports leaving when it moves.
 static void leaveCheck(uint32_t now) {
   static int8_t atHome = -1;   // -1: not known yet
   double hLat, hLon;
-  if (!owntracksEnabled() || !owntracksValid() || owntracksAgeSec() > 30 * 60 || !weatherHomeLocation(&hLat, &hLon)) return;
+  if (!owntracksEnabled() || !owntracksValid() || !weatherHomeLocation(&hLat, &hLon)) return;
   double d = owntracksDistanceTo(hLat, hLon);
   if (d < 0) return;
   bool home = d <= NIGHT_LEAVE_KM;
@@ -342,8 +387,7 @@ static void engage(bool byHand) {
   engagedAtMin = boardLocalTime(&t) ? t.tm_hour * 60 + t.tm_min : 0;
   boardSide();
   rgbLower();
-  uint32_t id;
-  const char *err = monSend("power all off", &id);
+  const char *err = displaysOff();
   char rgbPct[8];
   snprintf(rgbPct, sizeof rgbPct, "%d %%", RGB_PCT);
   logMsg("night: engaged%s (PC LEDs %s, displays %s)", byHand ? " by hand" : "",
@@ -377,9 +421,8 @@ static void disengage(const char *why, bool post) {
   guardUntilMs = 0;
   boardSide();
   lassoSend();
-  uint32_t id;
-  const char *err = monSend("power all on", &id);
-  if (err) logMsg("night: displays on: %s", err);
+  monOnSentMs = 0;   // now, not in 30 s
+  monOnTry(nowMs());
   if (!lowPower) rgbRestoreTry(false);   // the "back to normal" post covers it
   if (post) backToNormal(why);
 }
@@ -392,8 +435,7 @@ static void reengage() {
   engagedMs = nowMs();   // the next input is a new wake
   boardSide();
   rgbLower();
-  uint32_t id;
-  const char *err = monSend("power all off", &id);
+  const char *err = displaysOff();
   lassoSend();
   logMsg("night: back on after a false wake (displays %s)", err ? err : "off");
 }
@@ -422,6 +464,7 @@ void nightPoll() {
     rgbLower();
   }
   if (!engaged && !lowPower) rgbRestoreTry(true);   // owed from a morning or a restart
+  monOnTry(now);
 
   // Wake check: the night went off at the first input; a real return
   // (> GUARD_PX of mouse travel or GUARD_PRESSES presses in GUARD_MS) keeps it
