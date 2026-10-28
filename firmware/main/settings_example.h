@@ -236,7 +236,8 @@
 #define CYCLONE_FETCH_KM 3000.0f                  // storms further away are not fetched
 
 // ---- Phone location (OwnTracks over MQTT; broker in MQTT_URI) ----
-#define OWNTRACKS_MAX_AGE_S (2 * 3600)            // a fix older than this is ignored
+#define OWNTRACKS_MAX_AGE_S (12 * 3600)           // a fix older than this is ignored (the phone reports on movement: silence = same place)
+#define OWNTRACKS_ASK_AFTER_S (30 * 60)           // no fix for this long: ask the phone (OwnTracks reportLocation), again as often
 #define OWNTRACKS_HOME_KM 1.0                     // phone within this of home = at home (one weather engine)
 
 // ---- PC helper (ESP32-Helper.exe; build.cmd turns HOST_* into C#, the sensor map stays in stats.ini) ----

@@ -1473,8 +1473,7 @@ static void owmAlertsTick(char *buf, size_t cap) {
 }
 
 static void owmTick(char *buf, size_t cap, bool force, uint32_t *lastMs, uint32_t curMs) {
-  bool onPhone = owntracksEnabled() && owntracksValid() && owntracksAgeSec() < 30 * 60 &&
-                 !owntracksIsMerged(homeLat, homeLon);
+  bool onPhone = owntracksEnabled() && owntracksValid() && !owntracksIsMerged(homeLat, homeLon);
   double lat = homeLat, lon = homeLon;
   if (onPhone) owntracksGetLocation(&lat, &lon, nullptr, nullptr);
   const RainAlert &t = onPhone ? rainPhone : rainHome;
@@ -1694,6 +1693,7 @@ void weatherPoll() {
   if (netUp()) {
     boardTimeStartSntp();
     owntracksStart();
+    owntracksAskIfStale();
   }
 
   // live countdowns: redraw once a minute while a warning is up

@@ -71,7 +71,8 @@ OwnTracks sends GPS updates from your smartphone to your private MQTT broker.
    - Turn on **Retain** in the app, so the broker hands the last location to the board right after it connects.
 4. **Payload format**:
    - Reads JSON location events with `"_type": "location"` containing `lat`, `lon`, `tst`, `acc`.
-   - Location is considered valid while `tst` timestamp is `< 2 h` old.
+   - Location is considered valid while `tst` timestamp is `< 12 h` old (`OWNTRACKS_MAX_AGE_S`): the app reports on movement, so no report means the phone has not moved.
+   - After 30 min without a report (`OWNTRACKS_ASK_AFTER_S`) the board publishes OwnTracks' remote command `{"_type":"cmd","action":"reportLocation"}` to `<device topic>/cmd`, again every 30 min until a fix arrives. Turn on remote commands in the app (Android: Preferences -> Advanced -> Remote commands). Android answers while connected; iOS only when the app is awake.
 
 ---
 
@@ -98,7 +99,7 @@ EMQX Cloud's Serverless broker is free up to a monthly allowance of session minu
 - Keepalive 120 s.
 - Task stack 4096 B (default 6144). It peaked at 2.85 KB, TLS handshake included (`bench usage`, EMQX, 2026-10-27).
 - A bare broker address in `MQTT_URI` (as the EMQX console shows it) means TLS on port 8883.
-- 512 B receive buffer and 256 B send buffer. A location is about 300-450 B. A bigger message arrives in pieces and is joined in a temporary heap copy, up to 4 KB.
+- 512 B receive buffer and 256 B send buffer (the reportLocation command is about 130 B). A location is about 300-450 B. A bigger message arrives in pieces and is joined in a temporary heap copy, up to 4 KB.
 
 ---
 
@@ -106,7 +107,7 @@ EMQX Cloud's Serverless broker is free up to a monthly allowance of session minu
 
 Pushover sends every #pc-announcement and #weather-announcement post to your phone as a push notification: rain heading your way, weather alerts, cyclones, PC on/off, night mode, board restarts. The Discord title becomes the notification title, and the embed text the message (or the title when there is none). Posts are queued (6 at most) and sent one per second by the weather task. Without a Discord token, only the phone rain alert goes out, straight to Pushover.
 
-Priority: every weather warning (rain at any tier, "Rain soon where you are", typhoon posts, OpenWeather alerts) goes out high (Pushover priority 1, `WEATHER_ALERT_PRIO`: rings through quiet hours). "Cleared" posts are normal (0). The 2-hourly "Currently" updates are for where you are: while the phone (OwnTracks, a fix under 2 h old) is away from home, one extra Open-Meteo call fetches the weather at its location ("Currently where you are (10 km from home)", with the phone engine's rain), else home's. They go out quiet (-1: no sound or vibration).
+Priority: every weather warning (rain at any tier, "Rain soon where you are", typhoon posts, OpenWeather alerts) goes out high (Pushover priority 1, `WEATHER_ALERT_PRIO`: rings through quiet hours). "Cleared" posts are normal (0). The 2-hourly "Currently" updates are for where you are: while the phone (OwnTracks, a fix under 12 h old) is away from home, one extra Open-Meteo call fetches the weather at its location ("Currently where you are (10 km from home)", with the phone engine's rain), else home's. They go out quiet (-1: no sound or vibration).
 
 1. Create an account at [Pushover](https://pushover.net/) and install the mobile app.
 2. Copy your **User Key** (`PUSHOVER_USER`).

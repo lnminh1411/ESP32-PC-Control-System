@@ -30,6 +30,9 @@ static uint32_t phoneAcc;
 static uint32_t phoneReceivedMs;
 static bool hasLocation;
 static bool clientStarted;
+static volatile bool connected;
+static char devTopic[80];     // the phone's own topic, owntracks/<user>/<device>, from its location messages
+static uint32_t lastAskMs;    // last reportLocation command
 static bool errLogged;
 static char *bigMsg;   // joins a message split across MQTT_EVENT_DATA events
 
@@ -49,6 +52,7 @@ static void mqttEventHandler(void *, esp_event_base_t, int32_t event_id, void *e
   switch (event_id) {
     case MQTT_EVENT_CONNECTED: {
       errLogged = false;
+      connected = true;
       const char *topic = OWNTRACKS_TOPIC[0] ? OWNTRACKS_TOPIC : "owntracks/#";
       esp_mqtt_client_subscribe(mqttClient, topic, 0);
       logMsg("owntracks: subscribed to %s", topic);
@@ -96,6 +100,11 @@ static void mqttEventHandler(void *, esp_event_base_t, int32_t event_id, void *e
           phoneAcc = (jacc && cJSON_IsNumber(jacc)) ? (uint32_t)jacc->valuedouble : 0;
           phoneReceivedMs = nowMs();
           hasLocation = true;
+          // the device's topic: its /cmd subtopic takes reportLocation
+          if (event->topic && event->topic_len > 0 && event->topic_len < (int)sizeof devTopic) {
+            memcpy(devTopic, event->topic, event->topic_len);
+            devTopic[event->topic_len] = 0;
+          }
           if (locMutex) xSemaphoreGive(locMutex);
           logMsg("owntracks: location updated (acc %u m)", (unsigned)phoneAcc);
         }
@@ -103,6 +112,9 @@ static void mqttEventHandler(void *, esp_event_base_t, int32_t event_id, void *e
       cJSON_Delete(root);
       break;
     }
+    case MQTT_EVENT_DISCONNECTED:
+      connected = false;
+      break;
     case MQTT_EVENT_ERROR: {
       if (!errLogged) {
         errLogged = true;
@@ -136,10 +148,10 @@ void owntracksStart() {
   cfg.credentials.username = MQTT_USER;
   cfg.credentials.authentication.password = MQTT_PASS;
   cfg.network.timeout_ms = 10000;
-  cfg.session.keepalive = 120;   // seconds; the phone publishes, the board only listens
+  cfg.session.keepalive = 120;   // seconds; the phone publishes, the board listens (and asks, owntracksAskIfStale)
   cfg.task.stack_size = 4096;    // default 6144; peak 2.85 KB with the TLS handshake (bench usage, 2026-10-27)
   cfg.buffer.size = 512;         // default 1024; bigger messages are joined in MQTT_EVENT_DATA
-  cfg.buffer.out_size = 256;     // only CONNECT, SUBSCRIBE and PINGREQ go out
+  cfg.buffer.out_size = 256;     // CONNECT, SUBSCRIBE, PINGREQ and the ~130 B reportLocation command
 
   mqttClient = esp_mqtt_client_init(&cfg);
   if (!mqttClient) {
@@ -167,7 +179,7 @@ bool owntracksValid() {
   time_t now = time(nullptr);
   if (now >= 1700000000) {
     int64_t diff = (int64_t)now - (int64_t)tst;
-    return (diff >= -120 && diff < OWNTRACKS_MAX_AGE_S); // valid if < 2 hours old
+    return (diff >= -120 && diff < OWNTRACKS_MAX_AGE_S);
   }
   return (nowMs() - rxMs < OWNTRACKS_MAX_AGE_S * 1000);
 }
@@ -211,4 +223,22 @@ bool owntracksIsMerged(double homeLat, double homeLon) {
   if (!owntracksEnabled() || !owntracksValid()) return true;
   double d = owntracksDistanceTo(homeLat, homeLon);
   return (d >= 0.0 && d < OWNTRACKS_HOME_KM);
+}
+
+// A phone that sits still reports nothing (OwnTracks publishes on movement),
+// so after OWNTRACKS_ASK_AFTER_S without a fix the board publishes
+// OwnTracks' remote command reportLocation to <device topic>/cmd, again every
+// OWNTRACKS_ASK_AFTER_S until one arrives. The app answers when remote
+// commands are on and it is connected (reliable on Android, best effort on
+// iOS); a fix stays valid OWNTRACKS_MAX_AGE_S either way.
+void owntracksAskIfStale() {
+  if (!clientStarted || !connected || !devTopic[0] || !hasLocation) return;
+  if (owntracksAgeSec() < OWNTRACKS_ASK_AFTER_S) return;
+  if (lastAskMs && nowMs() - lastAskMs < OWNTRACKS_ASK_AFTER_S * 1000UL) return;
+  lastAskMs = nowMs() | 1;
+  char topic[96];
+  snprintf(topic, sizeof topic, "%s/cmd", devTopic);
+  int id = esp_mqtt_client_publish(mqttClient, topic, "{\"_type\":\"cmd\",\"action\":\"reportLocation\"}", 0, 1, 0);
+  logMsg("owntracks: fix %lu min old, asked the phone for its location%s", (unsigned long)(owntracksAgeSec() / 60),
+         id < 0 ? " (publish failed)" : "");
 }
