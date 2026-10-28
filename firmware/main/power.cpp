@@ -121,7 +121,9 @@ void powerPoll() {
         char note[48];
         snprintf(note, sizeof(note), "PC refused %s", s_action);
         viewsNoteAction(note);
-        discordNotify(note);
+        char msg[160];   // with PcHwCtl's reason: "Hibernation is off.", "PcHwCtl offline, use Reset", ...
+        snprintf(msg, sizeof msg, "PC refused %s: %.120s", s_action, reason);
+        discordNotify(msg);
         s_pending = false;
         s_nonce[0] = '\0';
         return;

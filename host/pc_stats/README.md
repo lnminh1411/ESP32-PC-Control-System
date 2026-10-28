@@ -59,7 +59,7 @@ ESP32-Helper.exe --list              # Print one PcHwCtl sensor feed snapshot an
 ESP32-Helper.exe --transport auto    # Transport mode: auto (default), winusb, hid, or serial
 ESP32-Helper.exe --port COM4         # Manually specify COM port instead of VID_303A auto-detect
 ESP32-Helper.exe --claude <dir>      # Test Claude live fetch & local token totals and exit
-ESP32-Helper.exe --going             # Test restart/update detection and exit
+ESP32-Helper.exe --going             # Print PcHwCtl's `power status` (going, last down, wake, updates) and exit
 ESP32-Helper.exe --agy-once          # Poll Antigravity quota once, print the keys and exit
 ESP32-Helper.exe --media             # Sample media sessions for 5 s, print the keys and exit
 ESP32-Helper.exe --render-text <px> <bold> <out.png> <text...>  # Test non-ASCII GDI text rendering
@@ -271,9 +271,9 @@ The service supports bidirectional power management with the carrier board:
   ```
   !power <action> <nonce>
   ```
-  where `<action>` is strictly allowlisted to `sleep`, `hibernate`, `restart`, or `shutdown`, and `<nonce>` is 1-8 hex digits. Any command not matching this exact format is logged and ignored without acking. Duplicate nonces within 60 seconds are discarded to prevent repeated executions.
-- **Host -> Device (Ack)**: Sent in the regular sample stream as a text stat `@t power.ack <action> <nonce>` (e.g. `@t power.ack sleep 3f2a`) in every sample for 10 seconds after accepting the request. If an action is rejected (e.g. hibernation disabled), it acks `@t power.ack error <nonce> <reason>` (e.g. `error <nonce> hibernate disabled`).
-- **Execution Timing**: The host performs the requested power transition ~1.5 seconds after first sending the ack, ensuring the ack packet is transmitted on the wire before the host suspends or restarts.
+  where `<action>` is strictly allowlisted to `sleep`, `hibernate`, `restart`, `shutdown`, or `lock`, and `<nonce>` is 1-8 hex digits. Any command not matching this exact format is logged and ignored without acking. Duplicate nonces within 60 seconds are discarded to prevent repeated executions.
+- **Who acts**: PcHwCtl, nothing in the helper. The helper sends `power do <action> 1500` on PcHwCtl's pipe (E:\PC Hardware Controller, docs/ipc.md#power-actions-and-events); PcHwCtl accepts or declines at once and carries the action out 1.5 s later, so the ack reaches the board first.
+- **Host -> Device (Ack)**: Sent in the regular sample stream as a text stat for 10 seconds: `@t power.ack <action> <nonce>` (e.g. `@t power.ack sleep 3f2a`) when PcHwCtl accepted, `@t power.ack error <nonce> <reason>` when it declined, with PcHwCtl's reason (`Hibernation is off.`, `Windows is installing updates.`, `A shutdown is already under way (by X.exe).`, ...). PcHwCtl not running gives `error <nonce> PcHwCtl offline, use Reset`: nothing on the PC can act then, and the board's Reset button (behind its confirm) is the way left. The board posts the reason to Discord.
 - **Wake-on-LAN Target**: The host discovers and continuously advertises its primary network adapter MAC address and interface name in every sample:
   ```
   @t pc.mac AA:BB:CC:DD:EE:FF
@@ -282,7 +282,7 @@ The service supports bidirectional power management with the carrier board:
   The adapter is chosen by priority: (1) operational wired Ethernet adapter with an IPv4 gateway, (2) any Ethernet adapter, (3) any up adapter with a gateway (skipping virtual adapters such as Hyper-V, VirtualBox, VMware, TAP, Loopback, Bluetooth, WAN Miniport). Refreshed every 30 seconds.
 
 ### Hardware Fallback
-The service strictly executes only the four software power actions (`sleep`, `hibernate`, `restart`, `shutdown`). When the service is not running (e.g. PC is powered off in S5, hung, or booting), the carrier board controls the physical front-panel power switch header via hardware optocoupler pulses (power button press).
+When PcHwCtl or the helper is not running (e.g. PC is powered off in S5, hung, or booting), the carrier board controls the physical front-panel headers via optocoupler pulses: the power button, and the Reset button behind its confirm.
 
 ### Wake-on-LAN Prerequisites
 To wake the PC from sleep or powered-off state (S5) using Magic Packets:
@@ -292,39 +292,23 @@ To wake the PC from sleep or powered-off state (S5) using Magic Packets:
 
 ## Restart / Update Detection
 
-The service watches for Windows restart, shutdown, and sleep transitions in real time, and detects when a reboot is pending for Windows Update. This allows the ESP32 carrier board to distinguish between clean restarts, Windows updates, deliberate shutdowns, sleep, and unexpected power cuts/crashes before the USB connection drops.
+PcHwCtl watches the System event log (1074, Kernel-Power 41/42/109, EventLog 6008, Power-Troubleshooter 1) and the update registry keys; see its docs/ipc.md#power-actions-and-events for every key and how it is derived. The helper carries PcHwCtl's state-file keys to the board under the names the board reads:
 
-### Keys Streamed
+- `hw.going`, `hw.going_by`, `hw.going_why`, `hw.going_code`, `hw.going_user`, `hw.going_id` -> `pc.going*` (kinds `restart`, `shutdown`, `update_restart`, `update_shutdown`, `sleep`, `hibernate`, `none`; a new `pc.going_id` is a new announcement).
+- `hw.last_down`, `hw.last_down_at`, `hw.last_down_by`, `hw.last_down_why` -> `pc.last_down*` (also `bluescreen`, `power_button`, `unexpected`, `unknown`).
+- `hw.update_pending`, `hw.update_pending_by` -> `pc.update_pending*`; `hw.update_running` -> `pc.update` (installing right now).
+- `hw.wake_from`, `hw.wake_at`, `hw.wake_by` -> `pc.wake_*`; `hw.power_do`, `hw.power_do_at` -> `pc.power_do*`.
 
-In every sample packet:
-- `@t pc.going <kind>`: One of `restart`, `shutdown`, `update_restart`, `update_shutdown`, `sleep`, or literal `none` when nothing is announced.
-- `@t pc.going_by <process>`: Initiating process name (e.g. `MoUsoCoreWorker.exe`), or `-` when none.
-- `@t pc.going_why <reason>`: Reason text truncated to 60 characters, or `-` when none.
-- `@s pc.going_id=<n>`: `EventRecordID` from System event 1074, or a synthetic fallback counter (`0x40000000 + counter`) for sleep / service shutdown fallbacks; `0` when nothing is announced. A change of ID signals a new announcement.
-- `@s pc.update_pending=0|1`: `1` if a reboot is pending (`RebootRequired` or `RebootPending` registry key exists in the 64-bit view, polled every 30 seconds), else `0`.
-- `@t pc.last_down <kind>`: How the PC last went down before this boot: `restart`, `shutdown`, `update_restart`, `update_shutdown`, `unexpected` (crash / power loss), or `unknown`.
-- `@t pc.last_down_at <text>`: Local time of the last down event in `ddd HH:mm` format (InvariantCulture day names, e.g. `Fri 13:00`), or `-` if unknown.
+While PcHwCtl is down (`hw.ok=0`) the helper sends `pc.going none`, `pc.going_id=0`, `pc.update_pending=0`, `pc.update=0` and `pc.last_down unknown`, so the board holds no stale announcement.
 
-### Classification Rules
-
-When a System event 1074 (`User32`) occurs:
-- **Base Type**: If Property [4] contains `"restart"` (case-insensitive) -> `restart`, else `shutdown`.
-- **Update Classification**: Classified as `update_restart` or `update_shutdown` if ANY of:
-  1. Process file name (with path and machine suffix stripped) matches any of `MoUsoCoreWorker.exe`, `TrustedInstaller.exe`, `usoclient.exe`, `wuauclt.exe`, `MusNotification.exe`, `MusNotifyIcon.exe`, or `UsoClient.exe` (case-insensitive);
-  2. Reason code hex has major code `((code >> 16) & 0xFF) == 2` (Operating System) and minor code `(code & 0xFFFF)` in `{0x3, 0x10, 0x11, 0x12}`;
-  3. `pc.update_pending` is `1` at the time of the event.
-- **Cancellation**: If a shutdown is aborted (`shutdown /a`), Windows does not log a cancellation event; the service clears the `pc.going*` fields 120 seconds after announcement if the service is still running.
-- **Fallbacks**:
-  - `OnPowerEvent(Suspend)`: Sets kind `sleep` (`pc.going_id` fallback counter, process `-`, reason `sleep`), pushes immediately, and waits up to 500 ms for transmission. `ResumeSuspend` and `ResumeAutomatic` clear the going fields.
-  - `OnShutdown()`: If no event 1074 announcement occurred in the preceding 60 seconds, sets kind `shutdown`, pushes immediately, waits up to 1 second, and stops.
+When Windows suspends (`OnPowerEvent(Suspend)`) or stops the service at shutdown (`OnShutdown()`), the helper re-reads PcHwCtl's state file at once (up to 1.2 s / 1 s, until `hw.going` is set) and pushes a sample before USB goes away.
 
 ### Console Verification
 
-Run with `--going` to inspect historical 1074 events and verified classification:
 ```cmd
 ESP32-Helper.exe --going
 ```
-Prints the last 15 event 1074 entries (`time | process | type | code | reason -> kind`), followed by the computed `pc.last_down` / `pc.last_down_at` and `pc.update_pending`.
+Prints PcHwCtl's `power status` JSON (going, last down, wake, updates, last `power do`).
 
 ## PcHwCtl: sensors, monitors, Process Lasso
 

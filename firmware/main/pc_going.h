@@ -8,13 +8,14 @@ enum GoingKind : uint8_t {
   GO_SHUTDOWN,
   GO_UPDATE_RESTART,
   GO_UPDATE_SHUTDOWN,
-  GO_SLEEP
+  GO_SLEEP,
+  GO_HIBERNATE
 };
 
 void pcGoingOnSample();          // call at every @e (pcstats.cpp, after sampleSeq++)
 void pcGoingPoll();              // call from the main loop
 GoingKind pcGoing();             // latched announcement, GO_NONE if none
-const char *pcGoingLabel();      // "RESTARTING", "UPDATING", "SHUTTING DOWN", "GOING TO SLEEP", ""
+const char *pcGoingLabel();      // "RESTARTING", "UPDATING", "SHUTTING DOWN", "GOING TO SLEEP", "HIBERNATING", ""
 const char *pcGoingBy();         // initiating process ("" if none)
 const char *pcGoingWhy();        // reason text ("" if none)
 uint32_t pcGoingAgeMs();         // since the announcement

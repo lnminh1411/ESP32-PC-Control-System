@@ -56,6 +56,7 @@ static GoingKind parseKind(const char *s) {
   if (!strcmp(s, "update_restart")) return GO_UPDATE_RESTART;
   if (!strcmp(s, "update_shutdown")) return GO_UPDATE_SHUTDOWN;
   if (!strcmp(s, "sleep")) return GO_SLEEP;
+  if (!strcmp(s, "hibernate")) return GO_HIBERNATE;
   return GO_NONE;
 }
 
@@ -70,6 +71,7 @@ static void buildNotifyMsg(char *buf, size_t size, GoingKind k, const char *by, 
     case GO_UPDATE_SHUTDOWN: action = "PC updating and shutting down"; break;
     case GO_SHUTDOWN: action = "PC shutting down"; break;
     case GO_SLEEP: action = "PC going to sleep"; break;
+    case GO_HIBERNATE: action = "PC hibernating"; break;
     default: action = "PC going"; break;
   }
   bool hasBy = by && by[0];
@@ -126,6 +128,7 @@ const char *pcGoingLabel() {
     case GO_UPDATE_SHUTDOWN: return "UPDATING";
     case GO_SHUTDOWN: return "SHUTTING DOWN";
     case GO_SLEEP: return "GOING TO SLEEP";
+    case GO_HIBERNATE: return "HIBERNATING";
     default: return "";
   }
 }
@@ -310,7 +313,8 @@ void pcGoingPoll() {
         logMsg("pc: did not come back");
         clearLatch();
       }
-    } else if (latchedKind == GO_UPDATE_SHUTDOWN || latchedKind == GO_SHUTDOWN || latchedKind == GO_SLEEP) {
+    } else if (latchedKind == GO_UPDATE_SHUTDOWN || latchedKind == GO_SHUTDOWN || latchedKind == GO_SLEEP ||
+               latchedKind == GO_HIBERNATE) {
       // the update work happens before the PC goes off; once off, it is just off
       if ((uint32_t)(nowMs() - offStartMs) >= 5000) {
         clearLatch();

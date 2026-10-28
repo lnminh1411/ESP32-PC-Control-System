@@ -212,10 +212,7 @@ partial class PcStats : ServiceBase {
   [DllImport("kernel32.dll", SetLastError = true)]
   static extern bool CancelIoEx(SafeFileHandle hFile, IntPtr lpOverlapped);
 
-  [DllImport("powrprof.dll", SetLastError = true)]
-  static extern bool SetSuspendState(bool hibernate, bool forceCritical, bool disableWakeEvent);
-
-  // lock: the service runs in session 0, LockWorkStation has to run in the user's
+  // the user half: the service runs in session 0, the half has to run in the user's
   [DllImport("kernel32.dll")]
   static extern uint WTSGetActiveConsoleSessionId();
 
@@ -256,37 +253,6 @@ partial class PcStats : ServiceBase {
 
   [DllImport("kernel32.dll", SetLastError = true)]
   static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
-
-  [DllImport("powrprof.dll", SetLastError = true)]
-  static extern bool GetPwrCapabilities(IntPtr lpSystemPowerCapabilities);
-
-  [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-  static extern uint InitiateShutdown(string lpMachineName, string lpMessage, uint dwGracePeriod, uint dwShutdownFlags, uint dwReason);
-
-  [DllImport("kernel32.dll")]
-  static extern IntPtr GetCurrentProcess();
-
-  [DllImport("advapi32.dll", SetLastError = true)]
-  static extern bool OpenProcessToken(IntPtr ProcessHandle, uint DesiredAccess, out IntPtr TokenHandle);
-
-  [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-  static extern bool LookupPrivilegeValue(string lpSystemName, string lpName, out LUID lpLuid);
-
-  [DllImport("advapi32.dll", SetLastError = true)]
-  static extern bool AdjustTokenPrivileges(IntPtr TokenHandle, bool DisableAllPrivileges, ref TOKEN_PRIVILEGES NewState, uint BufferLength, IntPtr PreviousState, IntPtr ReturnLength);
-
-  [StructLayout(LayoutKind.Sequential)]
-  struct LUID {
-    public uint LowPart;
-    public int HighPart;
-  }
-
-  [StructLayout(LayoutKind.Sequential, Pack = 1)]
-  struct TOKEN_PRIVILEGES {
-    public uint PrivilegeCount;
-    public LUID Luid;
-    public uint Attributes;
-  }
 
   interface ILink : IDisposable {
     void Write(string text);
@@ -644,8 +610,6 @@ partial class PcStats : ServiceBase {
   static readonly Dictionary<string, DateTime> recentNonces = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
   static string currentAckValue;
   static DateTime ackExpiresUtc = DateTime.MinValue;
-  static string scheduledAction;
-  static DateTime scheduledActionTimeUtc = DateTime.MinValue;
 
   static string currentMac = "";
   static string currentMacIf = "";
@@ -756,10 +720,14 @@ partial class PcStats : ServiceBase {
   // itself, under hw.: the monitors (hw.mon.*) and the power requests
   // (hw.disp_req, hw.sys_req, hw.exec_req, each with _by). They go to the
   // board as mon.* and pc.*_req*, which its Discord panel and night mode read.
+  // PcHwCtl's power watcher (docs/ipc.md#power-actions-and-events there):
+  // hw.going*, hw.last_down*, hw.wake_*, hw.update_pending* and hw.power_do*
+  // go out as pc.*, and hw.update_running as pc.update (the board's name).
   static string BoardKey(string source, string key) {
     if (source != "hw") return key;
     if (key.StartsWith("hw.mon.", StringComparison.Ordinal)) return key.Substring(3);
-    if (Regex.IsMatch(key, @"^hw\.(disp|sys|exec)_req")) return "pc" + key.Substring(2);
+    if (key == "hw.update_running") return "pc.update";
+    if (Regex.IsMatch(key, @"^hw\.((disp|sys|exec)_req|going|last_down|wake_|update_pending|power_do)")) return "pc" + key.Substring(2);
     return key;
   }
 
@@ -1195,6 +1163,12 @@ partial class PcStats : ServiceBase {
     TriggerArtResend(id);
   }
 
+  // !power <action> <nonce>: PcHwCtl is the only thing that sleeps,
+  // hibernates, restarts, shuts down or locks the PC (`power do`, docs/ipc.md
+  // #power-actions-and-events there). It accepts or declines at once and acts
+  // 1.5 s later, so the board sees the ack first. power.ack = "<action>
+  // <nonce>" when accepted, "error <nonce> <why>" when declined. With PcHwCtl
+  // not running nothing here can act: the board's Reset button is what's left.
   static void HandlePowerLine(string line) {
     if (line == null) return;
     line = line.Trim();
@@ -1213,140 +1187,35 @@ partial class PcStats : ServiceBase {
 
     lock (powerLock) {
       DateTime now = DateTime.UtcNow;
-
       var oldNonces = new List<string>();
       foreach (KeyValuePair<string, DateTime> kv in recentNonces) {
-        if ((now - kv.Value).TotalSeconds >= 60.0) {
-          oldNonces.Add(kv.Key);
-        }
+        if ((now - kv.Value).TotalSeconds >= 60.0) oldNonces.Add(kv.Key);
       }
-      for (int i = 0; i < oldNonces.Count; i++) {
-        recentNonces.Remove(oldNonces[i]);
-      }
-
-      if (recentNonces.ContainsKey(nonce)) {
-        // Duplicate nonce within 60 s: ignore
-        return;
-      }
+      for (int i = 0; i < oldNonces.Count; i++) recentNonces.Remove(oldNonces[i]);
+      if (recentNonces.ContainsKey(nonce)) return;   // duplicate within 60 s
       recentNonces[nonce] = now;
+    }
 
-      if (action == "hibernate") {
-        if (!IsHibernateSupported()) {
-          currentAckValue = "error " + nonce + " hibernate disabled";
-          ackExpiresUtc = now.AddSeconds(10);
-          scheduledAction = null;
-          scheduledActionTimeUtc = DateTime.MinValue;
-          Log("power: hibernate requested but hibernation is disabled");
-          return;
-        }
+    Log("power: " + action + " requested by the board");
+    ThreadPool.QueueUserWorkItem(delegate(object o) {
+      string r = SendToPcHwCtl("power do " + action + " 1500");
+      string ack;
+      if (r == "ok") {
+        ack = action + " " + nonce;
+        Log("power: " + action + " accepted by PcHwCtl");
+      } else {
+        string why = r.StartsWith("err ", StringComparison.Ordinal) ? r.Substring(4) : r;
+        if (why.EndsWith(" not running", StringComparison.Ordinal)) why = "PcHwCtl offline, use Reset";
+        else if (why.EndsWith(" did not answer", StringComparison.Ordinal)) why = "PcHwCtl did not answer";
+        ack = "error " + nonce + " " + why;
+        Log("power: " + action + " declined: " + why);
       }
-
-      currentAckValue = action + " " + nonce;
-      ackExpiresUtc = now.AddSeconds(10);
-      scheduledAction = action;
-      scheduledActionTimeUtc = DateTime.MinValue; // will be scheduled ~1.5s after first sent
-      Log("power: " + action + " requested by the board");
-    }
-  }
-
-  static bool IsHibernateSupported() {
-    IntPtr buf = Marshal.AllocHGlobal(128);
-    try {
-      for (int i = 0; i < 128; i++) Marshal.WriteByte(buf, i, 0);
-      if (!GetPwrCapabilities(buf)) {
-        Log("GetPwrCapabilities failed: " + Marshal.GetLastWin32Error());
-        return false;
+      lock (powerLock) {
+        currentAckValue = TruncateUtf8(ack, 120);
+        ackExpiresUtc = DateTime.UtcNow.AddSeconds(10);
       }
-      // HiberFilePresent is at offset 8 (preceded by 8 1-byte BOOLEAN flags)
-      return Marshal.ReadByte(buf, 8) != 0;
-    } finally {
-      Marshal.FreeHGlobal(buf);
-    }
-  }
-
-  static void EnableShutdownPrivilege() {
-    IntPtr hToken;
-    if (!OpenProcessToken(GetCurrentProcess(), 0x0020 | 0x0008, out hToken)) {
-      Log("OpenProcessToken failed: " + Marshal.GetLastWin32Error());
-      return;
-    }
-    try {
-      LUID luid;
-      if (!LookupPrivilegeValue(null, "SeShutdownPrivilege", out luid)) {
-        Log("LookupPrivilegeValue failed: " + Marshal.GetLastWin32Error());
-        return;
-      }
-      TOKEN_PRIVILEGES tp = new TOKEN_PRIVILEGES();
-      tp.PrivilegeCount = 1;
-      tp.Luid = luid;
-      tp.Attributes = 0x00000002; // SE_PRIVILEGE_ENABLED
-      if (!AdjustTokenPrivileges(hToken, false, ref tp, 0, IntPtr.Zero, IntPtr.Zero)) {
-        Log("AdjustTokenPrivileges failed: " + Marshal.GetLastWin32Error());
-      }
-    } finally {
-      CloseHandle(hToken);
-    }
-  }
-
-  // Lock the console session: rundll32 user32.dll,LockWorkStation started in
-  // that session with the user's token (SYSTEM may ask for it)
-  static void LockConsoleSession() {
-    uint session = WTSGetActiveConsoleSessionId();
-    IntPtr token;
-    if (session == 0xFFFFFFFF || !WTSQueryUserToken(session, out token)) {
-      Log("power: lock: no user signed in at the console (" + Marshal.GetLastWin32Error() + ")");
-      return;
-    }
-    try {
-      STARTUPINFO si = new STARTUPINFO();
-      si.cb = Marshal.SizeOf(typeof(STARTUPINFO));
-      si.lpDesktop = @"winsta0\default";
-      PROCESS_INFORMATION pi;
-      string exe = Path.Combine(Environment.SystemDirectory, "rundll32.exe");
-      if (!CreateProcessAsUser(token, exe, "\"" + exe + "\" user32.dll,LockWorkStation", IntPtr.Zero, IntPtr.Zero,
-              false, 0x08000000, IntPtr.Zero, null, ref si, out pi)) {   // CREATE_NO_WINDOW
-        Log("power: lock: CreateProcessAsUser failed: " + Marshal.GetLastWin32Error());
-        return;
-      }
-      CloseHandle(pi.hThread);
-      CloseHandle(pi.hProcess);
-    } finally {
-      CloseHandle(token);
-    }
-  }
-
-  static void ExecutePowerAction(string action) {
-    try {
-      if (action == "lock") {
-        LockConsoleSession();
-      } else if (action == "sleep") {
-        if (!SetSuspendState(false, false, false)) {
-          Log("power: SetSuspendState(sleep) failed: " + Marshal.GetLastWin32Error());
-        }
-      } else if (action == "hibernate") {
-        if (!SetSuspendState(true, false, false)) {
-          Log("power: SetSuspendState(hibernate) failed: " + Marshal.GetLastWin32Error());
-        }
-      } else if (action == "restart") {
-        EnableShutdownPrivilege();
-        uint flags = 0x00000004 | 0x00000001; // SHUTDOWN_RESTART | SHUTDOWN_FORCE_OTHERS
-        uint reason = 0x80000000;              // SHTDN_REASON_MAJOR_OTHER | SHTDN_REASON_FLAG_PLANNED
-        uint res = InitiateShutdown(null, null, 0, flags, reason);
-        if (res != 0) {
-          Log("power: InitiateShutdown(restart) failed: " + res);
-        }
-      } else if (action == "shutdown") {
-        EnableShutdownPrivilege();
-        uint flags = 0x00000008 | 0x00000001; // SHUTDOWN_POWEROFF | SHUTDOWN_FORCE_OTHERS
-        uint reason = 0x80000000;              // SHTDN_REASON_MAJOR_OTHER | SHTDN_REASON_FLAG_PLANNED
-        uint res = InitiateShutdown(null, null, 0, flags, reason);
-        if (res != 0) {
-          Log("power: InitiateShutdown(shutdown) failed: " + res);
-        }
-      }
-    } catch (Exception ex) {
-      Log("power: execution exception (" + action + "): " + ex.Message);
-    }
+      sendNow.Set();
+    });
   }
 
   static readonly string[] NicSkip = HostSettings.List(HostSettings.NIC_SKIP);   // virtual / VPN adapters
@@ -1469,268 +1338,14 @@ partial class PcStats : ServiceBase {
   static string fixedPort;
   static string logPath;
 
-  // Shutdown / Restart / Update / Sleep detection
-  static readonly HashSet<string> UpdateProcesses = new HashSet<string>(StringComparer.OrdinalIgnoreCase) {
-    "MoUsoCoreWorker.exe",
-    "TrustedInstaller.exe",
-    "usoclient.exe",
-    "wuauclt.exe",
-    "MusNotification.exe",
-    "MusNotifyIcon.exe",
-    "UsoClient.exe"
-  };
-
-  static readonly object goingLock = new object();
-  static string goingKind = "none";
-  static string goingBy = "-";
-  static string goingWhy = "-";
-  static long goingId = 0;
-  static DateTime goingSetUtc = DateTime.MinValue;
-  static DateTime last1074TimeUtc = DateTime.MinValue;
-  static int fallbackCounter = 0;
-
-  static EventLogWatcher goingWatcher = null;
   static readonly AutoResetEvent sendNow = new AutoResetEvent(false);
   static readonly AutoResetEvent sendCompleted = new AutoResetEvent(false);
 
-  static string lastDownKind = "unknown";
-  static string lastDownAt = "-";
-
-  static bool updatePending = false;
-  static DateTime nextUpdatePendingCheckUtc = DateTime.MinValue;
-  static bool updateRunning = false;
-  static DateTime nextUpdateRunningCheckUtc = DateTime.MinValue;
-
-  static string ExtractProcessName(string process) {
-    if (string.IsNullOrEmpty(process)) return "";
-    string p = process.Trim();
-    if (p.EndsWith(")")) {
-      int lastSlash = Math.Max(p.LastIndexOf('\\'), p.LastIndexOf('/'));
-      int lastOpen = p.LastIndexOf(" (");
-      if (lastOpen > lastSlash) {
-        p = p.Substring(0, lastOpen).Trim();
-      }
-    }
-    int slash = Math.Max(p.LastIndexOf('\\'), p.LastIndexOf('/'));
-    if (slash >= 0) {
-      p = p.Substring(slash + 1).Trim();
-    }
-    return p;
-  }
-
-  public static string ClassifyShutdown(string process, string type, string codeHex, bool updatePending) {
-    bool isRestart = !string.IsNullOrEmpty(type) &&
-                     type.IndexOf("restart", StringComparison.OrdinalIgnoreCase) >= 0;
-
-    bool isUpdate = updatePending;
-
-    if (!isUpdate) {
-      string procName = ExtractProcessName(process);
-      if (UpdateProcesses.Contains(procName)) {
-        isUpdate = true;
-      }
-    }
-
-    if (!isUpdate && !string.IsNullOrEmpty(codeHex)) {
-      string s = codeHex.Trim();
-      if (s.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) {
-        s = s.Substring(2);
-      }
-      uint code;
-      if (uint.TryParse(s, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out code)) {
-        uint major = (code >> 16) & 0xFF;
-        uint minor = code & 0xFFFF;
-        if (major == 2 && (minor == 0x3 || minor == 0x10 || minor == 0x11 || minor == 0x12)) {
-          isUpdate = true;
-        }
-      }
-    }
-
-    if (isUpdate) {
-      return isRestart ? "update_restart" : "update_shutdown";
-    }
-    return isRestart ? "restart" : "shutdown";
-  }
-
-  static void ClearGoing() {
-    goingKind = "none";
-    goingBy = "-";
-    goingWhy = "-";
-    goingId = 0;
-    goingSetUtc = DateTime.MinValue;
-  }
-
-  static bool CheckUpdatePending() {
-    try {
-      using (var hklm = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64)) {
-        if (hklm != null) {
-          using (var k1 = hklm.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired")) {
-            if (k1 != null) return true;
-          }
-          using (var k2 = hklm.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending")) {
-            if (k2 != null) return true;
-          }
-        }
-      }
-    } catch (Exception ex) {
-      Log("going: CheckUpdatePending failed: " + ex.Message);
-    }
-    return false;
-  }
-
-  // Windows is installing updates with nobody signed in: "Updates are
-  // underway" after an update restart. Servicing workers alone are not enough:
-  // Windows also services in the background while someone works (explorer
-  // running) and right after an ordinary boot, at the sign-in screen. So it
-  // only counts when the PC went down for an update (the "Working on updates"
-  // phase before that restart is announced by event 1074 already).
-  static bool CheckUpdateRunning() {
-    try {
-      if (!lastDownKind.StartsWith("update", StringComparison.Ordinal)) return false;
-      if (ProcessRunning("explorer")) return false;
-      foreach (string name in new string[] { "TiWorker", "poqexec", "SetupHost" })
-        if (ProcessRunning(name)) return true;
-    } catch (Exception ex) {
-      Log("going: CheckUpdateRunning failed: " + ex.Message);
-    }
-    return false;
-  }
-
-  static bool ProcessRunning(string name) {
-    System.Diagnostics.Process[] ps = System.Diagnostics.Process.GetProcessesByName(name);
-    foreach (System.Diagnostics.Process p in ps) p.Dispose();
-    return ps.Length > 0;
-  }
-
-  static bool GetUpdatePendingCached() {
-    DateTime now = DateTime.UtcNow;
-    if (now >= nextUpdatePendingCheckUtc) {
-      updatePending = CheckUpdatePending();
-      nextUpdatePendingCheckUtc = now.AddSeconds(30);
-    }
-    return updatePending;
-  }
-
-  static void OnGoingEventRecordWritten(object sender, EventRecordWrittenEventArgs e) {
-    if (e == null) return;
-    if (e.EventException != null) {
-      Log("going: watcher exception: " + e.EventException.Message);
-      return;
-    }
-    if (e.EventRecord == null) return;
-
-    try {
-      using (EventRecord rec = e.EventRecord) {
-        long recId = rec.RecordId.HasValue ? rec.RecordId.Value : 0;
-        string rawProcess = rec.Properties.Count > 0 && rec.Properties[0].Value != null ? rec.Properties[0].Value.ToString() : "";
-        string rawReason = rec.Properties.Count > 2 && rec.Properties[2].Value != null ? rec.Properties[2].Value.ToString() : "";
-        string rawCode = rec.Properties.Count > 3 && rec.Properties[3].Value != null ? rec.Properties[3].Value.ToString() : "";
-        string rawType = rec.Properties.Count > 4 && rec.Properties[4].Value != null ? rec.Properties[4].Value.ToString() : "";
-
-        bool updPending = GetUpdatePendingCached();
-        string kind = ClassifyShutdown(rawProcess, rawType, rawCode, updPending);
-        string procName = ExtractProcessName(rawProcess);
-        if (string.IsNullOrEmpty(procName)) procName = "-";
-
-        string reason = Clean(rawReason);
-        if (reason.Length > 60) reason = reason.Substring(0, 60);
-        if (string.IsNullOrEmpty(reason)) reason = "-";
-
-        lock (goingLock) {
-          goingKind = kind;
-          goingBy = procName;
-          goingWhy = reason;
-          goingId = recId;
-          goingSetUtc = DateTime.UtcNow;
-          last1074TimeUtc = DateTime.UtcNow;
-        }
-
-        Log("going: " + kind + " by " + procName + " (" + reason + ") id=" + recId);
-        sendNow.Set();
-      }
-    } catch (Exception ex) {
-      Log("going: OnEventRecordWritten exception: " + ex.Message);
-    }
-  }
-
-  static void ComputeLastShutdown() {
-    lastDownKind = "unknown";
-    lastDownAt = "-";
-    try {
-      ulong uptimeMs = GetTickCount64();
-      DateTime bootTime = DateTime.Now.AddMilliseconds(-(double)uptimeMs);
-
-      string queryStr = "*[System[(EventID=1074 or EventID=41 or EventID=6008)]]";
-      var query = new EventLogQuery("System", PathType.LogName, queryStr);
-      query.ReverseDirection = true;
-
-      using (var reader = new EventLogReader(query)) {
-        for (EventRecord rec = reader.ReadEvent(); rec != null; rec = reader.ReadEvent()) {
-          using (rec) {
-            if (!rec.TimeCreated.HasValue) continue;
-            DateTime t = rec.TimeCreated.Value.ToLocalTime();
-            bool match = (t < bootTime) || ((rec.Id == 41 || rec.Id == 6008) && t <= bootTime.AddMinutes(5));
-            if (!match) continue;
-
-            if (rec.Id == 41 || rec.Id == 6008) {
-              lastDownKind = "unexpected";
-              lastDownAt = t.ToString("ddd HH:mm", CultureInfo.InvariantCulture);
-            } else if (rec.Id == 1074) {
-              string rawProcess = rec.Properties.Count > 0 && rec.Properties[0].Value != null ? rec.Properties[0].Value.ToString() : "";
-              string rawCode = rec.Properties.Count > 3 && rec.Properties[3].Value != null ? rec.Properties[3].Value.ToString() : "";
-              string rawType = rec.Properties.Count > 4 && rec.Properties[4].Value != null ? rec.Properties[4].Value.ToString() : "";
-
-              lastDownKind = ClassifyShutdown(rawProcess, rawType, rawCode, false);
-              lastDownAt = t.ToString("ddd HH:mm", CultureInfo.InvariantCulture);
-            }
-            return;
-          }
-        }
-      }
-    } catch (Exception ex) {
-      Log("going: ComputeLastShutdown failed: " + ex.Message);
-    }
-  }
-
+  // `--going`: what PcHwCtl knows about shutdowns, wakes and updates
   static void PrintGoingTest() {
-    Console.WriteLine("update pending (reboot needed): " + (CheckUpdatePending() ? "yes" : "no"));
-    Console.WriteLine("update running (installing, nobody signed in): " + (CheckUpdateRunning() ? "yes" : "no"));
-    try {
-      string queryStr = "*[System[(EventID=1074)]]";
-      var query = new EventLogQuery("System", PathType.LogName, queryStr);
-      query.ReverseDirection = true;
-
-      int count = 0;
-      using (var reader = new EventLogReader(query)) {
-        for (EventRecord rec = reader.ReadEvent(); rec != null && count < 15; rec = reader.ReadEvent()) {
-          using (rec) {
-            DateTime t = rec.TimeCreated.HasValue ? rec.TimeCreated.Value.ToLocalTime() : DateTime.MinValue;
-            string rawProcess = rec.Properties.Count > 0 && rec.Properties[0].Value != null ? rec.Properties[0].Value.ToString() : "";
-            string rawReason = rec.Properties.Count > 2 && rec.Properties[2].Value != null ? rec.Properties[2].Value.ToString() : "";
-            string rawCode = rec.Properties.Count > 3 && rec.Properties[3].Value != null ? rec.Properties[3].Value.ToString() : "";
-            string rawType = rec.Properties.Count > 4 && rec.Properties[4].Value != null ? rec.Properties[4].Value.ToString() : "";
-
-            string proc = ExtractProcessName(rawProcess);
-            if (string.IsNullOrEmpty(proc)) proc = "-";
-            string kind = ClassifyShutdown(proc, rawType, rawCode, false);
-            string timeStr = t.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
-
-            Console.WriteLine("{0} | {1} | {2} | {3} | {4} -> {5}",
-              timeStr, proc, rawType, rawCode, Clean(rawReason), kind);
-            count++;
-          }
-        }
-      }
-    } catch (Exception ex) {
-      Console.WriteLine("Error reading 1074 events: " + ex.Message);
-    }
-
-    ComputeLastShutdown();
-    bool updPending = CheckUpdatePending();
-
-    Console.WriteLine("pc.last_down: " + lastDownKind);
-    Console.WriteLine("pc.last_down_at: " + lastDownAt);
-    Console.WriteLine("pc.update_pending: " + (updPending ? "1" : "0"));
+    Dictionary<string, object> data;
+    string r = PipeRequest(HostSettings.HWCTL_PIPE, "power status", HostSettings.HWCTL_TIMEOUT_MS, out data);
+    Console.WriteLine(r == "ok" ? Json.Write(data) : "power status: " + r);
   }
 
   Thread worker;
@@ -1773,6 +1388,9 @@ partial class PcStats : ServiceBase {
     public Dictionary<string, string> Texts = new Dictionary<string, string>();
     public DateTime LastSuccessUtc = DateTime.MinValue;
     CancellationTokenSource currentCancel;
+    volatile bool kicked;
+
+    public void Kick() { kicked = true; }   // poll now instead of after IntervalMs
 
     public void Start() {
       Worker = new Thread(Run) { IsBackground = true, Name = "source_" + Name };
@@ -1820,10 +1438,11 @@ partial class PcStats : ServiceBase {
         int wait = IntervalMs - elapsed;
         if (wait < 50) wait = 50;
         int slept = 0;
-        while (!Stop && slept < wait) {
-          Thread.Sleep(Math.Min(100, wait - slept));
-          slept += 100;
+        while (!Stop && !kicked && slept < wait) {
+          Thread.Sleep(Math.Min(50, wait - slept));
+          slept += 50;
         }
+        kicked = false;
       }
     }
 
@@ -1873,7 +1492,10 @@ partial class PcStats : ServiceBase {
 
   static void StartSources(List<HttpSource> sources) {
     if (sources == null) return;
-    for (int i = 0; i < sources.Count; i++) sources[i].Start();
+    for (int i = 0; i < sources.Count; i++) {
+      if (sources[i].Name == "hw") hwSource = sources[i];   // PushGoingNow kicks it
+      sources[i].Start();
+    }
   }
 
   // Claude usage logic ported from aiusage (MIT, Ahsan Habib Akik)
@@ -2686,53 +2308,33 @@ partial class PcStats : ServiceBase {
 
   protected override void OnStop() { stop = true; sendNow.Set(); StopUserHalf(); if (worker != null) worker.Join(5000); }
   protected override void OnShutdown() {
-    bool hasRecent1074 = false;
-    lock (goingLock) {
-      if (last1074TimeUtc != DateTime.MinValue && (DateTime.UtcNow - last1074TimeUtc).TotalSeconds < 60.0) {
-        hasRecent1074 = true;
-      }
-    }
-    if (!hasRecent1074) {
-      long id = 0x40000000L + (long)Interlocked.Increment(ref fallbackCounter);
-      lock (goingLock) {
-        goingKind = "shutdown";
-        goingBy = "-";
-        goingWhy = "-";
-        goingId = id;
-        goingSetUtc = DateTime.UtcNow;
-      }
-      Log("going: shutdown (fallback OnShutdown) id=" + id);
-      sendCompleted.Reset();
-      sendNow.Set();
-      sendCompleted.WaitOne(1000);
-    }
+    PushGoingNow(1000);
     OnStop();
   }
 
+  // Sleep or shutdown under way: PcHwCtl's state file has the going within a
+  // second (event 1074 or Kernel-Power 42); read it now rather than at the next
+  // poll, and send before USB goes away
   protected override bool OnPowerEvent(PowerBroadcastStatus powerStatus) {
-    if (powerStatus == PowerBroadcastStatus.Suspend) {
-      long id = 0x40000000L + (long)Interlocked.Increment(ref fallbackCounter);
-      lock (goingLock) {
-        goingKind = "sleep";
-        goingBy = "-";
-        goingWhy = "sleep";
-        goingId = id;
-        goingSetUtc = DateTime.UtcNow;
-      }
-      Log("going: sleep (OnPowerEvent Suspend) id=" + id);
-      sendCompleted.Reset();
-      sendNow.Set();
-      sendCompleted.WaitOne(500);
-      return true;
-    }
-    if (powerStatus == PowerBroadcastStatus.ResumeSuspend || powerStatus == PowerBroadcastStatus.ResumeAutomatic) {
-      lock (goingLock) {
-        ClearGoing();
-      }
-      Log("going: cleared on resume (" + powerStatus + ")");
-      return true;
-    }
+    if (powerStatus == PowerBroadcastStatus.Suspend) PushGoingNow(1200);
     return true;
+  }
+
+  static volatile HttpSource hwSource;
+
+  static void PushGoingNow(int waitMs) {
+    HttpSource hw = hwSource;
+    DateTime until = DateTime.UtcNow.AddMilliseconds(waitMs);
+    while (hw != null && DateTime.UtcNow < until) {
+      hw.Kick();
+      Thread.Sleep(100);
+      string going;
+      lock (hw.Lock) { hw.Texts.TryGetValue("hw.going", out going); }
+      if (!string.IsNullOrEmpty(going) && going != "none") break;
+    }
+    sendCompleted.Reset();
+    sendNow.Set();
+    sendCompleted.WaitOne(500);
   }
 
   static void Log(string msg) {
@@ -3824,21 +3426,6 @@ partial class PcStats : ServiceBase {
     string iniPath = Path.Combine(exeDir, "stats.ini");
 
     try {
-      ComputeLastShutdown();
-      Log("last shutdown: " + lastDownKind + " at " + lastDownAt);
-      updatePending = CheckUpdatePending();
-      nextUpdatePendingCheckUtc = DateTime.UtcNow.AddSeconds(30);
-
-      try {
-        var query = new EventLogQuery("System", PathType.LogName, "*[System[(EventID=1074)]]");
-        goingWatcher = new EventLogWatcher(query);
-        goingWatcher.EventRecordWritten += OnGoingEventRecordWritten;
-        goingWatcher.Enabled = true;
-      } catch (Exception ex) {
-        Log("going: EventLogWatcher failed: " + ex.Message);
-        goingWatcher = null;
-      }
-
       RefreshWolTarget();
       nextMacRefreshUtc = DateTime.UtcNow.AddSeconds(30);
 
@@ -3856,24 +3443,6 @@ partial class PcStats : ServiceBase {
             Log("port faulted");
             try { link.Close(); } catch (Exception) { }
             link = null;
-          }
-        }
-
-        if (DateTime.UtcNow >= nextUpdatePendingCheckUtc) {
-          updatePending = CheckUpdatePending();
-          nextUpdatePendingCheckUtc = DateTime.UtcNow.AddSeconds(30);
-        }
-        if (DateTime.UtcNow >= nextUpdateRunningCheckUtc) {
-          bool running = CheckUpdateRunning();
-          if (running != updateRunning) Log("going: update " + (running ? "running" : "no longer running"));
-          updateRunning = running;
-          nextUpdateRunningCheckUtc = DateTime.UtcNow.AddSeconds(5);
-        }
-
-        lock (goingLock) {
-          if (goingKind != "none" && (DateTime.UtcNow - goingSetUtc).TotalSeconds >= 120.0) {
-            ClearGoing();
-            Log("going: cleared after 120 s timeout");
           }
         }
 
@@ -3974,6 +3543,14 @@ partial class PcStats : ServiceBase {
             }
 
             tokens.Add(src.Name + ".ok=" + (ok ? "1" : "0"));
+            if (src.Name == "hw" && !ok) {
+              // PcHwCtl down: no stale shutdown or update on the board
+              tokens.Add("pc.going_id=0");
+              tokens.Add("pc.update_pending=0");
+              tokens.Add("pc.update=0");
+              texts.Add(new KeyValuePair<string, string>("pc.going", "none"));
+              texts.Add(new KeyValuePair<string, string>("pc.last_down", "unknown"));
+            }
             if (ok) {
               foreach (KeyValuePair<string, double> kv in numCopy) {
                 if (string.Equals(kv.Key, src.Name + ".ok", StringComparison.OrdinalIgnoreCase)) continue;
@@ -4047,28 +3624,9 @@ partial class PcStats : ServiceBase {
           }
         }
 
-        // Wire contract: pc.going*, pc.update_pending, pc.update, pc.last_down*
-        string curGoingKind, curGoingBy, curGoingWhy;
-        long curGoingId;
-        lock (goingLock) {
-          curGoingKind = goingKind;
-          curGoingBy = goingBy;
-          curGoingWhy = goingWhy;
-          curGoingId = goingId;
-        }
-
-        tokens.Add("pc.going_id=" + curGoingId);
-        tokens.Add("pc.update_pending=" + (updatePending ? "1" : "0"));
-        tokens.Add("pc.update=" + (updateRunning ? "1" : "0"));   // installing right now
         // wall clock for the board (it keeps counting while the PC is off)
         tokens.Add("pc.epoch=" + ((long)(DateTime.UtcNow - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalSeconds).ToString(CultureInfo.InvariantCulture));
         tokens.Add("pc.tz_min=" + ((int)TimeZoneInfo.Local.GetUtcOffset(DateTime.Now).TotalMinutes).ToString(CultureInfo.InvariantCulture));
-
-        texts.Add(new KeyValuePair<string, string>("pc.going", curGoingKind));
-        texts.Add(new KeyValuePair<string, string>("pc.going_by", curGoingBy));
-        texts.Add(new KeyValuePair<string, string>("pc.going_why", curGoingWhy));
-        texts.Add(new KeyValuePair<string, string>("pc.last_down", lastDownKind));
-        texts.Add(new KeyValuePair<string, string>("pc.last_down_at", lastDownAt));
 
         // Console mode: print full @s line and @t lines each tick
         if (consoleMode) {
@@ -4077,13 +3635,6 @@ partial class PcStats : ServiceBase {
           for (int i = 0; i < texts.Count; i++) {
             string val = TruncateUtf8(texts[i].Value, 120);
             Console.WriteLine("  @t " + texts[i].Key + " " + val);
-          }
-          if (link == null) {
-            lock (powerLock) {
-              if (scheduledAction != null && scheduledActionTimeUtc == DateTime.MinValue && currentAckValue != null) {
-                scheduledActionTimeUtc = DateTime.UtcNow.AddMilliseconds(1500);
-              }
-            }
           }
         }
 
@@ -4117,11 +3668,6 @@ partial class PcStats : ServiceBase {
             int textChars = AppendTextChunk(sb, 12000);
             AppendArtChunk(sb, 48000 - textChars);
             link.Write(sb.ToString());
-            lock (powerLock) {
-              if (scheduledAction != null && scheduledActionTimeUtc == DateTime.MinValue && currentAckValue != null) {
-                scheduledActionTimeUtc = DateTime.UtcNow.AddMilliseconds(1500);
-              }
-            }
           } catch (Exception e) {
             Log("port lost: " + e.Message);
             try { link.Close(); } catch (Exception) { }
@@ -4130,19 +3676,6 @@ partial class PcStats : ServiceBase {
         }
 
         sendCompleted.Set();
-
-        // Execute scheduled power action ~1.5s after ack was first sent
-        string actionToExecute = null;
-        lock (powerLock) {
-          if (scheduledAction != null && scheduledActionTimeUtc != DateTime.MinValue && DateTime.UtcNow >= scheduledActionTimeUtc) {
-            actionToExecute = scheduledAction;
-            scheduledAction = null;
-            scheduledActionTimeUtc = DateTime.MinValue;
-          }
-        }
-        if (actionToExecute != null) {
-          ExecutePowerAction(actionToExecute);
-        }
 
         int wait = intervalMs - (int)(DateTime.UtcNow - t0).TotalMilliseconds;
         if (wait > 0) {
@@ -4161,13 +3694,6 @@ partial class PcStats : ServiceBase {
         claudeSource = null;
       }
       if (link != null) try { link.Close(); } catch (Exception) { }
-      if (goingWatcher != null) {
-        try {
-          goingWatcher.Enabled = false;
-          goingWatcher.Dispose();
-        } catch (Exception) { }
-        goingWatcher = null;
-      }
       Log("stop");
     }
   }
