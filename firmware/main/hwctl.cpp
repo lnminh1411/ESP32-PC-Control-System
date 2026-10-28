@@ -34,8 +34,7 @@ const char *hwSend(const char *command, uint32_t *id) {
 // Copies hw.reply's text into out when it answers request id
 static bool replyFor(uint32_t id, char *out, size_t outSize) {
   char buf[96];
-  strncpy(buf, pcText("hw.reply"), sizeof buf - 1);   // copy: the table changes under us
-  buf[sizeof buf - 1] = 0;
+  pcTextCopy("hw.reply", buf, sizeof buf);   // the bot task reads it too: copied under the table's lock
   char *end;
   unsigned long got = strtoul(buf, &end, 16);
   if (end == buf || *end != ' ' || got != id) return false;

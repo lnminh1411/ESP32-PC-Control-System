@@ -169,6 +169,9 @@
 #ifndef NET_WIFI_PS
 #define NET_WIFI_PS WIFI_PS_NONE                  // Wi-Fi modem power save (esp_wifi_set_ps)
 #endif
+#ifndef NET_WIFI_TX_DBM
+#define NET_WIFI_TX_DBM 8                         // Wi-Fi transmit power cap, dBm (2-20); the router sits ~30 cm away, less TX current on the board's supply
+#endif
 #ifndef NET_OTA_VALIDATE_MS
 #define NET_OTA_VALIDATE_MS 120000                // a new OTA image is marked good after this much uptime
 #endif
@@ -199,6 +202,9 @@
 #endif
 #ifndef CONTROL_PANEL_LIVE_MS
 #define CONTROL_PANEL_LIVE_MS (3 * 60 * 1000)     // live this long after any interaction with the bot; else every 10 min
+#endif
+#ifndef CONTROL_PANEL_CONFIRM_MS
+#define CONTROL_PANEL_CONFIRM_MS 60000            // a confirm button on the panel is left alone this long (no refresh edits)
 #endif
 
 // ---- PC warnings (pcwarn.cpp; `pcwarn set` overrides per metric in NVS) ----

@@ -104,6 +104,7 @@
 #define NET_HOSTNAME "esp32-pc-control"           // Wi-Fi hostname, mDNS name (<name>.local), OTA name, Discord device name
 #define NET_NTP_SERVER "pool.ntp.org"             // SNTP server
 #define NET_WIFI_PS WIFI_PS_NONE                  // Wi-Fi modem power save (esp_wifi_set_ps)
+#define NET_WIFI_TX_DBM 8                         // Wi-Fi transmit power cap, dBm (2-20); the router sits ~30 cm away, less TX current on the board's supply
 #define NET_OTA_VALIDATE_MS 120000                // a new OTA image is marked good after this much uptime
 
 // ---- Wake-on-LAN ----
@@ -117,6 +118,7 @@
 #define PCSTATS_STALE_MS 5000                     // values older than this read as missing (NAN / "")
 #define CONTROL_PANEL_REFRESH_MS 5000             // #control panel: edited this often while live (below), when something on it changed
 #define CONTROL_PANEL_LIVE_MS (3 * 60 * 1000)     // live this long after any interaction with the bot; else every 10 min
+#define CONTROL_PANEL_CONFIRM_MS 60000            // a confirm button on the panel is left alone this long (no refresh edits)
 
 // ---- PC warnings (pcwarn.cpp; `pcwarn set` overrides per metric in NVS) ----
 #define PCWARN_AVG_MS 2000                        // averaging window before a level triggers

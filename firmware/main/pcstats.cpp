@@ -1,6 +1,8 @@
 #include "pcstats.h"
 
 #include <esp_heap_caps.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -33,6 +35,12 @@ static int textCount;
 
 static uint32_t lastSampleMs;
 static uint32_t sampleSeq;
+
+// The main loop writes the tables; the Discord bot task reads them too. Keys
+// never change once counted, so lookups go unlocked; values (a double is two
+// words, a text a string) are written and read under this spinlock, a few
+// dozen bytes at a time.
+static portMUX_TYPE statMux = portMUX_INITIALIZER_UNLOCKED;
 
 void pcStatsLine(const char *line) {
   if (!line || line[0] != '@') return;
@@ -82,12 +90,15 @@ void pcStatsLine(const char *line) {
         }
       }
       if (idx >= 0) {
+        taskENTER_CRITICAL(&statMux);
         table[idx].val = v;
+        taskEXIT_CRITICAL(&statMux);
       } else if (count < PCSTATS_MAX) {
-        snprintf(table[count].key, sizeof(table[count].key), "%s", kbuf);
-        table[count].key[sizeof(table[count].key) - 1] = '\0';
+        memcpy(table[count].key, kbuf, klen + 1);
         table[count].val = v;
+        taskENTER_CRITICAL(&statMux);   // key and value in place before readers see the entry
         count++;
+        taskEXIT_CRITICAL(&statMux);
       }
     }
   } else if (line[1] == 't' && (line[2] == ' ' || line[2] == '\0')) {
@@ -121,14 +132,15 @@ void pcStatsLine(const char *line) {
       }
     }
     if (idx >= 0) {
-      snprintf(textTable[idx].val, sizeof(textTable[idx].val), "%s", tbuf);
-      textTable[idx].val[sizeof(textTable[idx].val) - 1] = '\0';
+      taskENTER_CRITICAL(&statMux);
+      memcpy(textTable[idx].val, tbuf, tlen + 1);
+      taskEXIT_CRITICAL(&statMux);
     } else if (textCount < PCSTATS_TEXT_MAX) {
-      snprintf(textTable[textCount].key, sizeof(textTable[textCount].key), "%s", kbuf);
-      textTable[textCount].key[sizeof(textTable[textCount].key) - 1] = '\0';
-      snprintf(textTable[textCount].val, sizeof(textTable[textCount].val), "%s", tbuf);
-      textTable[textCount].val[sizeof(textTable[textCount].val) - 1] = '\0';
+      memcpy(textTable[textCount].key, kbuf, klen + 1);
+      memcpy(textTable[textCount].val, tbuf, tlen + 1);
+      taskENTER_CRITICAL(&statMux);   // key and text in place before readers see the entry
       textCount++;
+      taskEXIT_CRITICAL(&statMux);
     }
   } else if (line[1] == 'e') {
     lastSampleMs = nowMs();
@@ -142,7 +154,12 @@ double pcStat(const char *key) {
   if (!lastSampleMs || (uint32_t)(nowMs() - lastSampleMs) >= PCSTATS_STALE_MS) return NAN;
   if (!key) return NAN;
   for (int i = 0; i < count; i++) {
-    if (!strcmp(table[i].key, key)) return table[i].val;
+    if (!strcmp(table[i].key, key)) {
+      taskENTER_CRITICAL(&statMux);
+      double v = table[i].val;
+      taskEXIT_CRITICAL(&statMux);
+      return v;
+    }
   }
   return NAN;
 }
@@ -160,7 +177,11 @@ const char *pcStatKey(int i) {
 }
 
 double pcStatAt(int i) {
-  return (i >= 0 && i < count) ? table[i].val : NAN;
+  if (i < 0 || i >= count) return NAN;
+  taskENTER_CRITICAL(&statMux);
+  double v = table[i].val;
+  taskEXIT_CRITICAL(&statMux);
+  return v;
 }
 
 const char *pcText(const char *key) {
@@ -170,6 +191,25 @@ const char *pcText(const char *key) {
     if (!strcmp(textTable[i].key, key)) return textTable[i].val;
   }
   return "";
+}
+
+bool pcTextCopy(const char *key, char *out, size_t cap) {
+  if (!out || !cap) return false;
+  out[0] = 0;
+  if (!lastSampleMs || (uint32_t)(nowMs() - lastSampleMs) >= PCSTATS_STALE_MS) return false;
+  if (!key) return false;
+  for (int i = 0; i < textCount; i++) {
+    if (!strcmp(textTable[i].key, key)) {
+      taskENTER_CRITICAL(&statMux);
+      size_t n = strnlen(textTable[i].val, sizeof(textTable[i].val) - 1);
+      if (n >= cap) n = cap - 1;
+      memcpy(out, textTable[i].val, n);
+      out[n] = 0;
+      taskEXIT_CRITICAL(&statMux);
+      return true;
+    }
+  }
+  return false;
 }
 
 int pcTextCount() {

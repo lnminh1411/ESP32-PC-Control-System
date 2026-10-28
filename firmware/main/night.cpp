@@ -65,7 +65,6 @@ static bool offByNight;                  // asleep or hibernating because of nig
 static uint32_t quietFromMs;             // night mode's last sleep / hibernate / wake request (nightPowerQuiet)
 static uint32_t powerTryMs;              // last sleep / hibernate request
 static float netAvg;                     // bytes/s, the busier of net_down / net_up, ~1 min average
-static char holdWhy[64];                 // why sleep waits, "" = it doesn't
 
 // Process Lasso's night config on the PC (Night.cs), repeated every 30 s
 static void lassoSend() { usbPcSendLine(engaged || lowPower ? "!night 1\n" : "!night 0\n"); }
@@ -218,16 +217,25 @@ static bool reqIgnored(const char *by) {
 static bool reqHolds(const char *key, const char *byKey) {
   float n = pcStat(key);
   if (isnan(n) || n < 1) return false;
-  return !(n < 2 && reqIgnored(pcText(byKey)));
+  char by[64];   // a copy: the bot task gets here too (nightStatus)
+  pcTextCopy(byKey, by, sizeof by);
+  return !(n < 2 && reqIgnored(by));
 }
 
-// "" when sleep and hibernate may go ahead, else why not
-static const char *sleepHold() {
-  if (pcStat("pc.heavy") >= 1) snprintf(holdWhy, sizeof holdWhy, "%.40s busy", pcText("pc.heavy_by"));
-  else if (pcStat("pc.disp_req") >= 1) snprintf(holdWhy, sizeof holdWhy, "%.40s keeps the display on", pcText("pc.disp_req_by"));
-  else if (reqHolds("pc.sys_req", "pc.sys_req_by")) snprintf(holdWhy, sizeof holdWhy, "%.40s keeps the PC up", pcText("pc.sys_req_by"));
-  else if (reqHolds("pc.exec_req", "pc.exec_req_by")) snprintf(holdWhy, sizeof holdWhy, "%.40s keeps running", pcText("pc.exec_req_by"));
-  else if (netAvg > NIGHT_NET_HOLD_BPS) snprintf(holdWhy, sizeof holdWhy, "network %.1f MB/s", netAvg / 1e6f);
+// "" when sleep and hibernate may go ahead, else why not. Into the caller's
+// buffer: the bot task asks too (nightStatus for the panel)
+static const char *sleepHold(char *holdWhy, size_t cap) {
+  const char *byKey = nullptr, *what = nullptr;
+  if (pcStat("pc.heavy") >= 1) byKey = "pc.heavy_by", what = "busy";
+  else if (pcStat("pc.disp_req") >= 1) byKey = "pc.disp_req_by", what = "keeps the display on";
+  else if (reqHolds("pc.sys_req", "pc.sys_req_by")) byKey = "pc.sys_req_by", what = "keeps the PC up";
+  else if (reqHolds("pc.exec_req", "pc.exec_req_by")) byKey = "pc.exec_req_by", what = "keeps running";
+  if (byKey) {
+    char by[48];   // a copy: the bot task gets here too (nightStatus)
+    pcTextCopy(byKey, by, sizeof by);
+    snprintf(holdWhy, cap, "%.40s %s", by, what);
+  }
+  else if (netAvg > NIGHT_NET_HOLD_BPS) snprintf(holdWhy, cap, "network %.1f MB/s", netAvg / 1e6f);
   else holdWhy[0] = 0;
   return holdWhy;
 }
@@ -248,11 +256,12 @@ static void sleepCheck(uint32_t now) {
   if (pcState() != PC_ON || !pcStatsFresh()) return;
   uint32_t inactive = now - inputAtMs;
   if (inactive < SLEEP_MS) { lastHold[0] = 0; return; }
-  const char *why = sleepHold();
+  char why[64];
+  sleepHold(why, sizeof why);
   if (strcmp(why, lastHold)) {
     if (*why) logMsg("night: sleep held, %s", why);
     else if (*lastHold) logMsg("night: sleep no longer held");
-    strncpy(lastHold, why, sizeof lastHold - 1);
+    snprintf(lastHold, sizeof lastHold, "%s", why);
   }
   if (*why || now - powerTryMs < 60000) return;
   powerTryMs = now;
@@ -593,16 +602,19 @@ void nightStatus(char *buf, uint32_t size) {
     snprintf(buf, size, "off for input on the PC, back on in %lu s unless it is used",
              (unsigned long)((int32_t)(guardUntilMs - now) > 0 ? (guardUntilMs - now) / 1000 + 1 : 0));
   else if (engaged) {
-    char sleep[48] = "";
+    char sleep[48] = "", why[64];
     uint32_t inactive = now - inputAtMs;
-    if (*sleepHold() && inactive >= SLEEP_MS) snprintf(sleep, sizeof sleep, ", sleep held: %.28s", holdWhy);
+    if (*sleepHold(why, sizeof why) && inactive >= SLEEP_MS) snprintf(sleep, sizeof sleep, ", sleep held: %.28s", why);
     else if (inactive < SLEEP_MS) snprintf(sleep, sizeof sleep, ", sleep in %lu min", (unsigned long)((SLEEP_MS - inactive) / 60000 + 1));
     snprintf(buf, size, "engaged since %02lu:%02lu%s%s%s", (unsigned long)(engagedAtMin / 60),
              (unsigned long)(engagedAtMin % 60), manual ? ", by hand" : "",
              falseWakes ? ", false wakes ignored" : "", sleep);
   }
-  else if (enabled && pcStat("pc.disp_req") >= 1)
-    snprintf(buf, size, "on, held off: %.20s keeps the display on", pcText("pc.disp_req_by"));
+  else if (enabled && pcStat("pc.disp_req") >= 1) {
+    char by[48];
+    pcTextCopy("pc.disp_req_by", by, sizeof by);
+    snprintf(buf, size, "on, held off: %.20s keeps the display on", by);
+  }
   else if (enabled) {
     char win[40];
     nightWindowText(win, sizeof win);
@@ -614,7 +626,7 @@ void nightStatus(char *buf, uint32_t size) {
 
 void nightConsole(const char *args) {
   while (args && *args == ' ') args++;
-  char st[128];
+  char st[128], why[64];
   if (args && !strcmp(args, "on")) nightSetEnabled(true);
   else if (args && !strcmp(args, "off")) nightSetEnabled(false);
   else if (args && (!strcmp(args, "start") || !strcmp(args, "test"))) nightManual(true);
@@ -633,5 +645,5 @@ void nightConsole(const char *args) {
   logMsg("night: %s | PC idle %s%.0f s, input %.0f px / %.0f presses, requests display %.0f system %.0f execution %.0f, heavy %.0f, net %.2f MB/s | %s",
          st, pcStat("idle.ok") >= 1 ? "" : "(stale) ", isnan(idle) ? -1.0f : idle, pcStat("pc.in_px"),
          pcStat("pc.in_press"), pcStat("pc.disp_req"), pcStat("pc.sys_req"), pcStat("pc.exec_req"), pcStat("pc.heavy"),
-         netAvg / 1e6f, *sleepHold() ? holdWhy : "sleep not held");
+         netAvg / 1e6f, *sleepHold(why, sizeof why) ? why : "sleep not held");
 }

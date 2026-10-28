@@ -354,6 +354,7 @@ void displayInit() {
   // Allocate the two DMA chunk buffers BEFORE the canvases
   for (int i = 0; i < 2; i++) {
     dmaBuf[i] = (uint8_t *)heap_caps_malloc(CHUNK_BYTES, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    ESP_ERROR_CHECK(dmaBuf[i] ? ESP_OK : ESP_ERR_NO_MEM);   // stop here, not at the first flush
   }
 
   for (int i = 0; i < N_PANELS; i++) {
@@ -402,6 +403,7 @@ void displayInit() {
       if (buf) memset(buf, 0, canvasBytes);
       isInternal = false;
     }
+    ESP_ERROR_CHECK(buf ? ESP_OK : ESP_ERR_NO_MEM);
 
     p.canvas = new LGFX_Sprite();
     p.canvas->setColorDepth(16);
@@ -409,6 +411,7 @@ void displayInit() {
     p.canvasInternal = isInternal;
 
     p.sent = (uint16_t *)heap_caps_malloc(canvasBytes, MALLOC_CAP_SPIRAM);
+    ESP_ERROR_CHECK(p.sent ? ESP_OK : ESP_ERR_NO_MEM);
     memset(p.sent, 0xA5, canvasBytes);   // != any canvas: first flush sends all
     p.view = cfg.defaultView;
     p.busy = false;

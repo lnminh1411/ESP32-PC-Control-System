@@ -11,6 +11,11 @@ idf_component_register(
 # ccache's direct mode notices when settings.h appears or goes away (a placeholder
 # image was flashed once). The glob re-runs CMake when it does, and the define
 # changes main's compile line, so every object that could include it recompiles.
+# debug (heapguard.cpp): keep the cache error reason over a panic reset
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/heapguard.cpp")
+  target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=esp_cache_err_get_panic_info")
+endif()
+
 if(NOT CMAKE_BUILD_EARLY_EXPANSION)
   file(GLOB settings_h CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/settings.h")
   if(settings_h)

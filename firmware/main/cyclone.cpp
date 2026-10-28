@@ -11,6 +11,7 @@
 // cJSON nodes would come out of the scarce internal RAM.
 
 static const char FEATURE[] = "{\"type\":\"Feature\"";
+constexpr int64_t CYCLONE_MAX_AHEAD_S = 15 * 86400;   // track points further ahead are dropped
 
 static const char *findIn(const char *b, const char *e, const char *needle) {
   size_t n = strlen(needle);
@@ -151,6 +152,7 @@ bool cycloneParseTrack(const char *json, size_t len, const CycloneCandidate &c, 
       char key[12] = "";
       const char *p = findIn(fs, stop, "\"bbox\":[");
       bool ok = p && strAfter(fs, stop, "\"key\":\"", key, sizeof key) && strlen(key) == 8;
+      for (int i = 0; i < 8 && ok; i++) ok = key[i] >= '0' && key[i] <= '9';
       if (ok) {
         p += 8;
         for (int i = 0; i < 4 && ok; i++) {
@@ -160,13 +162,26 @@ bool cycloneParseTrack(const char *json, size_t len, const CycloneCandidate &c, 
           p = e2 + 1;
         }
       }
+      int mo = 0, d = 0, h = 0, mi = 0;
       if (ok) {
-        int mo = (key[0] - '0') * 10 + key[1] - '0', d = (key[2] - '0') * 10 + key[3] - '0';
-        int h = (key[4] - '0') * 10 + key[5] - '0', mi = (key[6] - '0') * 10 + key[7] - '0';
+        mo = (key[0] - '0') * 10 + key[1] - '0';
+        d = (key[2] - '0') * 10 + key[3] - '0';
+        h = (key[4] - '0') * 10 + key[5] - '0';
+        mi = (key[6] - '0') * 10 + key[7] - '0';
+        double lat = (b[1] + b[3]) / 2, lon = (b[0] + b[2]) / 2;
+        ok = mo >= 1 && mo <= 12 && d >= 1 && d <= 31 && h <= 23 && mi <= 59 && fabs(lat) <= 90 && fabs(lon) <= 180;
+      }
+      uint32_t t = 0;
+      if (ok) {
         int y = nowTm.tm_year + 1900;
         if (mo > nowTm.tm_mon + 1 + 6) y--;        // December storm read in January
         else if (mo + 6 < nowTm.tm_mon + 1) y++;   // the other way round
-        uint32_t t = (uint32_t)(daysFromCivil(y, mo, d) * 86400 + h * 3600 + mi * 60);
+        t = (uint32_t)(daysFromCivil(y, mo, d) * 86400 + h * 3600 + mi * 60);
+        // cycloneJudge walks 15-min steps from now to the last point: a forecast
+        // runs days, not months
+        ok = (int64_t)t <= (int64_t)now + CYCLONE_MAX_AHEAD_S;
+      }
+      if (ok) {
         // insertion sort by time (GDACS lists them in order; this keeps it robust)
         int at = out->n;
         while (at > 0 && out->t[at - 1] > t) {

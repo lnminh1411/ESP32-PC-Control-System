@@ -15,6 +15,8 @@ uint32_t freePsram();
 uint32_t freeHeap();       // all heaps (internal + PSRAM)
 uint32_t freeInternal();
 float chipTempC();         // internal temperature sensor, NAN if unavailable
+void psramEccPoll();       // main loop: log PSRAM ECC corrections (see sys.cpp)
+extern uint32_t psramEccTotal;   // corrections since boot
 const char *resetReasonText();   // why the board last restarted ("crash", "power-on", ...)
 
 // LEDC: one low-speed timer at 20 kHz / 10 bit for every PWM output.

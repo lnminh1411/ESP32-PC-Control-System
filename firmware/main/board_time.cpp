@@ -26,6 +26,8 @@ static void loadTz() {
   }
 }
 
+void boardTimeInit() { loadTz(); }
+
 static void timeSyncNotificationCb(struct timeval *tv) {
   (void)tv;
   sntpSynced = true;

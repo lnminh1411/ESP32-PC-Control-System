@@ -480,10 +480,15 @@ static const Command COMMANDS[] = {
 };
 
 static void cmdHelp(const char *, const char *) {
-  char buf[300];
+  // the list runs past one log line (logMsg cuts at 255): a full line goes
+  // out before the next entry, so n never runs past buf
+  char buf[240], item[200];
   int n = snprintf(buf, sizeof buf, "commands:");
-  for (const Command &c : COMMANDS)
-    n += snprintf(buf + n, sizeof buf - n, " %s%s%s%s", &c == COMMANDS ? "" : "| ", c.name, *c.usage ? " " : "", c.usage);
+  for (const Command &c : COMMANDS) {
+    int k = snprintf(item, sizeof item, " %s%s%s%s", &c == COMMANDS ? "" : "| ", c.name, *c.usage ? " " : "", c.usage);
+    if (n + k >= (int)sizeof buf) { logMsg("%s", buf); n = 0; }
+    n += snprintf(buf + n, sizeof buf - n, "%s", item);
+  }
   logMsg("%s", buf);
 }
 

@@ -14,6 +14,7 @@
 #include <esp_heap_caps.h>
 #include <esp_partition.h>
 #include <esp_psram.h>
+#include <esp_task_wdt.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -24,6 +25,7 @@
 #include "config.h"
 #include "display.h"
 #include "log.h"
+#include "sys.h"
 #include "usb.h"
 
 static volatile uint32_t sink;   // results land here so loops aren't optimised away
@@ -226,6 +228,57 @@ static void benchMem() {
   free(ib);
 }
 
+// PSRAM integrity: fill up to mb 1 MB blocks with an address-keyed pattern,
+// then read it all back. 1 MB blocks are far past the 32 KB cache, so every
+// word makes a real round trip through the PSRAM. Prints the chip
+// temperature with the result: bit errors that come with heat point at the
+// module's octal PSRAM, not the code.
+static void benchPsram(int mb, int passes) {
+  if (mb < 1) mb = 4;
+  if (mb > 6) mb = 6;
+  if (passes < 1) passes = 8;
+  uint32_t *blk[6] = {};
+  const size_t WORDS = (1u << 20) / 4;
+  int n = 0;
+  while (n < mb && (blk[n] = (uint32_t *)heap_caps_malloc(WORDS * 4, MALLOC_CAP_SPIRAM))) n++;
+  if (!n) {
+    logMsg("bench psram: no 1 MB block free");
+    return;
+  }
+  float t0 = chipTempC();
+  uint32_t errors = 0, shown = 0;
+  int64_t start = us();
+  for (int pass = 0; pass < passes; pass++) {
+    uint32_t seed = 0x9E3779B9u * (uint32_t)(pass + 1);
+    for (int b = 0; b < n; b++) {
+      for (size_t i = 0; i < WORDS; i++) {
+        uint32_t x = (uint32_t)(uintptr_t)&blk[b][i] ^ seed;
+        x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+        blk[b][i] = (pass & 1) ? ~x : x;
+      }
+      esp_task_wdt_reset();
+    }
+    for (int b = 0; b < n; b++) {
+      for (size_t i = 0; i < WORDS; i++) {
+        uint32_t x = (uint32_t)(uintptr_t)&blk[b][i] ^ seed;
+        x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+        uint32_t want = (pass & 1) ? ~x : x, got = blk[b][i];
+        if (got == want) continue;
+        errors++;
+        if (shown++ < 6)
+          logMsg("bench psram: pass %d at %p want %08lx got %08lx (bits %08lx)", pass, &blk[b][i], (unsigned long)want,
+                 (unsigned long)got, (unsigned long)(want ^ got));
+      }
+      esp_task_wdt_reset();
+      yieldTick();
+    }
+  }
+  int64_t dt = us() - start;
+  for (int b = 0; b < n; b++) free(blk[b]);
+  logMsg("bench psram: %d MB x %d passes, %lu bad words, %.0f ms, chip %.1f -> %.1f C", n, passes,
+         (unsigned long)errors, dt / 1000.0, t0, chipTempC());
+}
+
 static void benchFlash() {
   const esp_partition_t *part = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "ffat");
   if (!part) {
@@ -320,6 +373,7 @@ void benchCommand(const char *a1, const char *a2) {
   if (all || !strcmp(a1, "flash")) benchFlash();
   if (all || !strcmp(a1, "spi")) benchSpi();
   if (a1 && !strcmp(a1, "usb")) benchUsb(a2 ? (uint32_t)atoi(a2) : 256);
+  if (a1 && !strcmp(a1, "psram")) benchPsram(a2 ? atoi(a2) : 4, 8);
   logMsg("bench: done");
 }
 

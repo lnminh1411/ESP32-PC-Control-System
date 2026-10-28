@@ -1,8 +1,48 @@
 #include "sys.h"
 
+#include "log.h"
+#include "pc_state.h"
+
 #include <driver/temperature_sensor.h>
 #include <esp_heap_caps.h>
 #include <math.h>
+#include <sdkconfig.h>
+#include <soc/soc.h>
+#include <soc/spi_mem_reg.h>
+
+uint32_t psramEccTotal;
+
+// PSRAM ECC (sdkconfig SPIRAM_ECC_ENABLE) corrects single-bit read errors;
+// the MSPI counts them once SMEM_ECC_ERR_INT_EN is set. Every 10 s: any
+// corrections go to the log with the PC state, then the count is cleared.
+// Tells whether PSRAM bits still flip, and when (PC power-on, PC load).
+void psramEccPoll() {
+#if CONFIG_SPIRAM_ECC_ENABLE
+  static bool counting;
+  static uint32_t lastMs;
+  if (!counting) {
+    SET_PERI_REG_MASK(SPI_MEM_SPI_SMEM_AC_REG(0), SPI_MEM_SPI_SMEM_ECC_ERR_INT_EN);
+    WRITE_PERI_REG(SPI_MEM_INT_CLR_REG(0), SPI_MEM_ECC_ERR_INT_CLR);
+    counting = true;
+    lastMs = nowMs();
+    return;
+  }
+  if (nowMs() - lastMs < 10000) return;
+  lastMs = nowMs();
+  uint32_t bits = READ_PERI_REG(SPI_MEM_ECC_ERR_BIT_REG(0));
+  uint32_t n = (bits >> SPI_MEM_ECC_ERR_CNT_S) & SPI_MEM_ECC_ERR_CNT_V;
+  if (!n) return;
+  uint32_t addr = READ_PERI_REG(SPI_MEM_ECC_ERR_ADDR_REG(0));
+  WRITE_PERI_REG(SPI_MEM_INT_CLR_REG(0), SPI_MEM_ECC_ERR_INT_CLR);
+  psramEccTotal += n;
+  logMsg("psram: ECC corrected %lu read error(s) in 10 s%s, first at PSRAM 0x%06lx %s bit %lu (PC %s, %lu since boot)",
+         (unsigned long)n, n >= 255 ? " (count saturated)" : "", (unsigned long)addr,
+         bits & SPI_MEM_ECC_BYTE_ERR ? "check byte" : "data",
+         (unsigned long)(bits & SPI_MEM_ECC_BYTE_ERR ? (bits >> SPI_MEM_ECC_CHK_ERR_BIT_S) & SPI_MEM_ECC_CHK_ERR_BIT_V
+                                                       : (bits >> SPI_MEM_ECC_DATA_ERR_BIT_S) & SPI_MEM_ECC_DATA_ERR_BIT_V),
+         pcStateName(pcState()), (unsigned long)psramEccTotal);
+#endif
+}
 
 uint32_t freePsram() { return heap_caps_get_free_size(MALLOC_CAP_SPIRAM); }
 uint32_t freeHeap() { return heap_caps_get_free_size(MALLOC_CAP_DEFAULT); }

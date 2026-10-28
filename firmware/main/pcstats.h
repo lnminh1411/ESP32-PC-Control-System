@@ -37,6 +37,7 @@
 //   net_down:   bytes per second (bytes/s)
 //   net_up:     bytes per second (bytes/s)
 #pragma once
+#include <stddef.h>
 #include <stdint.h>
 
 #define PCSTATS_MAX 160
@@ -50,7 +51,8 @@ int pcStatsCount();
 const char *pcStatKey(int i);         // for listing
 double pcStatAt(int i);               // raw last value (NAN = empty)
 
-const char *pcText(const char *key);  // "" if unknown or no sample for 5 s
+const char *pcText(const char *key);  // "" if unknown or no sample for 5 s; points into the table, which the main loop rewrites
+bool pcTextCopy(const char *key, char *out, size_t cap);   // other tasks: a copy taken under the table's lock ("" and false where pcText gives "")
 int pcTextCount();
 const char *pcTextKey(int i);
 const char *pcTextAt(int i);

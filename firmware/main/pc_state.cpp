@@ -1,6 +1,7 @@
 #include "pc_state.h"
 
 #include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
 #include <freertos/task.h>
 #include <math.h>
 #include <nvs.h>
@@ -41,35 +42,65 @@ uint32_t bootGuardLeftMs() {
   return guardActive && t < USB_GUARD_MS ? USB_GUARD_MS - t : 0;
 }
 
-static void pcSet(PcState s) {
-  state = s;
-  viewsRefreshIdle();
-}
+// The handler runs in the TinyUSB task: it only moves the state and queues
+// what happened; the log lines and the backlights follow on the main loop
+// (pcStatePoll)
+struct UsbNote { uint8_t ev; bool ignored; uint32_t inGuardMs; };
+static QueueHandle_t noteQueue;
 
 static void usbEventHandler(UsbEvent ev) {
+  UsbNote n = {(uint8_t)ev, false, 0};
   switch (ev) {
     case USB_EV_STARTED:
     case USB_EV_RESUME:
       guardStartMs = nowMs();
       guardActive = true;
-      pcSet(PC_ON);
-      logMsg("usb: %s -> PC on (30 s guard armed)", ev == USB_EV_STARTED ? "started" : "resume");
+      state = PC_ON;
       break;
     case USB_EV_SUSPEND:
       if (bootGuardLeftMs()) {
-        logMsg("usb: suspend inside guard (%lu ms) -> ignored", (unsigned long)(nowMs() - guardStartMs));
+        n.ignored = true;
+        n.inGuardMs = nowMs() - guardStartMs;
       } else {
-        pcSet(PC_OFF);
-        logMsg("usb: suspend -> PC asleep/off, screens idle");
+        state = PC_OFF;
       }
       break;
     case USB_EV_STOPPED:
-      logMsg("usb: stopped (logged only)");
       break;
   }
+  if (noteQueue) xQueueSend(noteQueue, &n, 0);
 }
 
-void pcStateInit() { usbOnEvent(usbEventHandler); }
+void pcStateInit() {
+  noteQueue = xQueueCreate(8, sizeof(UsbNote));
+  usbOnEvent(usbEventHandler);
+}
+
+void pcStatePoll() {
+  UsbNote n;
+  bool changed = false;
+  while (noteQueue && xQueueReceive(noteQueue, &n, 0) == pdTRUE) {
+    switch ((UsbEvent)n.ev) {
+      case USB_EV_STARTED:
+      case USB_EV_RESUME:
+        changed = true;
+        logMsg("usb: %s -> PC on (30 s guard armed)", n.ev == USB_EV_STARTED ? "started" : "resume");
+        break;
+      case USB_EV_SUSPEND:
+        if (n.ignored) {
+          logMsg("usb: suspend inside guard (%lu ms) -> ignored", (unsigned long)n.inGuardMs);
+        } else {
+          changed = true;
+          logMsg("usb: suspend -> PC asleep/off, screens idle");
+        }
+        break;
+      case USB_EV_STOPPED:
+        logMsg("usb: stopped (logged only)");
+        break;
+    }
+  }
+  if (changed) viewsRefreshIdle();
+}
 
 // perceived level 0..1 -> duty: gamma curve, capped at LED_DUTY_CEIL
 static uint32_t ledDuty(float level) {

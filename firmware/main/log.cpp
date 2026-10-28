@@ -53,11 +53,25 @@ void logMsg(const char *fmt, ...) {
   logEmit(buf, (size_t)len);
 }
 
+// A driver line logged from inside logEmit (the USB write, say) would come
+// back here: each task drops only its own nested lines, not other tasks'
+static TaskHandle_t s_inLog[8];   // tasks inside logVprintf
+static portMUX_TYPE s_inLogMux = portMUX_INITIALIZER_UNLOCKED;
+
 static int logVprintf(const char *fmt, va_list a) {
   if (s_muted) return 0;
-  static bool inLog = false;
-  if (inLog) return 0;
-  inLog = true;
+  TaskHandle_t me = xTaskGetCurrentTaskHandle();   // null before the scheduler runs
+  int slot = -1;
+  bool nested = false;
+  taskENTER_CRITICAL(&s_inLogMux);
+  for (int i = 0; i < 8; i++) {
+    if (me && s_inLog[i] == me) nested = true;
+    else if (slot < 0 && !s_inLog[i]) slot = i;
+  }
+  if (!nested && me && slot >= 0) s_inLog[slot] = me;
+  else slot = -1;   // all 8 taken: log unguarded
+  taskEXIT_CRITICAL(&s_inLogMux);
+  if (nested) return 0;
   char buf[256];
   int len = vsnprintf(buf, sizeof(buf), fmt, a);
   if (len > 0) {
@@ -65,7 +79,11 @@ static int logVprintf(const char *fmt, va_list a) {
     while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r')) buf[--len] = '\0';
     if (len > 0) logEmit(buf, (size_t)len);
   }
-  inLog = false;
+  if (slot >= 0) {
+    taskENTER_CRITICAL(&s_inLogMux);
+    s_inLog[slot] = nullptr;
+    taskEXIT_CRITICAL(&s_inLogMux);
+  }
   return len;
 }
 

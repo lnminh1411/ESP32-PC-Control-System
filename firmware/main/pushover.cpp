@@ -69,6 +69,8 @@ bool pushoverSend(const char *title, const char *message, int priority) {
   char body[768];
   int bodyLen = snprintf(body, sizeof(body), "token=%s&user=%s&title=%s&message=%s&priority=%d",
                          PUSHOVER_TOKEN, PUSHOVER_USER, encTitle, encMsg, priority);
+  if (bodyLen < 0) return false;
+  if (bodyLen >= (int)sizeof(body)) bodyLen = sizeof(body) - 1;   // cut, not read past body
 
   esp_http_client_config_t cfg = {};
   cfg.url = "https://api.pushover.net/1/messages.json";

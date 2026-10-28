@@ -33,6 +33,7 @@ static bool clientStarted;
 static volatile bool connected;
 static char devTopic[80];     // the phone's own topic, owntracks/<user>/<device>, from its location messages
 static uint32_t lastAskMs;    // last reportLocation command
+static volatile bool askPending = true;   // a retained reportLocation may sit on the broker (one from before a restart too): cleared when a fix arrives
 static bool errLogged;
 static char *bigMsg;   // joins a message split across MQTT_EVENT_DATA events
 
@@ -92,7 +93,10 @@ static void mqttEventHandler(void *, esp_event_base_t, int32_t event_id, void *e
         cJSON *jtst = cJSON_GetObjectItem(root, "tst");
         cJSON *jacc = cJSON_GetObjectItem(root, "acc");
 
-        if (jlat && jlon && jtst && cJSON_IsNumber(jlat) && cJSON_IsNumber(jlon)) {
+        // a real position only: the nowcast's URL builder wraps the longitude
+        // in a loop (an inf never leaves it) and prints every point with %.5f
+        if (jlat && jlon && jtst && cJSON_IsNumber(jlat) && cJSON_IsNumber(jlon) &&
+            fabs(jlat->valuedouble) <= 90.0 && fabs(jlon->valuedouble) <= 180.0) {
           if (locMutex) xSemaphoreTake(locMutex, portMAX_DELAY);
           phoneLat = jlat->valuedouble;
           phoneLon = jlon->valuedouble;
@@ -107,6 +111,13 @@ static void mqttEventHandler(void *, esp_event_base_t, int32_t event_id, void *e
           }
           if (locMutex) xSemaphoreGive(locMutex);
           logMsg("owntracks: location updated (acc %u m)", (unsigned)phoneAcc);
+          if (askPending && devTopic[0]) {   // a joined message's last piece has no topic: never "/cmd"
+            // answered (or moved): take the retained command off the broker
+            char t[96];
+            snprintf(t, sizeof t, "%s/cmd", devTopic);
+            esp_mqtt_client_publish(mqttClient, t, "", 0, 1, 1);
+            askPending = false;
+          }
         }
       }
       cJSON_Delete(root);
@@ -228,9 +239,10 @@ bool owntracksIsMerged(double homeLat, double homeLon) {
 // A phone that sits still reports nothing (OwnTracks publishes on movement),
 // so after OWNTRACKS_ASK_AFTER_S without a fix the board publishes
 // OwnTracks' remote command reportLocation to <device topic>/cmd, again every
-// OWNTRACKS_ASK_AFTER_S until one arrives. The app answers when remote
-// commands are on and it is connected (reliable on Android, best effort on
-// iOS); a fix stays valid OWNTRACKS_MAX_AGE_S either way.
+// OWNTRACKS_ASK_AFTER_S until one arrives. The command is retained, so a phone
+// that is not connected right then gets it when it next connects; the next
+// fix clears it. The app answers when remote commands are on (reliable on
+// Android, best effort on iOS); a fix stays valid OWNTRACKS_MAX_AGE_S either way.
 void owntracksAskIfStale() {
   if (!clientStarted || !connected || !devTopic[0] || !hasLocation) return;
   if (owntracksAgeSec() < OWNTRACKS_ASK_AFTER_S) return;
@@ -238,7 +250,8 @@ void owntracksAskIfStale() {
   lastAskMs = nowMs() | 1;
   char topic[96];
   snprintf(topic, sizeof topic, "%s/cmd", devTopic);
-  int id = esp_mqtt_client_publish(mqttClient, topic, "{\"_type\":\"cmd\",\"action\":\"reportLocation\"}", 0, 1, 0);
+  int id = esp_mqtt_client_publish(mqttClient, topic, "{\"_type\":\"cmd\",\"action\":\"reportLocation\"}", 0, 1, 1);
+  if (id >= 0) askPending = true;
   logMsg("owntracks: fix %lu min old, asked the phone for its location%s", (unsigned long)(owntracksAgeSec() / 60),
          id < 0 ? " (publish failed)" : "");
 }

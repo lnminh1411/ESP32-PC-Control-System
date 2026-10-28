@@ -2,6 +2,7 @@
 
 #include <cJSON.h>
 #include <math.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -42,6 +43,17 @@ void NowcastEngine::setLocation(double lat, double lon) {
   hasLoc_ = true;
 }
 
+// Appends at out + len; once out is full len stays >= maxLen, so later
+// appends write nothing (no wrapped size) and the caller sees the cut
+static int append(char *out, size_t maxLen, int len, const char *fmt, ...) {
+  if (len < 0 || len >= (int)maxLen) return (int)maxLen;
+  va_list a;
+  va_start(a, fmt);
+  int n = vsnprintf(out + len, maxLen - len, fmt, a);
+  va_end(a);
+  return n < 0 ? (int)maxLen : len + n;
+}
+
 int NowcastEngine::buildUrl(char *out, size_t maxLen) const {
   if (!hasLoc_) return 0;
 
@@ -60,15 +72,15 @@ int NowcastEngine::buildUrl(char *out, size_t maxLen) const {
 
   int len = snprintf(out, maxLen, "https://api.open-meteo.com/v1/forecast?latitude=");
   for (int i = 0; i < N_POINTS; i++) {
-    len += snprintf(out + len, maxLen - len, "%s%.5f", (i == 0) ? "" : ",", lats[i]);
+    len = append(out, maxLen, len, "%s%.5f", (i == 0) ? "" : ",", lats[i]);
   }
-  len += snprintf(out + len, maxLen - len, "&longitude=");
+  len = append(out, maxLen, len, "&longitude=");
   for (int i = 0; i < N_POINTS; i++) {
-    len += snprintf(out + len, maxLen - len, "%s%.5f", (i == 0) ? "" : ",", lons[i]);
+    len = append(out, maxLen, len, "%s%.5f", (i == 0) ? "" : ",", lons[i]);
   }
-  len += snprintf(out + len, maxLen - len,
-                  "&minutely_15=precipitation&past_minutely_15=2&forecast_minutely_15=8&timeformat=unixtime");
-  return len;
+  len = append(out, maxLen, len,
+                 "&minutely_15=precipitation&past_minutely_15=2&forecast_minutely_15=8&timeformat=unixtime");
+  return len < (int)maxLen ? len : 0;   // cut: no request
 }
 
 // Minutes until the rain at each probe point reaches home
@@ -89,11 +101,11 @@ int NowcastEngine::buildProbeUrl(char *out, size_t maxLen) const {
     lons[i] = lon;
   }
   int len = snprintf(out, maxLen, "https://api.open-meteo.com/v1/forecast?latitude=");
-  for (int i = 0; i < N_PROBE; i++) len += snprintf(out + len, maxLen - len, "%s%.5f", i ? "," : "", lats[i]);
-  len += snprintf(out + len, maxLen - len, "&longitude=");
-  for (int i = 0; i < N_PROBE; i++) len += snprintf(out + len, maxLen - len, "%s%.5f", i ? "," : "", lons[i]);
-  len += snprintf(out + len, maxLen - len,
-                  "&minutely_15=precipitation&past_minutely_15=1&forecast_minutely_15=2&timeformat=unixtime");
+  for (int i = 0; i < N_PROBE; i++) len = append(out, maxLen, len, "%s%.5f", i ? "," : "", lats[i]);
+  len = append(out, maxLen, len, "&longitude=");
+  for (int i = 0; i < N_PROBE; i++) len = append(out, maxLen, len, "%s%.5f", i ? "," : "", lons[i]);
+  len = append(out, maxLen, len,
+                 "&minutely_15=precipitation&past_minutely_15=1&forecast_minutely_15=2&timeformat=unixtime");
   return len < (int)maxLen ? len : 0;
 }
 

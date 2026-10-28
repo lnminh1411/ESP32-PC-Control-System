@@ -232,14 +232,15 @@ bool gifReceive(void (*onFrame)(int idx)) {
   uint16_t hdr[3];
   if (!readExact(hdr, sizeof hdr)) { hostUartPrintln("ERR header timeout"); return false; }
   uint16_t sw = hdr[0], sh = hdr[1];
+  // checked before it reaches gif.n: the player indexes the frame tables with it
+  if (hdr[2] == 0 || hdr[2] > MAX_FRAMES) { hostUartPrintf("ERR bad count %u\n", hdr[2]); return false; }
   gif.n = hdr[2];
-  if (gif.n == 0 || gif.n > MAX_FRAMES) { hostUartPrintf("ERR bad count %u\n", gif.n); return false; }
-  if (!readExact(gif.durMs, gif.n * 2)) { hostUartPrintln("ERR duration timeout"); return false; }
-  if (!allocFrames(sw, sh)) return false;
+  if (!readExact(gif.durMs, gif.n * 2)) { hostUartPrintln("ERR duration timeout"); gif.n = 0; return false; }
+  if (!allocFrames(sw, sh)) { gif.n = 0; return false; }
 
   size_t rawBytes = (size_t)sw * sh * 2;
   uint8_t *temp = (uint8_t *)heap_caps_malloc(rawBytes, MALLOC_CAP_SPIRAM);
-  if (!temp) { hostUartPrintln("ERR psram alloc temp"); return false; }
+  if (!temp) { hostUartPrintln("ERR psram alloc temp"); gif.n = 0; return false; }
 
   FILE *f = fatOk ? fopen(GIF_FILE, "wb") : nullptr;
   bool fileOk = (f != nullptr);
@@ -257,6 +258,7 @@ bool gifReceive(void (*onFrame)(int idx)) {
       hostUartPrintf("ERR frame %u timeout\n", i);
       if (f) fclose(f);
       free(temp);
+      gif.n = 0;   // old and partial frames: nothing to play, as in gifLoad
       return false;
     }
     for (size_t k = 0; k < rawBytes; k++) sum += temp[k];

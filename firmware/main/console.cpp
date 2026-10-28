@@ -43,6 +43,7 @@ static void waitMagicThenReceive() {
     uint32_t t0 = nowMs();
     while (m < 4 && nowMs() - t0 < 3000) {
       if (hostUartAvailable()) m = (hostUartRead() == magic[m]) ? m + 1 : 0;
+      else sleepMs(1);   // yield: up to 3 s of waiting
     }
     if (m < 4) break;                  // not an upload after all
     if (gifReceive(viewsShowGifFrame)) { hostUartPrintln("PLAY"); break; }

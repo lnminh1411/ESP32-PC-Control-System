@@ -226,6 +226,7 @@ static WxIcon wmoToWxIcon(int code) {
 static const char *calcDayName(int y, int m, int d) {
   static const char *names[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
   static const int t[] = {0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4};
+  if (m < 1 || m > 12 || y < 1 || d < 1 || d > 31) return "---";   // a malformed date from the server
   if (m < 3) y -= 1;
   int dow = (y + y / 4 - y / 100 + y / 400 + t[m - 1] + d) % 7;
   return names[dow];
@@ -568,7 +569,9 @@ static void fetchForecast(char *buf, size_t cap) {
     if (wxMutex) xSemaphoreGive(wxMutex);
   }
 
-  WeatherNow w;
+  // zeroed: the screens read now_ without the lock, and a copy torn midway
+  // still finds place[] terminated
+  WeatherNow w = {};
   if (parseNow(root, homeName, &w)) {
     if (wxMutex) xSemaphoreTake(wxMutex, portMAX_DELAY);
     w.aqi = now_.aqi; // preserve existing AQI until AQI call completes
@@ -1045,6 +1048,7 @@ static void rainWarnTick() {
     snprintf(title, sizeof title, "%s in ~%d min | %s", wxTierName(a.tier), eta, homeName);
     int n = fmtLength(desc, sizeof desc, a);
     n += snprintf(desc + n, sizeof desc - n, "\n%.1f mm/h%s%s\n", a.mmh, a.from[0] ? ", moving in from " : "", a.from);
+    if (n >= (int)sizeof desc) n = sizeof desc - 1;   // full: rainSrcLine gets 1 byte, not a wrapped size
     rainSrcLine(desc + n, sizeof desc - n, a);
     discordPost(DC_WEATHER, title, desc, urgent ? COL_RED : COL_YELLOW, rainPrio(a.tier));
     logMsg("weather: warning posted: %s", title);
@@ -1060,6 +1064,7 @@ static void rainWarnTick() {
     snprintf(title, sizeof title, "%s now | %s", wxTierName(a.tier), homeName);
     int n = fmtLength(desc, sizeof desc, a);
     n += snprintf(desc + n, sizeof desc - n, "\n%.1f mm/h\n", a.mmh);
+    if (n >= (int)sizeof desc) n = sizeof desc - 1;
     rainSrcLine(desc + n, sizeof desc - n, a);
     discordPost(DC_WEATHER, title, desc, COL_RED, rainPrio(a.tier));
     logMsg("weather: warning posted: %s", title);
@@ -1181,11 +1186,14 @@ static void pollCyclones(char *buf, size_t cap) {
   CycloneCandidate cand[MAX_TRACKS];
   int n = cycloneParseList(buf, homeLat, homeLon, cand, MAX_TRACKS);
 
+  // tracks_ changes under wxMutex: `weather show` reads it on the main loop
+  if (wxMutex) xSemaphoreTake(wxMutex, portMAX_DELAY);
   for (int i = 0; i < MAX_TRACKS; i++) {   // storms no longer listed (or no longer near)
     bool listed = false;
     for (int k = 0; k < n; k++) listed |= tracks_[i].eventId == cand[k].eventId;
     if (!listed) memset(&tracks_[i], 0, sizeof(CycloneTrack));
   }
+  if (wxMutex) xSemaphoreGive(wxMutex);
   for (int k = 0; k < n; k++) {
     int slot = -1, freeSlot = -1;
     for (int i = 0; i < MAX_TRACKS; i++) {
@@ -1202,7 +1210,10 @@ static void pollCyclones(char *buf, size_t cap) {
     cycloneTrackUrl(url, sizeof url, cand[k].eventId, cand[k].episodeId);
     bool got = httpGet(url, big, bigCap, &status, 30000);
     size_t len = strlen(big);
-    if (got && cycloneParseTrack(big, len, cand[k], now, &tracks_[dst])) {
+    if (wxMutex) xSemaphoreTake(wxMutex, portMAX_DELAY);
+    bool parsed = got && cycloneParseTrack(big, len, cand[k], now, &tracks_[dst]);
+    if (wxMutex) xSemaphoreGive(wxMutex);
+    if (parsed) {
       clearError(ERR_TC_TRACK);
       logMsg("weather: cyclone %s: %d track points from %u KB, advisory %u, %.0f km away", tracks_[dst].name,
              tracks_[dst].n, (unsigned)(len / 1024), (unsigned)cand[k].episodeId,
@@ -1257,7 +1268,7 @@ static void postWeatherUpdate(char *buf, size_t cap) {
 
   // where you are: the phone's location while it is away from home (a valid
   // OwnTracks fix), else home
-  WeatherNow w;
+  WeatherNow w = {};
   bool onPhone = false;
   if (owntracksEnabled() && owntracksValid() && !owntracksIsMerged(homeLat, homeLon)) {
     double pLat, pLon;
@@ -1273,7 +1284,8 @@ static void postWeatherUpdate(char *buf, size_t cap) {
   char desc[480], clk[16];
   int n = snprintf(desc, sizeof desc, "%.0f\u00b0 (%d\u00b0 / %d\u00b0), %s\nWind %.0f km/h", (double)w.temp, w.tmax, w.tmin,
                    iconWord(w.icon), w.windKmh);
-  if (w.aqi >= 0) n += snprintf(desc + n, sizeof desc - n, ", AQI %d", w.aqi);
+  if (w.aqi >= 0 && n < (int)sizeof desc) n += snprintf(desc + n, sizeof desc - n, ", AQI %d", w.aqi);
+  if (n >= (int)sizeof desc) n = sizeof desc - 1;   // a wild API number (%.0f of 1e300): cut, never past desc
   const RainAlert &r = onPhone ? rainPhone : rainHome;
   if (r.raining) {
     fmtClock(clk, sizeof clk, r.endUnix, false);
@@ -1668,7 +1680,7 @@ static void applyConfiguredHome() {
       ok = false;
     }
   }
-  if (!ok || lat < -90.0 || lat > 90.0 || lon < -180.0 || lon > 180.0) {
+  if (!ok || !(fabs(lat) <= 90.0 && fabs(lon) <= 180.0)) {
     logMsg("weather: WEATHER_HOME in settings.h is not \"lat,lon[,name]\"; ignored");
     return;
   }
@@ -1757,7 +1769,7 @@ void weatherCommand(const char *a1, const char *a2) {
     }
     double lat = strtod(a2Buf, nullptr);
     double lon = strtod(lonPart, nullptr);
-    if (lat < -90.0 || lat > 90.0 || lon < -180.0 || lon > 180.0) {
+    if (!(fabs(lat) <= 90.0 && fabs(lon) <= 180.0)) {   // "nan" parses too: it fails both
       logMsg("weather: coordinates out of range (-90..90, -180..180)");
       return;
     }
@@ -1920,6 +1932,7 @@ void weatherCommand(const char *a1, const char *a2) {
 
     // Cyclones (GDACS)
     int nTracks = 0;
+    if (wxMutex) xSemaphoreTake(wxMutex, portMAX_DELAY);   // not while the weather task parses a track
     for (int i = 0; tracks_ && i < MAX_TRACKS; i++) {
       if (!tracks_[i].n) continue;
       nTracks++;
@@ -1933,6 +1946,7 @@ void weatherCommand(const char *a1, const char *a2) {
              i == trackShown ? " (shown)" : "", c.distKm, c.closestKm, c.windKmh,
              c.active ? "TYPHOON HERE" : c.tracked ? a : "not a typhoon threat");
     }
+    if (wxMutex) xSemaphoreGive(wxMutex);
     if (!nTracks) logMsg("weather: cyclones: none within %.0f km", CYCLONE_WATCH_KM);
 
     // Budget

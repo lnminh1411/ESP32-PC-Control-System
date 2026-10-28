@@ -72,6 +72,11 @@ static esp_err_t rootGetHandler(httpd_req_t *req) {
   return httpd_resp_send(req, buf, HTTPD_RESP_USE_STRLEN);
 }
 
+// An upload that sends nothing this long is dropped: httpd_req_recv times
+// out every few seconds and the loops below retry, and a client that stalls
+// without closing would otherwise hold the HTTP task (and the OTA handle)
+constexpr uint32_t UPLOAD_STALL_MS = 30000;
+
 static esp_err_t otaPostHandler(httpd_req_t *req) {
   char passHdr[64] = {0};
   if (httpd_req_get_hdr_value_str(req, "X-OTA-Pass", passHdr, sizeof passHdr) != ESP_OK ||
@@ -105,16 +110,18 @@ static esp_err_t otaPostHandler(httpd_req_t *req) {
 
   char buf[1024];
   int remaining = req->content_len;
+  uint32_t lastDataMs = nowMs();
   while (remaining > 0) {
     int toRead = remaining < (int)sizeof(buf) ? remaining : (int)sizeof(buf);
     int received = httpd_req_recv(req, buf, toRead);
     if (received <= 0) {
-      if (received == HTTPD_SOCK_ERR_TIMEOUT) continue;
+      if (received == HTTPD_SOCK_ERR_TIMEOUT && nowMs() - lastDataMs < UPLOAD_STALL_MS) continue;
       esp_ota_abort(ota_handle);
-      logMsg("ota: failed (%s)", "receive error");
+      logMsg("ota: failed (%s)", received == HTTPD_SOCK_ERR_TIMEOUT ? "client stalled" : "receive error");
       httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Receive failed");
       return ESP_FAIL;
     }
+    lastDataMs = nowMs();
     err = esp_ota_write(ota_handle, buf, received);
     if (err != ESP_OK) {
       esp_ota_abort(ota_handle);
@@ -172,14 +179,16 @@ static esp_err_t layoutPutHandler(httpd_req_t *req) {
 
   int remaining = req->content_len;
   int receivedTotal = 0;
+  uint32_t lastDataMs = nowMs();
   while (remaining > 0) {
     int received = httpd_req_recv(req, buf + receivedTotal, remaining);
     if (received <= 0) {
-      if (received == HTTPD_SOCK_ERR_TIMEOUT) continue;
+      if (received == HTTPD_SOCK_ERR_TIMEOUT && nowMs() - lastDataMs < UPLOAD_STALL_MS) continue;
       free(buf);
       httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Receive failed");
       return ESP_FAIL;
     }
+    lastDataMs = nowMs();
     receivedTotal += received;
     remaining -= received;
   }
@@ -236,7 +245,8 @@ static void wifiEventHandler(void *, esp_event_base_t event_base, int32_t event_
     lastWifiEventMs = lastTrafficMs;
     snprintf(ip, sizeof ip, IPSTR, IP2STR(&event->ip_info.ip));
     logMsg("wifi: connected to %s, %s, %d dBm", WIFI_SSID, ip, netRssi());
-    markAppValidOnce();
+    // netPoll marks the image valid: the otadata write stays off this small
+    // event-task stack, and only one task ever runs it
   }
 }
 
@@ -268,6 +278,9 @@ void netInit() {
   e = esp_wifi_start();
   if (e != ESP_OK) logMsg("wifi: start failed (%s)", esp_err_to_name(e));
   esp_wifi_set_ps(NET_WIFI_PS);
+  // the router is close: a lower TX power cap trims the current peaks on
+  // the 5 V the board shares with the PC (units of 0.25 dBm)
+  esp_wifi_set_max_tx_power((int8_t)(NET_WIFI_TX_DBM * 4));
   e = esp_wifi_connect();
   if (e != ESP_OK) logMsg("wifi: connect failed (%s)", esp_err_to_name(e));
   downSinceMs = nowMs();
@@ -290,6 +303,7 @@ static void netWatchdog() {
       esp_wifi_stop();
       esp_wifi_start();
       esp_wifi_set_ps(WIFI_PS_NONE);
+      esp_wifi_set_max_tx_power((int8_t)(NET_WIFI_TX_DBM * 4));
       esp_wifi_connect();
       downSinceMs = now;
       lastWifiEventMs = now;
@@ -351,7 +365,7 @@ void netPoll() {
     wifi_ap_record_t ap;
     if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) rssiCached = ap.rssi;
   }
-  if (nowMs() >= NET_OTA_VALIDATE_MS) {
+  if (netUp() || nowMs() >= NET_OTA_VALIDATE_MS) {
     markAppValidOnce();
   }
   if (!netUp()) return;

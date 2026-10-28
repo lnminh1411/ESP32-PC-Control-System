@@ -104,6 +104,11 @@ static void lock() {
 }
 static void unlock() { xSemaphoreGive(layoutLock); }
 
+// One apply at a time (PUT /layout in the HTTP task, the console upload on
+// core 1): both write /ffat/layout.tmp. Separate from layoutLock so the file
+// write never holds up drawing.
+static SemaphoreHandle_t applyLock;
+
 static void swapLayout(Layout *l) {
   lock();
   Layout *old = activeLayout;
@@ -804,10 +809,7 @@ uint32_t layoutPeriodMs(int dashIdx) {
   return ms;
 }
 
-const char *layoutApply(const char *json, size_t len) {
-  if (!json || len == 0) return "empty JSON";
-  if (len > 16384) return "JSON too large (>16KB)";
-
+static const char *layoutApplyLocked(const char *json, size_t len) {
   Layout *l = parseLayout(json, len);
   if (!l) return "JSON parse failed";
 
@@ -838,7 +840,20 @@ const char *layoutApply(const char *json, size_t len) {
   return nullptr;
 }
 
+const char *layoutApply(const char *json, size_t len) {
+  if (!json || len == 0) return "empty JSON";
+  if (len > 16384) return "JSON too large (>16KB)";
+  if (!applyLock) return "layout not initialized";
+  xSemaphoreTake(applyLock, portMAX_DELAY);
+  const char *err = layoutApplyLocked(json, len);
+  xSemaphoreGive(applyLock);
+  return err;
+}
+
 void layoutInit() {
+  // created here, before the HTTP task exists: lazy creation in lock() could race
+  if (!layoutLock) layoutLock = xSemaphoreCreateMutex();
+  if (!applyLock) applyLock = xSemaphoreCreateMutex();
   FILE *f = fopen("/ffat/layout.json", "rb");
   if (f) {
     fseek(f, 0, SEEK_END);
@@ -880,7 +895,9 @@ void layoutInit() {
 
 void layoutCommand(const char *a1, const char *a2) {
   if (!a1 || !strcmp(a1, "show")) {
+    lock();   // a PUT /layout may swap and free it meanwhile
     if (!activeLayout) {
+      unlock();
       logMsg("layout: none loaded");
       return;
     }
@@ -889,6 +906,7 @@ void layoutCommand(const char *a1, const char *a2) {
     for (uint8_t i = 0; i < activeLayout->page_count; i++) {
       logMsg("layout: page %u: %u widgets", i, activeLayout->pages[i].widget_count);
     }
+    unlock();
   } else if (!strcmp(a1, "reload")) {
     FILE *f = fopen("/ffat/layout.json", "rb");
     if (!f) {

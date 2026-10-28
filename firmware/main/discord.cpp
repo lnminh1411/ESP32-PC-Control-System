@@ -54,24 +54,37 @@ static bool wsMsgDropped;
 // ---- hand-over to the main loop: one command at a time ----
 static char reqLine[64];
 static char reqReply[1500];
-static volatile bool reqPending;
-static SemaphoreHandle_t reqDone;
+static volatile uint32_t reqSeq, doneSeq;   // last request posted / last one the main loop finished
+static SemaphoreHandle_t reqDone;           // wakes the waiter; doneSeq says whose command finished
 static SemaphoreHandle_t restMutex[2];
 
+// Waits until the main loop has finished request seq
+static bool waitDone(uint32_t seq, uint32_t timeoutMs) {
+  uint32_t t0 = nowMs();
+  while (doneSeq != seq) {
+    if (nowMs() - t0 >= timeoutMs) return false;
+    xSemaphoreTake(reqDone, pdMS_TO_TICKS(50));
+  }
+  return true;
+}
+
 static bool runOnMainLoop(const char *line, uint32_t timeoutMs = 2500) {
+  // a command that timed out may still be running on the main loop: reqLine
+  // and reqReply stay its own until it finishes
+  if (!waitDone(reqSeq, timeoutMs)) return false;
   snprintf(reqLine, sizeof reqLine, "%s", line);
-  reqReply[0] = 0;
-  xSemaphoreTake(reqDone, 0);
-  reqPending = true;
-  return xSemaphoreTake(reqDone, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
+  uint32_t seq = reqSeq + 1;
+  reqSeq = seq;   // posted: discordPoll runs it (logCapture clears reqReply)
+  return waitDone(seq, timeoutMs);
 }
 
 void discordPoll() {
-  if (!reqPending) return;
+  uint32_t seq = reqSeq;
+  if (seq == doneSeq) return;
   logCapture(reqReply, sizeof reqReply);
   commandRun(reqLine);
   logCapture(nullptr, 0);
-  reqPending = false;
+  doneSeq = seq;
   xSemaphoreGive(reqDone);
 }
 
@@ -288,6 +301,12 @@ static int rest(const char *method, const char *path, const char *body, char *ou
   return code;
 }
 
+// cJSON_AddItemToArray leaves item with the caller when arr is NULL (an
+// earlier allocation failed): free it there instead of leaking it
+static void addItem(cJSON *arr, cJSON *item) {
+  if (!cJSON_AddItemToArray(arr, item)) cJSON_Delete(item);
+}
+
 static void postChannelEmbed(DiscordChannel ch, const char *title, const char *desc, uint32_t color, int prio = 0) {
   // #pc-announcement and #weather-announcement go to the phone too
   if (ch == DC_PC || ch == DC_WEATHER) pushoverQueue(title, desc, prio);
@@ -299,7 +318,7 @@ static void postChannelEmbed(DiscordChannel ch, const char *title, const char *d
   cJSON_AddStringToObject(embed, "title", title);
   if (desc && desc[0]) cJSON_AddStringToObject(embed, "description", desc);
   cJSON_AddNumberToObject(embed, "color", color);
-  cJSON_AddItemToArray(embeds, embed);
+  addItem(embeds, embed);
   char *body = cJSON_PrintUnformatted(root);
   cJSON_Delete(root);
 
@@ -356,7 +375,7 @@ static void postLogBatch() {
 }
 
 // ---- actions panel tracking ----
-static char panelToken[128];
+static char panelToken[256];   // interaction tokens run past 128 characters
 static uint32_t panelTouchedMs, panelOpenedMs;
 #define PANEL_TOKEN_LIFE_MS (14 * 60 * 1000UL)   // interaction tokens die at 15 min
 static bool panelActive;
@@ -380,7 +399,7 @@ static void registerCommands() {
   cJSON *c = cJSON_CreateObject();
   cJSON_AddStringToObject(c, "name", "actions");
   cJSON_AddStringToObject(c, "description", "Open the ESP32 PC Control panel (only you see it)");
-  cJSON_AddItemToArray(root, c);
+  addItem(root, c);
   char *body = cJSON_PrintUnformatted(root);
   cJSON_Delete(root);
 
@@ -432,14 +451,17 @@ static void addButton(cJSON *row, const char *label, const char *id, int style) 
   cJSON_AddStringToObject(b, "label", label);
   cJSON_AddStringToObject(b, "custom_id", id);
   cJSON_AddNumberToObject(b, "style", style); // 1 blurple, 2 grey, 3 green, 4 red
-  cJSON_AddItemToArray(row, b);
+  addItem(row, b);
 }
 
 static cJSON *addRow(cJSON *comps) {
   cJSON *r = cJSON_CreateObject();
   cJSON_AddNumberToObject(r, "type", 1);
   cJSON *rowComps = cJSON_AddArrayToObject(r, "components");
-  cJSON_AddItemToArray(comps, r);
+  if (!cJSON_AddItemToArray(comps, r)) {
+    cJSON_Delete(r);   // rowComps went with it
+    return nullptr;
+  }
   return rowComps;
 }
 
@@ -459,9 +481,9 @@ static void addFaceSelect(cJSON *comps, int panel) {
     cJSON_AddStringToObject(op, "label", label);
     cJSON_AddStringToObject(op, "value", o.name);
     if (screensForce[panel] == o.f) cJSON_AddBoolToObject(op, "default", true);
-    cJSON_AddItemToArray(opts, op);
+    addItem(opts, op);
   }
-  cJSON_AddItemToArray(row, sel);
+  addItem(row, sel);
 }
 
 // Status LED brightness in 10 % steps (saved); night mode caps it at 20 %
@@ -481,9 +503,9 @@ static void addLedSelect(cJSON *comps) {
     cJSON_AddStringToObject(op, "label", label);
     cJSON_AddStringToObject(op, "value", val);
     if (v == ledBrightness()) cJSON_AddBoolToObject(op, "default", true);
-    cJSON_AddItemToArray(opts, op);
+    addItem(opts, op);
   }
-  cJSON_AddItemToArray(addRow(comps), sel);
+  addItem(addRow(comps), sel);
 }
 
 // Brightness for every panel in 5 % steps (saved, as `bl all` does), plus Off
@@ -508,9 +530,9 @@ static void addBrightnessSelect(cJSON *comps) {
     cJSON_AddStringToObject(op, "label", label);
     cJSON_AddStringToObject(op, "value", val);
     if (v == cur) cJSON_AddBoolToObject(op, "default", true);
-    cJSON_AddItemToArray(opts, op);
+    addItem(opts, op);
   }
-  cJSON_AddItemToArray(addRow(comps), sel);
+  addItem(addRow(comps), sel);
 }
 
 // RGB tab (PcHwCtl via the PC, hwctl.h). Commands go to one group, PcHwCtl's
@@ -549,9 +571,9 @@ static void addRgbSelect(cJSON *comps, const char *id, const char *placeholder, 
     cJSON *op = cJSON_CreateObject();
     cJSON_AddStringToObject(op, "label", opts[i].label);
     cJSON_AddStringToObject(op, "value", opts[i].value);
-    cJSON_AddItemToArray(arr, op);
+    addItem(arr, op);
   }
-  cJSON_AddItemToArray(addRow(comps), sel);
+  addItem(addRow(comps), sel);
 }
 
 // Mode, color and brightness pickers; no option marked, so picking the same
@@ -687,9 +709,9 @@ static void addFanRows(cJSON *comps) {
     cJSON_AddStringToObject(op, "label", label);
     cJSON_AddStringToObject(op, "value", FAN_TARGETS[i].value);
     if (i == fanTarget) cJSON_AddBoolToObject(op, "default", true);
-    cJSON_AddItemToArray(arr, op);
+    addItem(arr, op);
   }
-  cJSON_AddItemToArray(addRow(comps), sel);
+  addItem(addRow(comps), sel);
 
   char ph[64];
   snprintf(ph, sizeof ph, "Speed for %s (hold %d min)", FAN_TARGETS[fanTarget].label, FAN_HOLD_MIN[fanHold]);
@@ -722,7 +744,8 @@ static int monCount() {
 static void monLabel(int n, char *buf, size_t size) {
   char k[24];
   snprintf(k, sizeof k, "mon.%d.name", n);
-  const char *name = pcText(k);
+  char name[48];   // the bot task: a copy, the main loop rewrites the table
+  pcTextCopy(k, name, sizeof name);
   snprintf(k, sizeof k, "mon.%d.main", n);
   snprintf(buf, size, "%d %.40s%s", n, *name ? name : "Monitor", pcStat(k) >= 1 ? " (main)" : "");
 }
@@ -750,9 +773,9 @@ static void addMonRows(cJSON *comps) {
     cJSON_AddStringToObject(op, "label", label);
     cJSON_AddStringToObject(op, "value", value);
     if (i == monTarget) cJSON_AddBoolToObject(op, "default", true);
-    cJSON_AddItemToArray(arr, op);
+    addItem(arr, op);
   }
-  cJSON_AddItemToArray(addRow(comps), sel);
+  addItem(addRow(comps), sel);
 
   char t[64], ph[88];
   monTargetLabel(t, sizeof t);
@@ -765,7 +788,7 @@ static void addField(cJSON *fields, const char *name, const char *value) {
   cJSON_AddStringToObject(f, "name", name);
   cJSON_AddStringToObject(f, "value", value);
   cJSON_AddBoolToObject(f, "inline", true);
-  cJSON_AddItemToArray(fields, f);
+  addItem(fields, f);
 }
 
 // "--" for a stat the PC has not sent
@@ -855,11 +878,14 @@ static void buildEmbed(cJSON *embed, const char *footerText, bool standing) {
     addField(fields, "Night mode", v);
     nightLowPowerStatus(v, sizeof v);
     addField(fields, "Low power mode", v);
-    const char *plan = pcText("hw.plan");
+    char plan[48];
+    pcTextCopy("hw.plan", plan, sizeof plan);
     addField(fields, "Power plan", *plan ? plan : "--");
     addPcStatsFields(fields);
   } else if (cat == CAT_RGB) {
-    const char *mainRule = pcText("hw.rgb.main"), *ramRule = pcText("hw.rgb.ram");
+    char mainRule[64], ramRule[64];
+    pcTextCopy("hw.rgb.main", mainRule, sizeof mainRule);
+    pcTextCopy("hw.rgb.ram", ramRule, sizeof ramRule);
     addField(fields, "PcHwCtl", pcStat("hw.ok") >= 1 ? "state feed live" : "no state (not running?)");
     addField(fields, "Motherboard + ARGB", *mainRule ? mainRule : "?");
     addField(fields, "RAM", *ramRule ? ramRule : "?");
@@ -915,10 +941,12 @@ static void buildEmbed(cJSON *embed, const char *footerText, bool standing) {
     addField(fields, "Panel targets", t);
   } else if (cat == CAT_AI) {
     char w1[32], w2[32];
-    const char *model = pcText("ai.model_name");
-    if (!*model) model = aiField("model", w1, sizeof w1);
+    char modelBuf[64];
+    pcTextCopy("ai.model_name", modelBuf, sizeof modelBuf);
+    const char *model = *modelBuf ? modelBuf : aiField("model", w1, sizeof w1);
     addField(fields, "Model", *model ? model : "?");
-    const char *phase = pcText("ai.phase_name");
+    char phase[48];
+    pcTextCopy("ai.phase_name", phase, sizeof phase);
     addField(fields, "Phase", *phase ? phase : "?");
     aiField("ctx", w1, sizeof w1);
     aiField("want", w2, sizeof w2);
@@ -1021,11 +1049,17 @@ static void buildComponents(cJSON *data, PanelView view, bool standing) {
     cJSON_AddStringToObject(op, "label", CAT_LABEL[i]);
     cJSON_AddStringToObject(op, "value", CAT_ID[i]);
     if (i == cat) cJSON_AddBoolToObject(op, "default", true);
-    cJSON_AddItemToArray(opts, op);
+    addItem(opts, op);
   }
-  cJSON_AddItemToArray(addRow(comps), sel);
+  cJSON *catRow = addRow(comps);
+  if (!catRow) {   // no memory: the Refresh option below goes into opts, so sel must not be freed later
+    cJSON_Delete(sel);
+    return;
+  }
+  cJSON_AddItemToArray(catRow, sel);
 
   cJSON *r = addRow(comps);
+  if (!r) return;   // the tabs below delete the last row: without r that would be the one holding opts
   if (cat == CAT_DOOR) {
     addButton(r, "Door 1", "door_1", 1);
     addButton(r, "Door 2", "door_2", 1);
@@ -1095,7 +1129,7 @@ static void buildComponents(cJSON *data, PanelView view, bool standing) {
     cJSON *op = cJSON_CreateObject();
     cJSON_AddStringToObject(op, "label", "Refresh");
     cJSON_AddStringToObject(op, "value", "refresh");
-    cJSON_AddItemToArray(opts, op);
+    addItem(opts, op);
     for (int i = 0; i < N_PANELS; i++) addFaceSelect(comps, i);
     addBrightnessSelect(comps);
     return;
@@ -1106,7 +1140,12 @@ static void buildComponents(cJSON *data, PanelView view, bool standing) {
 
 // 4 = reply with a new (ephemeral) panel; 7 = update the panel the button is
 // on, sent as an edit after ackButton() so slow actions don't time out
+// A confirm button shown on the standing panel: controlPanelSync leaves the
+// message alone until then, or its refresh edit wipes the button
+static uint32_t ctlConfirmUntilMs;
+
 static void sendPanelResponse(const char *id, const char *token, int callbackType, bool standing, PanelView view, const char *footerText) {
+  if (standing) ctlConfirmUntilMs = view != PANEL_NORMAL ? (nowMs() + CONTROL_PANEL_CONFIRM_MS) | 1 : 0;
   bool edit = callbackType == 7 && DISCORD_APP_ID[0];
   cJSON *root = cJSON_CreateObject();
   cJSON *data = root;
@@ -1120,7 +1159,7 @@ static void sendPanelResponse(const char *id, const char *token, int callbackTyp
   cJSON *embeds = cJSON_AddArrayToObject(data, "embeds");
   cJSON *embed = cJSON_CreateObject();
   buildEmbed(embed, footerText, standing);
-  cJSON_AddItemToArray(embeds, embed);
+  addItem(embeds, embed);
   buildComponents(data, view, standing);
 
   char *body = cJSON_PrintUnformatted(root);
@@ -1171,6 +1210,7 @@ static void aiRefreshStatus();
 static void panelLaterService() {
   if (!panelLater.pending || (int32_t)(nowMs() - panelLater.atMs) < 0) return;
   panelLater.pending = false;
+  if (panelLater.standing && ctlConfirmUntilMs) return;   // a confirm is up; its timeout redraws the panel
   if (panelCat(panelLater.standing) == CAT_AI) aiRefreshStatus();
   sendPanelResponse("", panelLater.token, 7, panelLater.standing, PANEL_NORMAL, lastPanelResult);
 }
@@ -1191,8 +1231,16 @@ static uint32_t panelCrc(const char *body) {
 // Post the standing panel in #control, or bring the one there up to date.
 // Called every CONTROL_PANEL_REFRESH_MS while live; skips the edit when only the
 // clock would change, unless force.
+// Discord limits edits to messages older than an hour (error 30046): when an
+// edit is refused (rate limited), the panel is posted anew, and the old one
+// deleted only once the new one is there.
 static void controlPanelSync(bool force) {
   if (!DISCORD_CH_CONTROL[0]) return;
+  if (ctlConfirmUntilMs) {
+    if ((int32_t)(nowMs() - ctlConfirmUntilMs) < 0) return;
+    ctlConfirmUntilMs = 0;   // unanswered: the normal panel goes back
+    force = true;
+  }
   if (!force && ctlRetryAtMs && (int32_t)(nowMs() - ctlRetryAtMs) < 0) return;
   char footer[48] = "Owner only";
   struct tm t;
@@ -1202,7 +1250,7 @@ static void controlPanelSync(bool force) {
   cJSON *embeds = cJSON_AddArrayToObject(root, "embeds");
   cJSON *embed = cJSON_CreateObject();
   buildEmbed(embed, footer, true);
-  cJSON_AddItemToArray(embeds, embed);
+  addItem(embeds, embed);
   buildComponents(root, PANEL_NORMAL, true);
   char *body = cJSON_PrintUnformatted(root);
   cJSON_Delete(root);
@@ -1214,12 +1262,19 @@ static void controlPanelSync(bool force) {
   }
 
   char path[128];
+  char oldId[24] = "";   // to delete once the new panel is posted
   if (ctlMsgId[0]) {
     snprintf(path, sizeof path, "/channels/%s/messages/%s", DISCORD_CH_CONTROL, ctlMsgId);
     int code = rest("PATCH", path, body);
     if (code == 404) ctlMsgId[0] = 0;   // deleted: post a new one
     if (code >= 200 && code < 300) ctlLastCrc = crc;
-    ctlRetryAtMs = code == 429 ? nowMs() + 30000 : 0;
+    ctlRetryAtMs = 0;
+    if (code == 429 || code == 400 || code == 403) {
+      // edits refused (30046 and the like): a new panel instead
+      logMsg("discord: control panel edit refused (%d), posting a new one", code);
+      snprintf(oldId, sizeof oldId, "%s", ctlMsgId);
+      ctlMsgId[0] = 0;
+    }
   }
   if (!ctlMsgId[0]) {
     const size_t respCap = 8192;
@@ -1238,7 +1293,18 @@ static void controlPanelSync(bool force) {
         nvs_commit(h);
         nvs_close(h);
       }
+      ctlLastCrc = crc;
       logMsg("discord: control panel posted");
+      if (oldId[0]) {
+        snprintf(path, sizeof path, "/channels/%s/messages/%s", DISCORD_CH_CONTROL, oldId);
+        int dc = rest("DELETE", path, "");
+        logMsg("discord: old control panel %s", dc >= 200 && dc < 300 ? "deleted" : "not deleted");
+      }
+    } else if (oldId[0]) {
+      // the new one did not go out: keep the old one, try again in 30 s
+      snprintf(ctlMsgId, sizeof ctlMsgId, "%s", oldId);
+      ctlRetryAtMs = nowMs() + 30000;
+      logMsg("discord: new control panel not posted (%d), the old one stays", code);
     }
     cJSON_Delete(r);
     free(resp);
@@ -1620,7 +1686,9 @@ static void onInteraction(cJSON *d) {
       if (!lastPanelResult[0]) snprintf(lastPanelResult, sizeof lastPanelResult, "Lock sent to the PC");
       sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
     } else if (!strcmp(cid, "night")) {
-      nightSetEnabled(!nightEnabled());
+      // night mode's state belongs to the main loop (nightPoll): changed there
+      char ignore[64];
+      runAndGetFirstLine(nightEnabled() ? "night off" : "night on", ignore, sizeof ignore);
       char win[40];
       nightWindowText(win, sizeof win);
       if (nightEnabled()) snprintf(lastPanelResult, sizeof lastPanelResult, "Night mode on: %s without input", win);
@@ -1634,13 +1702,15 @@ static void onInteraction(cJSON *d) {
       sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
     } else if (!strcmp(cid, "lowpower")) {
       bool on = !nightLowPowerOn();
-      nightLowPower(on);
+      char ignore[64];
+      runAndGetFirstLine(on ? "night low on" : "night low off", ignore, sizeof ignore);
       snprintf(lastPanelResult, sizeof lastPanelResult, "%s",
                on ? "Low power mode on: Lasso night config, LEDs, panels and status LED dimmed" : "Low power mode off");
       sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
     } else if (!strcmp(cid, "night_now")) {
       bool start = !nightEngaged();
-      nightManual(start);
+      char ignore[64];
+      runAndGetFirstLine(start ? "night start" : "night end", ignore, sizeof ignore);
       snprintf(lastPanelResult, sizeof lastPanelResult, "%s",
                start ? "Night mode started: input on the PC or End ends it" : "Night mode ended");
       sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
@@ -1908,7 +1978,8 @@ static void handleGatewayMessage(const char *jsonStr, size_t len) {
         static bool announced;
         if (first && !announced) {
           announced = true;
-          postChannelEmbed(DC_PC, "ESP32 PC Control is online", (netUp() && netIp()[0]) ? netIp() : "Wi-Fi down", 0x57F287);
+          // queued: REST runs in the bot task, not on the websocket task's stack
+          discordPost(DC_PC, "ESP32 PC Control is online", (netUp() && netIp()[0]) ? netIp() : "Wi-Fi down", 0x57F287);
         }
       } else if (!strcmp(t, "INTERACTION_CREATE")) {
         lastInteractionMs = nowMs() | 1;   // the #control panel goes live (CONTROL_PANEL_LIVE_MS)
@@ -1995,7 +2066,12 @@ static void gatewayStart() {
   if (ws) {
     esp_websocket_register_events(ws, WEBSOCKET_EVENT_ANY, onGatewayEvent, nullptr);
     esp_err_t err = esp_websocket_client_start(ws);
-    if (err != ESP_OK) logMsg("discord: gateway start failed (%s)", esp_err_to_name(err));
+    if (err != ESP_OK) {
+      // no task (low RAM): drop the client so the bot loop's 30 s retry runs
+      logMsg("discord: gateway start failed (%s), retrying in 30 s", esp_err_to_name(err));
+      esp_websocket_client_destroy(ws);
+      ws = nullptr;
+    }
   } else {
     logMsg("discord: gateway client init failed (internal RAM free %u), retrying in 30 s",
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
@@ -2074,10 +2150,14 @@ static void botTask(void *) {
 }
 
 void discordInit() {
+  // the zone from NVS here on the main task, before logRing exists: once it
+  // does, any task's log line reads the local time (sys_evt has 2.3 KB of stack)
+  boardTimeInit();
   if (!DISCORD_TOKEN[0]) { logMsg("discord: off (no DISCORD_TOKEN in settings.h)"); return; }
   reqDone = xSemaphoreCreateBinary();
   restMutex[0] = xSemaphoreCreateMutex();
   restMutex[1] = xSemaphoreCreateMutex();
+  if (!reqDone || !restMutex[0] || !restMutex[1]) { logMsg("discord: off (no memory)"); return; }
   ixQueue = xQueueCreate(IX_QUEUE_DEPTH, sizeof(char *));
   notifyQueue = xQueueCreateWithCaps(NOTIFY_QUEUE_DEPTH, sizeof(NotifyMsg), MALLOC_CAP_SPIRAM);
   if (!notifyQueue) notifyQueue = xQueueCreate(NOTIFY_QUEUE_DEPTH, sizeof(NotifyMsg));

@@ -22,7 +22,8 @@
 enum PcState { PC_UNKNOWN, PC_ON, PC_OFF };
 enum LedMode { LED_AUTO, LED_ON, LED_OFF, LED_SWEEP };
 
-void pcStateInit();                // register the USB event handler
+void pcStateInit();                // register the USB event handler (before usbInit)
+void pcStatePoll();                // main loop: USB event log lines and the backlights
 void statusLedInit();              // start the LED task
 void statusLedReady();             // boot finished: leave the boot pattern
 PcState pcState();

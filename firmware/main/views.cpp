@@ -524,6 +524,7 @@ void viewsService() {
   if (wasIdle) {
     wasIdle = false;
     for (int i = 0; i < N_PANELS; i++) {
+      displayWait(i);   // a frame submitted just before idle may still be in the flush task
       memset(panels[i].sent, 0xA5, (size_t)TFT_W * TFT_H * 2);
       panels[i].gifShown = -1;
       panelDirty[i] = true;

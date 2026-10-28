@@ -10,7 +10,10 @@ CONFIG_COMPILER_OPTIMIZATION_PERF=y
 
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
-CONFIG_SPIRAM_SPEED_80M=y
+# PSRAM at 40 MHz (was 80): PSRAM data went bad (bit flips at the PC's
+# power-on, corrupted heap and pointers, 2026-10-26..28); 40 MHz has more
+# timing margin and needs no MSPI timing tuning at boot
+CONFIG_SPIRAM_SPEED_40M=y
 CONFIG_SPIRAM_USE_MALLOC=y
 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
 # Wi-Fi and lwIP stay in internal RAM: their linked lists (lwIP timers, heap
@@ -77,6 +80,15 @@ CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC=y
 # 22 -> 34 KB. Peer certificate still not kept.
 # CONFIG_MBEDTLS_DYNAMIC_BUFFER is not set
 # CONFIG_MBEDTLS_SSL_KEEP_PEER_CERTIFICATE is not set
+# VFS tables in internal RAM (and select in IRAM): with this off they are
+# allocated MALLOC_CAP_DEFAULT and land in PSRAM, where the lwIP socket entry's
+# pointers went bad twice (2026-10-27 21:09, 10-28 09:16: esp_vfs_select through
+# a garbage pointer in the Discord TLS task)
+CONFIG_VFS_SELECT_IN_RAM=y
+# PSRAM ECC: the PC powering on sags the board's supply and PSRAM then gave
+# single-bit errors (2026-10-28); the MSPI ECC corrects them. Costs 1/16 of
+# PSRAM (512 KB of 8 MB).
+CONFIG_SPIRAM_ECC_ENABLE=y
 # Software AES: hardware AES needs DMA bounce buffers in internal RAM for PSRAM data
 CONFIG_MBEDTLS_HARDWARE_AES=n
 # Internal RAM for TLS/sockets: Wi-Fi hot paths stay in flash, fewer fixed RX buffers
