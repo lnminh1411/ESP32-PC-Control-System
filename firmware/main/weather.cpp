@@ -83,8 +83,6 @@ static bool homeThrottled;
 static bool phoneThrottled;
 
 // Phone notification state (1 message per rain event, re-arm after 60 min dry)
-static bool phoneAlertSent;
-static uint32_t phoneDryStartMs;
 
 // Error logging masks (log once per kind)
 enum ErrMask : uint16_t {
@@ -168,6 +166,7 @@ const Cyclone &weatherCyclone() { return cyclone_; }
 
 const char *wxTierName(WxTier t) {
   switch (t) {
+    case TIER_DRIZZLE: return "Drizzle";
     case TIER_LIGHT_RAIN: return "Light Rain";
     case TIER_HEAVY_SHOWER: return "Heavy Shower";
     case TIER_STORM: return "Storm";
@@ -623,6 +622,7 @@ static void fetchAirQuality(char *buf, size_t cap) {
 }
 
 static uint32_t homePolls;   // good home nowcasts so far
+static uint32_t phonePolls;  // phone ones (either source)
 
 // The hourly forecast has rain (0.2 mm+) in the hour holding t or the next
 static bool hourlyWetNear(uint32_t t) {
@@ -662,7 +662,15 @@ static uint8_t rainKind(uint32_t start) {
   return (steady && !shower) ? RAIN_KIND_STEADY : RAIN_KIND_SHOWER;
 }
 
-// Light Rain / Heavy Shower by intensity (7.6 mm/h is "heavy rain"); Storm
+// Drizzle / Light Rain / Heavy Shower by intensity alone (the phone: home's
+// hourly forecast says nothing about where you are)
+static WxTier rainTierMm(float mm) {
+  if (mm >= WEATHER_HEAVY_SHOWER_MMH) return TIER_HEAVY_SHOWER;
+  return mm >= WEATHER_LIGHT_RAIN_MMH ? TIER_LIGHT_RAIN : TIER_DRIZZLE;
+}
+
+// Drizzle / Light Rain / Heavy Shower by intensity (under WEATHER_LIGHT_RAIN_MMH;
+// 7.6 mm/h is "heavy rain"); Storm
 // when the forecast has thunder or 62+ km/h gusts (Beaufort 8) while it rains
 static WxTier rainTier(const RainAlert &a) {
   uint32_t from = a.startUnix, to = a.endUnix ? a.endUnix : a.startUnix + 2 * 3600;
@@ -673,7 +681,7 @@ static WxTier rainTier(const RainAlert &a) {
     if (hours_[i].code >= 95 || hours_[i].gust >= WEATHER_STORM_GUST_KMH) return TIER_STORM;
     if (hours_[i].mm > mm) mm = hours_[i].mm;
   }
-  return mm >= WEATHER_HEAVY_SHOWER_MMH ? TIER_HEAVY_SHOWER : TIER_LIGHT_RAIN;
+  return rainTierMm(mm);
 }
 
 // OpenWeather's hour counts for 5 min after it was fetched, for its place only
@@ -1016,25 +1024,26 @@ static int fmtLength(char *out, int cap, const RainAlert &a) {
 // WEATHER_RAIN_URGENT_MIN (one heads-up), the tier going up, and the start
 // moving 10+ min. While it rains: the rain starting, the tier going up, the
 // end moving 10+ min. Two polls without a warning after either: "cleared".
-// Light rain reaches the phone quietly (Pushover -1).
-static struct {
+// Every hour of the day: warnings ring through quiet hours (WEATHER_ALERT_PRIO).
+// While you are away the warnings follow the phone and ring; home's still go
+// to Discord, quietly (Pushover -1), until you are back.
+struct RainWarn {
   WxTier tier;          // tier of the last post; NONE = no warning out
   bool raining;         // the last post said it rains now
   bool urgentPosted;    // the last post was inside WEATHER_RAIN_URGENT_MIN
   uint32_t startPosted; // rain start in that post
   uint32_t endPosted;   // rain end in that post
-  uint32_t pollsSeen;   // homePolls at the last check
+  uint32_t pollsSeen;   // the place's polls at the last check
   uint8_t dryPolls;     // polls without rain since
-} warn;
+};
+static RainWarn warnHome, warnPhone;
 
 // Pushover priority: warnings high (WEATHER_ALERT_PRIO), all-clears normal
 static int rainPrio(WxTier) { return WEATHER_ALERT_PRIO; }
 
-static void rainWarnTick() {
-  RainAlert a = rainHome;   // this task is the only writer
-  bool newPoll = homePolls != warn.pollsSeen;
-  warn.pollsSeen = homePolls;
-  if (cyclone_.active || demoOn()) return;   // the typhoon posts cover it
+static void rainWarnPlace(RainWarn &warn, const RainAlert &a, uint32_t polls, const char *place, int prio) {
+  bool newPoll = polls != warn.pollsSeen;
+  warn.pollsSeen = polls;
 
   char title[112], desc[320];
   if (a.active) {
@@ -1045,13 +1054,13 @@ static void rainWarnTick() {
       bool moved = a.startUnix && warn.startPosted && labs((long)a.startUnix - (long)warn.startPosted) >= 600;
       if (a.tier <= warn.tier && !moved && !(urgent && !warn.urgentPosted)) return;
     }
-    snprintf(title, sizeof title, "%s in ~%d min | %s", wxTierName(a.tier), eta, homeName);
+    snprintf(title, sizeof title, "%s in ~%d min | %s", wxTierName(a.tier), eta, place);
     int n = fmtLength(desc, sizeof desc, a);
     n += snprintf(desc + n, sizeof desc - n, "\n%.1f mm/h%s%s\n", a.mmh, a.from[0] ? ", moving in from " : "", a.from);
     if (n >= (int)sizeof desc) n = sizeof desc - 1;   // full: rainSrcLine gets 1 byte, not a wrapped size
     rainSrcLine(desc + n, sizeof desc - n, a);
-    discordPost(DC_WEATHER, title, desc, urgent ? COL_RED : COL_YELLOW, rainPrio(a.tier));
-    logMsg("weather: warning posted: %s", title);
+    discordPost(DC_WEATHER, title, desc, urgent ? COL_RED : COL_YELLOW, prio);
+    logMsg("weather: warning posted: %s%s", title, prio < 0 ? " (quiet)" : "");
     warn.tier = a.tier;
     warn.raining = false;
     warn.urgentPosted = urgent;
@@ -1061,27 +1070,39 @@ static void rainWarnTick() {
     long shift = labs((long)a.endUnix - (long)warn.endPosted);
     bool endKnownChanged = (a.endUnix == 0) != (warn.endPosted == 0);
     if (warn.raining && a.tier <= warn.tier && !endKnownChanged && shift < 600) return;
-    snprintf(title, sizeof title, "%s now | %s", wxTierName(a.tier), homeName);
+    snprintf(title, sizeof title, "%s now | %s", wxTierName(a.tier), place);
     int n = fmtLength(desc, sizeof desc, a);
     n += snprintf(desc + n, sizeof desc - n, "\n%.1f mm/h\n", a.mmh);
     if (n >= (int)sizeof desc) n = sizeof desc - 1;
     rainSrcLine(desc + n, sizeof desc - n, a);
-    discordPost(DC_WEATHER, title, desc, COL_RED, rainPrio(a.tier));
-    logMsg("weather: warning posted: %s", title);
+    discordPost(DC_WEATHER, title, desc, COL_RED, prio);
+    logMsg("weather: warning posted: %s%s", title, prio < 0 ? " (quiet)" : "");
     warn.tier = a.tier;
     warn.raining = true;
     warn.endPosted = a.endUnix;
   } else if (warn.tier != TIER_NONE && newPoll && ++warn.dryPolls >= 2) {
-    snprintf(title, sizeof title, "Weather Warning Cleared | %s", homeName);
+    snprintf(title, sizeof title, "Weather Warning Cleared | %s", place);
     if (warn.raining) snprintf(desc, sizeof desc, "The rain is over.");
     else if (a.watch) snprintf(desc, sizeof desc, "The rain is no longer expected (only %s still shows a chance).", rainSrcName(a));
     else snprintf(desc, sizeof desc, "The rain is no longer expected.");
-    discordPost(DC_WEATHER, title, desc, COL_GREEN, 0);
+    discordPost(DC_WEATHER, title, desc, COL_GREEN, prio < 0 ? prio : 0);
     logMsg("weather: warning cleared");
     uint32_t seen = warn.pollsSeen;
     warn = {};
     warn.pollsSeen = seen;
   }
+}
+
+static bool phoneAway() {
+  return owntracksEnabled() && owntracksValid() && !owntracksIsMerged(homeLat, homeLon);
+}
+
+static void rainWarnTick() {
+  if (cyclone_.active || demoOn()) return;   // the typhoon posts cover it
+  bool away = phoneAway();   // these tasks are the only writers of rainHome / rainPhone
+  if (away) rainWarnPlace(warnPhone, rainPhone, phonePolls, "where you are", rainPrio(rainPhone.tier));
+  else warnPhone = {};       // back home: home's warnings take over
+  rainWarnPlace(warnHome, rainHome, homePolls, homeName, away ? -1 : rainPrio(rainHome.tier));
 }
 
 // Typhoon posts: one per GDACS advisory while it is more than 6 h out, one a
@@ -1355,47 +1376,17 @@ static void runPhoneNowcast(char *buf, size_t cap) {
   publishPhone();
 }
 
-// rainPhone from both sources, and the "rain where you are" notification
+// rainPhone from both sources (rainWarnTick warns for it while you are away)
 static void publishPhone() {
   RainAlert alert = omPhone;
   mergeOwm(&alert, true);
   fillEnd(&alert, false);
+  if (alert.active || alert.raining || alert.watch) alert.tier = rainTierMm(alert.mmh);
   if (wxMutex) xSemaphoreTake(wxMutex, portMAX_DELAY);
   rainPhone = alert;
   if (wxMutex) xSemaphoreGive(wxMutex);
 
-  // Rain notification for away phone
-  if (alert.active || alert.raining) {
-    phoneDryStartMs = 0;
-    if (!phoneAlertSent) {
-      char msg[128];
-      if (alert.raining) {
-        snprintf(msg, sizeof(msg), "Raining at your location now (%.1f mm/h)", alert.mmh);
-      } else if (alert.from[0]) {
-        snprintf(msg, sizeof(msg), "Rain at your location in ~%u min (%.1f mm/h, from %s)",
-                 (unsigned)alert.etaMin, alert.mmh, alert.from);
-      } else {
-        snprintf(msg, sizeof(msg), "Rain at your location in ~%u min (%.1f mm/h)",
-                 (unsigned)alert.etaMin, alert.mmh);
-      }
-      size_t n = strlen(msg);
-      snprintf(msg + n, sizeof msg - n, " [%s]", rainSrcName(alert));
-      discordPost(DC_WEATHER, "Rain soon where you are", msg, 0x3498DB, WEATHER_ALERT_PRIO);   // Pushover too, via the post
-      if (!DISCORD_TOKEN[0]) pushoverQueue("Rain soon where you are", msg, WEATHER_ALERT_PRIO);
-      phoneAlertSent = true;
-      logMsg("weather: phone rain alert sent: %s", msg);
-    }
-  } else {
-    if (phoneAlertSent) {
-      if (phoneDryStartMs == 0) {
-        phoneDryStartMs = nowMs();
-      } else if (nowMs() - phoneDryStartMs >= 60 * 60 * 1000) {
-        phoneAlertSent = false;
-        phoneDryStartMs = 0;
-        logMsg("weather: phone rain alert re-armed after 60 min dry");
-      }
-    }
-  }
+  phonePolls++;
 }
 
 bool weatherHomeLocation(double *lat, double *lon) {
@@ -1492,10 +1483,15 @@ static void owmTick(char *buf, size_t cap, bool force, uint32_t *lastMs, uint32_
   uint32_t now = (uint32_t)time(nullptr);
   bool alertNow = owmLast.valid && owmLast.nAlerts && now - owmLast.fetchedUnix < 10 * 60;
   uint32_t every = (t.active || t.raining || t.watch || alertNow) ? OWM_POLL_RAIN_MS : OWM_POLL_MS;
-  if (onPhone != owmOnPhone) force = true;   // moved: the new place right away
+  // moved: the new place right away, once. A failed fetch there leaves owmOnPhone
+  // as it was, so without owmTriedPhone every pass forced another counted call
+  // and the day's budget was gone by noon
+  static int8_t owmTriedPhone = -1;
+  if (onPhone != owmOnPhone && owmTriedPhone != (int8_t)onPhone) force = true;
   if (!force && *lastMs && curMs - *lastMs < every) return;
   if (!owmBudgetLeft()) return;
   *lastMs = curMs;
+  owmTriedPhone = (int8_t)onPhone;
   OwmMinutely m;
   if (!owmFetchMinutely(lat, lon, buf, cap, &m)) {
     char err[96];
@@ -1624,9 +1620,6 @@ static void weatherTask(void *) {
           lastPhoneNowcastMs = curMs;
         }
       }
-    } else {
-      phoneAlertSent = false;
-      phoneDryStartMs = 0;
     }
 
     // 3b. OpenWeather's minute-by-minute hour for one place: the phone while

@@ -30,7 +30,7 @@ struct WeatherNow {
 
 // Warning tiers, mildest first. Rain tiers come from the nowcast and the
 // hourly forecast; typhoon tiers from the GDACS cyclone tracker.
-enum WxTier : uint8_t { TIER_NONE, TIER_LIGHT_RAIN, TIER_HEAVY_SHOWER, TIER_STORM, TIER_TYPHOON, TIER_SUPER_TYPHOON };
+enum WxTier : uint8_t { TIER_NONE, TIER_DRIZZLE, TIER_LIGHT_RAIN, TIER_HEAVY_SHOWER, TIER_STORM, TIER_TYPHOON, TIER_SUPER_TYPHOON };
 
 struct RainAlert {
   bool active;           // rain expected within 60 min (a warning; false once it rains)
