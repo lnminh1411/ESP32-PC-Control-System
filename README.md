@@ -35,7 +35,10 @@ PCB.
 *Captured from the board itself with `shot` (see [Screenshots](#screenshots)).
 The stats in this image are made up; the layout is real.*
 
-Each panel shows a set of faces and picks one from the PC's state:
+On its auto view (`view 1 pc`, `view 2 media`, `view 3 ai`; a fresh board
+starts all three on `metrics` until a view is saved) each panel shows a set
+of faces and picks one from the PC's state. Night mode shows the PC-off
+faces:
 
 | Panel | PC on | PC off / asleep | Restarting / updating |
 |---|---|---|---|
@@ -51,12 +54,17 @@ Notes on what is shown:
   sends.
 - **Non-Latin text** (Japanese song titles, artist names) is rendered on
   the PC with Windows' fonts and font fallback, then sent to the board as a
-  4-bit alpha bitmap. The board caches the last 8 bitmaps.
-- **Cover art** is 144x144, sent as RGB444 (31 KB per cover).
+  4-bit alpha bitmap. The board caches the last 8 bitmaps. The weather place
+  name is pinned and saved to flash (`/ffat/txt_wx.place.bin`), so it still
+  draws while the PC is off.
+- **Cover art** is 144x144, sent as RGB444 (31 KB per cover). It shrinks to
+  104x104 while a warning box sits above it.
 - **Weather warnings:** rain within 60 min puts a box on the media and weather
-  faces (Light Rain / Heavy Shower / Storm, the ETA counting down each minute,
-  how long it lasts); yellow until 20 min out, then red. Typhoons tracked from
-  GDACS get a red box in their last 6 h and while they are here.
+  faces (Drizzle under 0.5 mm/h / Light Rain / Heavy Shower from 7.6 mm/h /
+  Storm, the ETA counting down each minute, how long it lasts); yellow until
+  20 min out, then red. Typhoons and super typhoons tracked from GDACS get a
+  red box in their last 6 h and while they are here. Light rain that only
+  one source sees is a "watch": shown on the faces, never posted.
 - **PC usage warnings** take that box's place on the media face while the PC
   is on: RAM above 80% (yellow) or 90% (red), CPU, GPU load or RX 6600 VRAM
   above 90% (yellow), and CPU, GPU, RAM or VRM temperature too high (red),
@@ -79,8 +87,8 @@ Notes on what is shown:
 | Action | Path |
 |---|---|
 | Power on from shutdown | Wake-on-LAN magic packet on the home network (`wake`) |
-| Shutdown / sleep / hibernate / restart | Over the module's USB-OTG link to the PC (`power <sleep\|hibernate\|restart\|shutdown>`), with a HID System Control fallback |
-| Hard reset of a hung PC | RST opto (`reset` command) |
+| Shutdown / sleep / hibernate / restart / lock | `power <sleep\|hibernate\|restart\|shutdown\|lock>`: the board sends `!power <action> <nonce>` over the USB link, the PC helper hands it to PcHwCtl, which accepts or declines at once and acts 1.5 s later. With no answer from the helper in 3 s, sleep and shutdown fall back to HID System Control keys |
+| Hard reset of a hung PC | RST opto (`reset` command: this resets the PC, not the board) |
 | Power cut | BIOS "Always Power On after AC loss" boots the PC when power returns |
 
 What the PC needs for this:
@@ -172,11 +180,12 @@ revision could move the door rows off GPIO38-42 instead.
 | [`host/pc_stats/`](host/pc_stats/) | Windows service and per-user helper that feed the board: PC stats, media, local-AI status, Claude and Antigravity usage ([host/pc_stats/README.md](host/pc_stats/README.md)) |
 | [`pcb/`](pcb/) | atopile netlist ([`main.ato`](pcb/main.ato)), KiCad board, custom footprints, design notes ([pcb/README.md](pcb/README.md)) |
 | [`scripts/`](scripts/) | PCB build chain (netlist -> placement -> routes -> checks -> renders -> Gerbers), flashing, GIF/layout/OTA upload, screenshots ([scripts/README.md](scripts/README.md)) |
-| [`docs/`](docs/) | Bench findings and design notes, [weather](docs/weather.md), [dashboard layouts](docs/layouts.md) |
+| [`docs/`](docs/) | Bench findings and design notes, [memory and speed benchmarks](docs/benchmark.md), [weather](docs/weather.md), [dashboard layouts](docs/layouts.md) |
+| [`enclosure/`](enclosure/) | CadQuery model of the 3D-printed case: block, lid and display mask ([enclosure/README.md](enclosure/README.md)) |
 
 ## Firmware
 
-`firmware/` is plain ESP-IDF 5.5 with LovyanGFX (a git submodule
+`firmware/` is plain ESP-IDF 5.5.6 with LovyanGFX (a git submodule
 behind a wrapper component) for drawing. Each panel draws into a PSRAM
 sprite; the transport underneath is esp_lcd with RGB444 on the wire.
 
@@ -190,12 +199,15 @@ sprite; the transport underneath is esp_lcd with RGB444 on the wire.
 | `pcstats`, `textimg`, `art` | Stats the PC sends; PC-rendered text bitmaps; cover art |
 | `pcwarn` | PC usage warnings: 2 s averages against limits saved in NVS |
 | `pc_state`, `pc_going` | PC power state from USB events; restart/update detection; status LED |
-| `optos`, `power` | Door presses and the reset pulse; Wake-on-LAN and USB power commands |
+| `optos`, `power`, `wol` | Door presses and the reset pulse; USB power commands; Wake-on-LAN (3 bursts to ports 9 and 7, MAC learned from the PC helper) |
+| `night` | Night mode and low power mode (below) |
+| `hwctl`, `aictl`, `monctl` | `!hw`, `!ai` and `!mon` relays through the PC helper: case RGB and fans (PcHwCtl), the local AI stack (LocalAIHost), monitors (PcHwCtl) |
 | `weather`, `nowcast`, `owm`, `cyclone`, `owntracks`, `pushover` | Open-Meteo forecast and AQI, rain nowcast and warnings, OpenWeather One Call 4.0 minute-by-minute rain and alerts, GDACS typhoon tracking, phone location over MQTT, Pushover copies of the PC and weather announcements ([docs/weather.md](docs/weather.md)) |
 | `board_time` | Wall clock: SNTP over Wi-Fi, else the time the PC sends |
-| `net`, `discord` | Wi-Fi, mDNS, HTTP OTA and layout upload; Discord bot with an `/actions` panel |
+| `net`, `discord` | Wi-Fi (TX power capped, self-healing rejoin), mDNS, HTTP server (`/ota`, `/layout`, `/bench`); Discord bot with an `/actions` panel and a standing #control panel |
 | `gif_store` | GIF frames pre-packed as RGB444 with per-frame dirty rects, saved to FAT |
-| `commands`, `console` | The text command set; USB CDC, UART, WinUSB bulk and vendor-HID transports |
+| `commands`, `console`, `usb`, `host_uart`, `log` | The text command set; USB CDC, CH343 UART (3 Mbaud), WinUSB bulk and vendor-HID transports; the log fan-out (UART, CDC, Discord #logging) |
+| `sys`, `heapguard`, `bench` | Reset reason and core dump summary at boot, brownout settle, PSRAM ECC log; debug heap guard (internal heap check every 20 ms, ROM printf ring kept across resets, socket-VFS watchpoints); `bench` tests |
 
 How the display pipeline works:
 - **Dirty rectangles:** the flush task compares each canvas with what is
@@ -217,8 +229,14 @@ Other behaviour:
 - **Motherboard reset** (GPIO1): 200 ms pulse, only on the `reset` command,
   never at boot. All opto pins are driven LOW first thing at boot.
 - **PC power state** from the module's own USB link, with a 30 s guard
-  against the brief USB dropout at power-on. The backlights are meant to
-  turn off when the PC sleeps or shuts down.
+  against the brief USB dropout at power-on. While any panel is on an auto
+  view (`pc`, `media`, `ai`) the backlights stay on and show the PC-off
+  faces; with none on an auto view they turn off when the PC sleeps or
+  shuts down.
+- **Brownout settle:** a boot after a brownout waits 3 s, then restarts once
+  the supply is steady, so PSRAM starts on a clean rail. The log names it as
+  the restart reason. A boot after a panic or
+  watchdog reset logs the core dump summary (task, PC, cause, backtrace).
 - **Status LED** (GPIO2, PWM). `led <0-100>` is perceptual brightness,
   capped at 35% duty.
 
@@ -231,7 +249,7 @@ Other behaviour:
 
 ### Commands
 
-One per line on the USB CDC console or the CH343 UART:
+One per line on the USB CDC console or the CH343 UART (`help` lists them):
 
 | Command | Does |
 |---|---|
@@ -241,15 +259,19 @@ One per line on the USB CDC console or the CH343 UART:
 | `face <1\|2\|3> <auto\|pc\|gif\|restart\|update\|media\|weather\|ai\|localai\|clock>` | Force one face, for testing and screenshots (not saved) |
 | `shot <1\|2\|3>` | Screenshot of a panel, streamed as base64 on the CDC port |
 | `pcsim <on\|off\|auto>` | Pretend the PC is on or off (LED, faces, backlights), for testing |
-| `door <1-4> [ms]`, `reset`, `reboot` | Press a door button; pulse the motherboard reset; restart the board itself |
+| `door <1-4> [ms]`, `reset`, `reboot` | Press a door button; pulse the motherboard reset (**resets the PC**); restart the board itself (the PC is not touched) |
 | `screenshot` | Post the PC's desktop to #logging for 5 min, then auto-delete (needs the service + a #logging webhook) |
 | `mon <bright <n\|all> <0-100> \| power all on\|off>` | The PC's monitors, numbered from the left: brightness over DDC/CI, power through each model's method plus Windows' display off for `all` (done by PcHwCtl, which the PC service forwards to) |
-| `night [on\|off\|start\|end\|status]` | Night mode: on/off = the automatic engage (saved); start/end = now, until input on the PC |
-| `wake [force \| mac <AA:BB:..>]`, `power <sleep\|hibernate\|restart\|shutdown\|lock>` | Wake-on-LAN; power commands over USB (`lock` locks the signed-in session) |
+| `hw <ping \| rgb ... \| fan ...>`, `ai <status \| model ... \| restart <name> \| ...>` | Raw PcHwCtl (RGB, fans) and LocalAIHost commands, relayed by the PC service |
+| `night [on\|off\|start\|end\|low on\|low off\|status]` | Night mode: on/off = the automatic engage (saved); start/end = now, until input on the PC; low = low power mode |
+| `wake [force \| mac <AA:BB:..>]`, `power <sleep\|hibernate\|restart\|shutdown\|lock>` | Wake-on-LAN and USB remote wake; power actions, carried out by PcHwCtl (`lock` locks the signed-in session) |
 | `going <restart\|shutdown\|update_restart\|update_shutdown\|sleep\|clear>` | Tell the board what the PC is about to do |
 | `bl <1\|2\|3\|all> <0-100\|on\|off>`, `display <on\|off>`, `led <auto\|on\|off\|sweep\|0-100>` | Backlights (saved); all panels dark until `display on` (not saved); status LED |
 | `fps [budget <20-95> \| cap <1\|2\|3> <1-60\|off>]` | SPI budget and per-panel frame caps |
-| `layout <show\|reload\|default\|...>`, `weather <show\|refresh\|demo [rain\|typhoon]\|clear\|storms\|home <lat>,<lon>>` | Dashboard layouts; weather |
+| `pcwarn [set <metric> <high\|crit> <v\|off\|default> \| avg <ms> \| reset \| demo [one] \| off]` | PC usage warning limits and averaging window (saved in NVS) |
+| `layout <show\|reload\|default\|begin\|data <b64>\|end>` | Dashboard layouts |
+| `weather <show\|refresh\|demo [rain\|typhoon]\|clear\|storms\|home <lat>,<lon> [name]\|test-alert\|owm-check\|end-reset>` | Weather: state, refetch, 5-min demo, home place, a test alert, an OpenWeather merge test, reset the rain-end accuracy stats |
+| `bench [all\|usage\|cpu\|mem\|flash\|spi\|usb <KB>\|psram [MB]]`, `socks` | Debug: memory map and task stacks, speed tests, PSRAM stress; open sockets |
 
 ### Build and flash
 
@@ -259,21 +281,32 @@ python scripts/idf_flash.py --no-build
 ```
 
 `idf_flash.py` stops the PC stats service, reboots the board into the ROM
-with a 1200-baud touch, flashes over the ROM's USB-Serial-JTAG port and
-starts the service again. `--idf coredump-info` runs any other `idf.py`
-action on that port instead.
+with a 1200-baud touch on the app's CDC port (`--port`, default COM12),
+flashes over the ROM's USB-Serial-JTAG port and starts the service again.
+`--idf coredump-info` runs any other `idf.py` action on that port instead.
+It needs pyserial: run it with ESP-IDF's own Python
+(`C:\Espressif\python_env\idf5.5_py3.12_env\Scripts\python.exe`).
+
+Once Wi-Fi is up, `python scripts/ota_upload.py` flashes over the network
+instead: it POSTs `firmware/build/carrier.bin` to `/ota` on
+`<NET_HOSTNAME>.local` with `OTA_PASS` from `settings.h`. The board writes the
+other app slot, reboots, and marks the image valid once Wi-Fi is up (or after
+2 min); an image that resets before that rolls back on the next boot.
 
 ### Settings
 
 Everything that describes this setup lives in one file,
 `firmware/main/settings.h` (gitignored; copy `settings_example.h` to start).
 The secrets come first (Wi-Fi, Discord, OTA, MQTT, Pushover, Wake-on-LAN,
-OpenWeather), then about 140 settings grouped by topic: board pins and
-panels, night mode hours and levels, PC warning thresholds, GPU and drive
-labels, PcHwCtl fan and RGB names, weather and rain thresholds, poll periods,
-and the PC helper's `HOST_*` keys (Process Lasso path and night E-cores,
-named pipes, adapters to skip, fonts). Every key has a default equal to the
-old hardcoded value in `settings_or_example.h`, so a key missing from
+OpenWeather, home place), then the rest of its 195 keys grouped by topic:
+board pins and panels, Wi-Fi TX power (`NET_WIFI_TX_DBM`, 8 dBm), status LED,
+night mode hours and levels, PC warning thresholds, GPU and drive labels,
+quota card colours, PcHwCtl fan and RGB names, control panel timings, weather
+and rain thresholds, poll periods and call budgets, OwnTracks, and the PC
+helper's 32 `HOST_*` keys (Process Lasso path and night E-cores, heavy-exe
+limits and ignore list, named pipes, adapters to skip, fonts, screenshot
+timings, monitor DDC power). Every key has a default equal to the old
+hardcoded value in `settings_or_example.h`, so a key missing from
 `settings.h` behaves as before. Without a `settings.h` (CI) the build uses
 `settings_example.h`: placeholders, nothing joins a network.
 
@@ -289,6 +322,14 @@ old hardcoded value in `settings_or_example.h`, so a key missing from
   exe; which LibreHardwareMonitor sensor feeds each key is PcHwCtl's config.
 - `scripts/check_pins.py` checks the `PIN_*` settings against `pcb/main.ato`.
 
+`firmware/sdkconfig.defaults` holds the board's ESP-IDF choices: 240 MHz,
+16 MB QIO flash, octal PSRAM at 40 MHz with ECC (below), Wi-Fi, lwIP and the
+VFS select tables kept in internal RAM, a 20 s task watchdog that panics, ELF
+core dumps to flash, app rollback, and the console on the CH343 UART at
+3 Mbaud. The partition table (`firmware/partitions.csv`) has two 3 MB app
+slots, a 9.9 MB FAT partition (`/ffat`: GIF, layout, pinned text) and a
+64 KB core dump partition.
+
 The build compiles only the ESP-IDF components `main` needs (`MINIMAL_BUILD`).
 `idf.cmd` caches what ESP-IDF's `export.bat` sets in
 `%LOCALAPPDATA%\esp-idf-env\` (it saves about 3.5 s per call); delete that folder
@@ -300,13 +341,32 @@ The Discord bot uses up to four channels, each set by its channel id in
 | Key | Channel | Posts |
 |---|---|---|
 | `DISCORD_CH_PC` | #pc-announcement | Board online, PC on/off, restart and update, power keys, door, reset |
-| `DISCORD_CH_WEATHER` | #weather-announcement | Rain and typhoon warnings, "cleared" posts, phone rain alerts, a weather update every 2 h from 06:00 to 20:00 |
-| `DISCORD_CH_LOG` | #logging | The board's log, timestamped, in batches every 10 s |
-| `DISCORD_CH_CONTROL` | #control | One control panel message with the `/actions` buttons, kept up to date |
+| `DISCORD_CH_WEATHER` | #weather-announcement | Rain and typhoon warnings, "cleared" posts, OpenWeather alerts, a weather update every 2 h from 04:00 to 20:00 (the 04:00 one adds the 3-day forecast) |
+| `DISCORD_CH_LOG` | #logging | The board's log, timestamped, in batches every 10 s (every 2 s while it is behind) |
+| `DISCORD_CH_CONTROL` | #control | One control panel message with the `/actions` controls, kept up to date |
 | `DISCORD_SHOT_WEBHOOK` | webhook URL | Where the Screenshot button posts (auto-deleted after 5 min); empty disables it |
 
 PC and weather posts fall back to `DISCORD_CHANNEL_ID` when their own key is
-empty. Only `DISCORD_OWNER_ID` can use the buttons.
+empty. The bot also needs `DISCORD_TOKEN` (empty turns it off),
+`DISCORD_APP_ID` and `DISCORD_GUILD_ID` (where `/actions` is registered). Only
+`DISCORD_OWNER_ID` can use the buttons; anyone else gets "Not allowed.".
+
+Weather warnings follow the phone. While OwnTracks puts it more than 1 km from
+home (`OWNTRACKS_HOME_KM`), the full warning set (tier, ETA, start, end,
+cleared) runs for its location as "where you are", and home's warnings still
+post, quietly. The 2-hourly update is then "Currently where you are (N km from
+home)". An OwnTracks fix counts for 12 h (`OWNTRACKS_MAX_AGE_S`: the app
+reports on movement, so silence means the same place); after 2 h without one
+the board asks a phone that is away for its location (`reportLocation`), and
+never asks one that is at home.
+
+With `PUSHOVER_TOKEN` and `PUSHOVER_USER` set, every #pc-announcement and
+#weather-announcement post is copied to Pushover (queued, one a second).
+Weather warnings go out at high priority (`WEATHER_ALERT_PRIO`, 1: rings
+through quiet hours), "cleared" posts and PC posts at normal, the 2-hourly
+update and home's warnings while you are away at quiet (-1). See
+[docs/weather.md](docs/weather.md) for the sources, call budgets and
+thresholds.
 
 The panel (#control, or `/actions` for one that only you see) opens with a
 category dropdown; picking one swaps the controls below it:
@@ -314,17 +374,26 @@ category dropdown; picking one swaps the controls below it:
 | Tab | Shows | Controls |
 |---|---|---|
 | Door | Door remote state | Door 1-4 |
-| PC Control | PC state, board Wi-Fi, night mode | Wake PC, Lock, Sleep, Hibernate; Restart, Shut down, PC reset (these ask first); Screenshot; Night auto on/off; Start / End night now; Low power on/off |
+| PC Control | PC state, board Wi-Fi, night and low power mode, power plan, CPU, RAM, both GPUs, drive, fans, network | Wake PC, Lock; Sleep, Hibernate, Restart, Shut down, PC reset (these ask first); Screenshot; Night auto on/off; Start / End night now; Low power on/off |
 | PC Case RGB LEDs | PcHwCtl's RGB rules and brightness | Mode, color and brightness dropdowns; target group (All, Motherboard, RAM) |
 | PC Fan Control | Each fan's speed, rpm and temperature, the RX 6600 and RTX 3050 included (with Zero RPM) | Target (All fans, Case fans, one case fan, RX 6600, RTX 3050), speed (held 5/15/60 min) and curve dropdowns; a Zero RPM dropdown in place of the curve for a GPU; Auto releases the override |
 | PC Monitor Control | Each monitor's power and brightness, numbered from the left | Target (one monitor or all), brightness in 10 % steps (DDC/CI); All screens on / off (each monitor's power method in PcHwCtl, plus Windows' display off) |
-| Local Agent Control | Local model, phase, context, auto-unload | Load, unload, reload, context size, auto-unload, keep awake; restart the stack's services |
+| Local Agent Control | Local model, phase, context, auto-unload, keep awake, services, VRAM | Load, unload, force unload and reload (both ask first), warm cache; context 128K / 256K, auto-unload, keep awake; restart the gateway (asks first), Web UI or proxy; guard check |
 | ESP32 Board Control | Uptime, Wi-Fi, internal RAM, PSRAM, last restart reason, status LED | Status LED max brightness (10 % steps) and on/off (both saved); Restart board (asks first), Refresh weather, Reconnect Discord |
 | ESP32 Display Control | Each panel's screen and backlight | A screen dropdown per panel (each with an Auto option; not saved, like `face`); a brightness dropdown for all panels (5 % steps + Off, saved) |
 
 Every tab has a Refresh and, on an `/actions` panel, a Close. The Display tab
 fills all five of Discord's action rows with dropdowns, so Refresh there is an
 entry inside the category dropdown instead of a button.
+
+A button that asks first swaps the controls for "Yes, ..." and Cancel. On the
+#control panel that prompt is left alone for 60 s (`CONTROL_PANEL_CONFIRM_MS`):
+refresh edits and delayed redraws skip it, then the panel goes back to normal
+without acting. The #control panel is edited every 5 s while it changes, for
+3 min after a click (`CONTROL_PANEL_REFRESH_MS`, `CONTROL_PANEL_LIVE_MS`), else
+every 10 min and on PC power changes; an edit Discord refuses posts a new panel
+and deletes the old one. An `/actions` panel deletes itself after 2 min
+without use.
 
 **Night mode** (PC Control, console `night`) engages between 22:00 and 06:00
 once the PC has had no keyboard or mouse input for 5 minutes (the service's
@@ -384,10 +453,15 @@ confirming the night for 5 minutes, the service does that by itself.
 
 Sleep (Windows' own timers off; the board keeps it, in the night window only):
 1 hour after the last real input on the PC (false wakes don't count) the board
-sleeps the PC. There is no timed hibernate. It waits, with the displays off, while an exe is heavy (`pc.heavy`, kept ones such
-as Defender scans included), a power request keeps the PC up (`pc.disp_req`,
+sleeps the PC. There is no timed hibernate. It waits, with the displays off,
+while an exe is heavy (`pc.heavy`, kept ones included except
+`HOST_NIGHT_HEAVY_IGNORE`: `svchost` and `msmpeng` by default, since a service
+host summed over dozens of instances never calms down; they are still left
+off the E-cores while heavy), a power request keeps the PC up (`pc.disp_req`,
 `pc.sys_req`, `pc.exec_req`, minus `NIGHT_REQ_IGNORE`: `claude.exe` always
-holds one) or the network averages more than 1 MB/s either way.
+holds one) or the network averages more than 1 MB/s either way. Real work
+still holds sleep through its power request, which the board checks on its
+own.
 
 Hibernate happens when you leave home: the phone (OwnTracks, the weather
 phone engine's location) goes from within 1 km of home to beyond it
@@ -395,20 +469,25 @@ phone engine's location) goes from within 1 km of home to beyond it
 sleep is woken and hibernated; a PC that is on is hibernated only if nobody
 used it for 5 min (`NIGHT_LEAVE_IDLE_S`), else a post says it was left on. A PC
 that is off for another reason is left alone. It needs a home (`weather home`)
-and a phone fix under 30 min old. A hibernated PC stays so until it is powered
+and a valid phone fix (12 h, `OWNTRACKS_MAX_AGE_S`). A hibernated PC stays so until it is powered
 on. When the PC comes back the board sends its night state at once,
 so the day config is back right after power-on. Night mode posts its own
 sleep, wake and hibernate messages; for 3.5 min after each of its requests the
 generic ones ("wake PC", "PC accepted hibernate", "PC is asleep or off", "PC is
 on") are left out of Discord and Pushover.
 
-Lock needs the PC stats service: the board has no keyboard to send Win+L, so
-the service starts `LockWorkStation` in the signed-in session.
+Every power action (sleep, hibernate, restart, shutdown, lock) is PcHwCtl's
+job: the PC service only forwards it (`power do <action> 1500`) and acks the
+board. PcHwCtl can decline ("Hibernation is off.", "Windows is installing
+updates.", ...), and the board posts the reason to Discord. With PcHwCtl not
+running the answer is "PcHwCtl offline, use Reset": nothing on the PC can act
+then, and PC reset (behind its confirm) is what is left. Lock needs this path
+too: the board has no keyboard to send Win+L.
 
 **Screenshot** (PC Control) captures the whole desktop (every monitor in one
 image) and posts it to a Discord webhook for 5 minutes, then deletes the post;
 the local file in `%temp%` is removed as soon as it is uploaded. The board only
-asks (`!shot` over HID, with the webhook from settings.h); the capture, overlay
+asks (`!shot` over the USB link, with the webhook from settings.h); the capture, overlay
 and upload run in the signed-in session, because the SYSTEM service cannot see
 the desktop. Right after the capture, a red border and "Screenshot Captured" in
 red show on every monitor for 5 s - these are drawn *after* the capture, so they
@@ -441,7 +520,13 @@ are bridged, so feeding 5 V there while the PC's USB also powers the board would
 damage it. What would work is an 18650 cell with a 5 V boost converter feeding
 the board, plus some way to charge the cell; not worth it on the author's setup,
 but an option if your board browns out on every power-on.
-Once Wi-Fi is up, `python scripts/ota_upload.py` flashes over the network.
+
+The same sag flipped bits in PSRAM (2026-10-26..28: corrupted heap blocks and
+socket pointers, interrupt watchdog resets). The firmware now runs PSRAM at
+40 MHz (no MSPI timing tuning at boot) with ECC on (512 KB of the 8 MB goes
+to it), logs ECC corrections every 10 s with the PC state, keeps the VFS
+select tables in internal RAM, caps Wi-Fi TX power at 8 dBm to draw less from
+the shared 5 V, and restarts once more after a brownout boot (above).
 
 ### Screenshots
 
@@ -464,8 +549,8 @@ Controller`, the only LibreHardwareMonitor reader on the PC). It runs as two
 processes:
 
 - **The Windows service** (SYSTEM, session 0): reads PcHwCtl's sensor feed
-  and Windows performance counters, forwards the board's monitor and night
-  mode commands to PcHwCtl, polls the local AI
+  and state file and Windows performance counters, forwards the board's power,
+  RGB, fan, monitor and night mode commands to PcHwCtl, polls the local AI
   status hub and Claude's usage, and streams everything to the board over a
   WinUSB bulk pipe (no driver install; vendor HID as the fallback; the COM
   port stays free either way). It also renders
@@ -489,19 +574,23 @@ Details worth knowing:
   writes the new token back to `~/.claude/.credentials.json`, so the card
   keeps working when Claude Code is not running.
 - **Antigravity quota:** the 5-hour Flash window comes from Google's API
-  with agy's stored login. The weekly Gemini window is only shown in agy's
+  with agy's stored login (the OAuth client is read out of `agy.exe`), and
+  from a running Antigravity client's local language server when there is
+  one. The weekly Gemini window is only shown in agy's
   own `/usage` panel, so every 10 minutes the helper runs `agy` in a pseudo
   console, types `/usage` and reads the result. It then removes the lines
   this adds to agy's prompt history.
-- **Windows updates:** the service sends `pc.update=1` while Windows is
-  installing updates with nobody signed in (a servicing worker such as
-  `TiWorker` running and no `explorer`): the "Working on updates" screen
-  before the restart and "Updates are underway" after it. The board keeps
-  its Updating faces until that goes back to 0 and the PC is back.
+- **Restarts, shutdowns and Windows updates** are detected by PcHwCtl (the
+  System event log and the update registry keys); the service passes its
+  state on as `pc.going*`, `pc.last_down*`, `pc.update_pending` and
+  `pc.update` (installing right now). The board keeps its Updating faces
+  until `pc.update` goes back to 0 and the PC is back. While PcHwCtl is down
+  the board gets `none` / 0 / `unknown` rather than stale values.
 - Tokens are never logged.
 
-See [host/pc_stats/README.md](host/pc_stats/README.md) for `stats.ini`,
-install and command-line options.
+See [host/pc_stats/README.md](host/pc_stats/README.md) for `stats.ini`, the
+wire protocol, the night pass, install (`install.ps1`, elevated) and
+command-line options.
 
 ## Bring-up findings (2026-10, assembled rev 3.1 board)
 
@@ -527,8 +616,11 @@ install and command-line options.
 - **ROM download mode drives GPIO38-40**, which pressed the keyfob during
   flashing. Fixed with an eFuse, see
   [above](#keyfob-presses-during-flashing-efuse-fix).
-- **Main task stack:** 16 KB. With 8 KB, drawing the 128 px clock digits
-  overflowed the stack and rebooted the board.
+- **Main task stack:** 8 KB overflowed while drawing the 128 px clock digits
+  and rebooted the board. The ESP-IDF build gives the main task 10 KB
+  (`CONFIG_ESP_MAIN_TASK_STACK_SIZE`).
+- **PSRAM at 40 MHz with ECC** since 2026-10-28: at 80 MHz the PC's power-on
+  sag flipped PSRAM bits (see the brownout notes above).
 
 ## Building the PCB
 
@@ -541,8 +633,8 @@ land in `pcb/build/renders/` (not tracked); the image above is a copy.
 ## Checks
 
 CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs
-`scripts/check_pins.py` and lints the scripts on every push. The ESP-IDF
-firmware is not built in CI yet.
+`scripts/check_pins.py` and lints the scripts with pyflakes on every push and
+pull request. The ESP-IDF firmware is not built in CI yet.
 
 ## Status
 
@@ -552,11 +644,10 @@ Rev 3.1 is fabricated and assembled, and the firmware runs on it:
   output (checked with an LED on J6) and the door/reset commands;
 - the stats link, media with cover art, PC-rendered text, Claude and
   Antigravity quota;
-- the eFuse fix: no more keyfob presses while flashing.
+- the eFuse fix: no more keyfob presses while flashing;
+- Wi-Fi, Wake PC, the Discord bot and control panel, live weather with
+  OwnTracks and Pushover, and night mode, in daily use.
 
 Still to do:
-- fill `settings.h` (Wi-Fi, Discord, OTA), then test Wake-on-LAN, the
-  Discord bot, OTA and live weather (`weather home <lat>,<lon>`);
-- test the USB power commands and door buttons B1-B4 on the real PC and
-  keyfob;
+- test the door buttons B1-B4 on the real keyfob, and OTA;
 - build the ESP-IDF firmware in CI.
