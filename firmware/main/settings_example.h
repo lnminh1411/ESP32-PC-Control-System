@@ -209,10 +209,11 @@
 #define WEATHER_AQI_DANGEROUS 200                 // above this: Dangerous
 #define WEATHER_TYPHOON_IMMINENT_S (20 * 60)      // under this: typhoon posts turn red
 #define WEATHER_STORM_GUST_KMH 62                 // forecast gust at or over this (km/h, Beaufort 8) makes the hour a storm
+#define WEATHER_LIGHT_RAIN_MMH 0.5f               // rain under this mm/h is drizzle (its own tier, warned like the rest)
 #define WEATHER_HEAVY_SHOWER_MMH 7.6f             // rain at or over this mm/h is a heavy shower
-#define WEATHER_SUMMARY_FIRST_HOUR 6              // two-hourly #weather summary from this hour...
+#define WEATHER_SUMMARY_FIRST_HOUR 4              // two-hourly #weather summary from this hour...
 #define WEATHER_SUMMARY_LAST_HOUR 20              // ...to this one (even hours)
-#define WEATHER_MORNING_HOUR 6                    // the 3-day forecast post goes out at this hour
+#define WEATHER_MORNING_HOUR 4                    // the 3-day forecast post goes out at this hour
 #define WEATHER_FORECAST_POLL_MS (5 * 60 * 1000)  // Open-Meteo forecast poll
 #define WEATHER_AQI_POLL_MS (30 * 60 * 1000)      // air quality poll
 #define WEATHER_CYCLONE_POLL_MS (30 * 60 * 1000)  // GDACS cyclone list poll
@@ -220,8 +221,8 @@
 // ---- Rain nowcast (Open-Meteo 15-min grid, nowcast.cpp) ----
 #define NOWCAST_RING1_KM 10.0f                    // inner sample ring radius
 #define NOWCAST_RING2_KM 25.0f                    // outer sample ring radius
-#define NOWCAST_RAIN_MMH 0.5f                     // over this mm/h counts as rain
-#define NOWCAST_RAIN_END_MMH 0.3f                 // rain ends under this (hysteresis)
+#define NOWCAST_RAIN_MMH 0.3f                     // over this mm/h counts as rain (drizzle too: Open-Meteo's smallest step, 0.1 mm per 15 min, is 0.4 mm/h)
+#define NOWCAST_RAIN_END_MMH 0.1f                 // rain ends under this (hysteresis)
 #define NOWCAST_ALERT_ETA_MIN 60                  // warn when rain arrives within this
 #define NOWCAST_POLL_RAIN_MS (5 * 60 * 1000)      // poll while warned or raining
 #define NOWCAST_POLL_NEAR_MS (10 * 60 * 1000)     // poll while rain is in the grid
@@ -229,7 +230,7 @@
 
 // ---- OpenWeather One Call 4.0 (owm.cpp; key: OWM_API_KEY) ----
 #define OWM_CALLS_PER_DAY 960                     // daily call budget (set the account's own cap to 1000)
-#define OWM_RAIN_MMH 0.5f                         // minutely precipitation over this counts as rain
+#define OWM_RAIN_MMH 0.3f                         // minutely precipitation over this counts as rain (drizzle too)
 #define OWM_POLL_RAIN_MS (90 * 1000)              // poll while warned, raining or under an alert
 #define OWM_POLL_MS (120 * 1000)                  // poll otherwise
 
@@ -239,7 +240,7 @@
 
 // ---- Phone location (OwnTracks over MQTT; broker in MQTT_URI) ----
 #define OWNTRACKS_MAX_AGE_S (12 * 3600)           // a fix older than this is ignored (the phone reports on movement: silence = same place)
-#define OWNTRACKS_ASK_AFTER_S (30 * 60)           // no fix for this long: ask the phone (OwnTracks reportLocation), again as often
+#define OWNTRACKS_ASK_AFTER_S (2 * 60 * 60)       // no fix for this long: ask the phone (OwnTracks reportLocation), again as often
 #define OWNTRACKS_HOME_KM 1.0                     // phone within this of home = at home (one weather engine)
 
 // ---- PC helper (ESP32-Helper.exe; build.cmd turns HOST_* into C#, the sensor map stays in stats.ini) ----
@@ -252,6 +253,7 @@
 #define HOST_NIGHT_CALM_CORES 0.3                 // a heavy exe averaging less than this ...
 #define HOST_NIGHT_CALM_S 300                     //   ... for this long is calm again (pinned again at night)
 #define HOST_NIGHT_ALWAYS ""                      // exes night mode keeps pinned even while heavy (comma list, e.g. searchindexer,tiworker); they still hold sleep
+#define HOST_NIGHT_HEAVY_IGNORE "svchost,msmpeng"  // heavy exes that don't hold sleep (comma list): service hosts summed over dozens of instances never calm down; real work holds through a power request
 #define HOST_HWCTL_PIPE "PcHwCtl"                 // named pipe of the RGB / fan service (!hw)
 #define HOST_HWCTL_TIMEOUT_MS 2000                // its reply timeout
 #define HOST_LOCALAI_PIPE "LocalAIHost"           // named pipe of the local model service (!ai)

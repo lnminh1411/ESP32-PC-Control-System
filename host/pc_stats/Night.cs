@@ -24,8 +24,8 @@
 // performance).
 //
 // pc.heavy / pc.heavy_by (every exe, kept ones too, all day): how many exes
-// are heavy and the busiest one. The board's night mode won't sleep or
-// hibernate the PC while pc.heavy >= 1.
+// are heavy and the busiest one, HOST_NIGHT_HEAVY_IGNORE left out. The
+// board's night mode won't sleep or hibernate the PC while pc.heavy >= 1.
 //
 // The board repeats its state every 30 s; after HOST_NIGHT_NO_WORD_MIN with
 // no word (board gone mid-night) the helper releases by itself. night.on
@@ -53,6 +53,8 @@ partial class PcStats {
   // exclusions (OocExclusions) are added from the ini.
   static readonly HashSet<string> NightKeep = new HashSet<string>(HostSettings.List(HostSettings.NIGHT_KEEP), StringComparer.OrdinalIgnoreCase);
   static readonly HashSet<string> NightAlways = new HashSet<string>(ExeList(HostSettings.NIGHT_ALWAYS), StringComparer.OrdinalIgnoreCase);
+  // Heavy but left out of pc.heavy, so they never hold the board's sleep (HOST_NIGHT_HEAVY_IGNORE)
+  static readonly HashSet<string> HeavyIgnore = new HashSet<string>(ExeList(HostSettings.NIGHT_HEAVY_IGNORE), StringComparer.OrdinalIgnoreCase);
 
   // Everything below belongs to the night thread, except what the
   // volatile / Interlocked fields hand to others.
@@ -169,7 +171,7 @@ partial class PcStats {
     string by = "";
     double top = -1;
     foreach (KeyValuePair<string, ExeLoad> kv in exeLoads) {
-      if (!kv.Value.Heavy) continue;
+      if (!kv.Value.Heavy || HeavyIgnore.Contains(kv.Key)) continue;
       n++;
       if (kv.Value.Last > top) { top = kv.Value.Last; by = kv.Key + ".exe " + kv.Value.Last.ToString("0.0", CultureInfo.InvariantCulture); }
     }

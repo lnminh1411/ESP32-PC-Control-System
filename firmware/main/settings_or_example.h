@@ -440,17 +440,20 @@
 #ifndef WEATHER_STORM_GUST_KMH
 #define WEATHER_STORM_GUST_KMH 62                 // forecast gust at or over this (km/h, Beaufort 8) makes the hour a storm
 #endif
+#ifndef WEATHER_LIGHT_RAIN_MMH
+#define WEATHER_LIGHT_RAIN_MMH 0.5f               // rain under this mm/h is drizzle (its own tier, warned like the rest)
+#endif
 #ifndef WEATHER_HEAVY_SHOWER_MMH
 #define WEATHER_HEAVY_SHOWER_MMH 7.6f             // rain at or over this mm/h is a heavy shower
 #endif
 #ifndef WEATHER_SUMMARY_FIRST_HOUR
-#define WEATHER_SUMMARY_FIRST_HOUR 6              // two-hourly #weather summary from this hour...
+#define WEATHER_SUMMARY_FIRST_HOUR 4              // two-hourly #weather summary from this hour...
 #endif
 #ifndef WEATHER_SUMMARY_LAST_HOUR
 #define WEATHER_SUMMARY_LAST_HOUR 20              // ...to this one (even hours)
 #endif
 #ifndef WEATHER_MORNING_HOUR
-#define WEATHER_MORNING_HOUR 6                    // the 3-day forecast post goes out at this hour
+#define WEATHER_MORNING_HOUR 4                    // the 3-day forecast post goes out at this hour
 #endif
 #ifndef WEATHER_FORECAST_POLL_MS
 #define WEATHER_FORECAST_POLL_MS (5 * 60 * 1000)  // Open-Meteo forecast poll
@@ -470,10 +473,10 @@
 #define NOWCAST_RING2_KM 25.0f                    // outer sample ring radius
 #endif
 #ifndef NOWCAST_RAIN_MMH
-#define NOWCAST_RAIN_MMH 0.5f                     // over this mm/h counts as rain
+#define NOWCAST_RAIN_MMH 0.3f                     // over this mm/h counts as rain (drizzle too: Open-Meteo's smallest step, 0.1 mm per 15 min, is 0.4 mm/h)
 #endif
 #ifndef NOWCAST_RAIN_END_MMH
-#define NOWCAST_RAIN_END_MMH 0.3f                 // rain ends under this (hysteresis)
+#define NOWCAST_RAIN_END_MMH 0.1f                 // rain ends under this (hysteresis)
 #endif
 #ifndef NOWCAST_ALERT_ETA_MIN
 #define NOWCAST_ALERT_ETA_MIN 60                  // warn when rain arrives within this
@@ -493,7 +496,7 @@
 #define OWM_CALLS_PER_DAY 960                     // daily call budget (set the account's own cap to 1000)
 #endif
 #ifndef OWM_RAIN_MMH
-#define OWM_RAIN_MMH 0.5f                         // minutely precipitation over this counts as rain
+#define OWM_RAIN_MMH 0.3f                         // minutely precipitation over this counts as rain (drizzle too)
 #endif
 #ifndef OWM_POLL_RAIN_MS
 #define OWM_POLL_RAIN_MS (90 * 1000)              // poll while warned, raining or under an alert
@@ -515,7 +518,7 @@
 #define OWNTRACKS_MAX_AGE_S (12 * 3600)           // a fix older than this is ignored (the phone reports on movement: silence = same place)
 #endif
 #ifndef OWNTRACKS_ASK_AFTER_S
-#define OWNTRACKS_ASK_AFTER_S (30 * 60)           // no fix for this long: ask the phone (OwnTracks reportLocation), again as often
+#define OWNTRACKS_ASK_AFTER_S (2 * 60 * 60)       // no fix for this long: ask the phone (OwnTracks reportLocation), again as often
 #endif
 #ifndef OWNTRACKS_HOME_KM
 #define OWNTRACKS_HOME_KM 1.0                     // phone within this of home = at home (one weather engine)
@@ -548,6 +551,9 @@
 #endif
 #ifndef HOST_NIGHT_ALWAYS
 #define HOST_NIGHT_ALWAYS ""                      // exes night mode keeps pinned even while heavy (comma list, e.g. searchindexer,tiworker); they still hold sleep
+#endif
+#ifndef HOST_NIGHT_HEAVY_IGNORE
+#define HOST_NIGHT_HEAVY_IGNORE "svchost,msmpeng"  // heavy exes that don't hold sleep (comma list): service hosts summed over dozens of instances never calm down; real work holds through a power request
 #endif
 #ifndef HOST_HWCTL_PIPE
 #define HOST_HWCTL_PIPE "PcHwCtl"                 // named pipe of the RGB / fan service (!hw)
