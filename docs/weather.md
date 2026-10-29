@@ -9,7 +9,7 @@ Runs on the carrier firmware (ESP-IDF 5.5) in its own FreeRTOS task.
 ## 1. Overview & Architecture
 
 - **Home Weather Display**: Displayed on Screen 2 (Media face) whenever the host PC is off, asleep, or restarting. Shows current temperature, min/max, weather icon, wind speed/direction, US AQI, and a 3-day forecast with daily highs/lows.
-- **Dedicated Network Task**: All network transactions (Open-Meteo HTTP requests, Pushover HTTPS POSTs, MQTT processing) run in a dedicated FreeRTOS task on Core 0 (`stack = 12 KB`, 48 KB PSRAM buffer), never blocking the main loop or display rendering.
+- **Dedicated Network Task**: All network transactions (Open-Meteo HTTP requests, Pushover HTTPS POSTs, MQTT processing) run in a dedicated FreeRTOS task on Core 0 (`stack = 9 KB`, 48 KB PSRAM buffer), never blocking the main loop or display rendering.
 - **Thread Safety**: Finished structs (`WeatherNow`, `RainAlert`) are published to the main loop under mutex. When changed, `viewsMarkDirty(-1)` is triggered from `weatherPoll()` on the main loop.
 - **Two sources**: Open-Meteo (forecast, AQI, the 17-point nowcast) and, with `OWM_API_KEY` set, OpenWeather One Call 4.0's minute-by-minute rain for the next hour (section 11b). Rain alerts use both.
 - **SNTP Synchronization**: Once Wi-Fi connects, `board_time.cpp` starts `esp_sntp` pointing to `pool.ntp.org`. Time from the PC stats service (`pc.epoch`) only overrides time if SNTP has never synced. Forecast `utc_offset_seconds` automatically sets local timezone offset if PC stats has not provided `pc.tz_min`.
@@ -72,7 +72,7 @@ OwnTracks sends GPS updates from your smartphone to your private MQTT broker.
 4. **Payload format**:
    - Reads JSON location events with `"_type": "location"` containing `lat`, `lon`, `tst`, `acc`.
    - Location is considered valid while `tst` timestamp is `< 12 h` old (`OWNTRACKS_MAX_AGE_S`): the app reports on movement, so no report means the phone has not moved.
-   - After 30 min without a report (`OWNTRACKS_ASK_AFTER_S`) the board publishes OwnTracks' remote command `{"_type":"cmd","action":"reportLocation"}` to `<device topic>/cmd`, again every 30 min until a fix arrives. Turn on remote commands in the app (Android: Preferences -> Advanced -> Remote commands). Android answers while connected; iOS only when the app is awake.
+   - After 2 h without a report (`OWNTRACKS_ASK_AFTER_S`) the board publishes OwnTracks' remote command `{"_type":"cmd","action":"reportLocation"}` to `<device topic>/cmd` (retained, cleared by the next fix), again every 2 h until a fix arrives. It never asks while the last fix is within `OWNTRACKS_HOME_KM` (1 km) of home: the phone reports by itself once it moves away. Turn on remote commands in the app (Android: Preferences -> Advanced -> Remote commands). Android answers while connected; iOS only when the app is awake.
 
 ---
 
@@ -107,7 +107,7 @@ EMQX Cloud's Serverless broker is free up to a monthly allowance of session minu
 
 Pushover sends every #pc-announcement and #weather-announcement post to your phone as a push notification: rain heading your way, weather alerts, cyclones, PC on/off, night mode, board restarts. The Discord title becomes the notification title, and the embed text the message (or the title when there is none). Posts are queued (6 at most) and sent one per second by the weather task. Without a Discord token, only the phone rain alert goes out, straight to Pushover.
 
-Priority: every weather warning (rain at any tier, "Rain soon where you are", typhoon posts, OpenWeather alerts) goes out high (Pushover priority 1, `WEATHER_ALERT_PRIO`: rings through quiet hours). "Cleared" posts are normal (0). The 2-hourly "Currently" updates are for where you are: while the phone (OwnTracks, a fix under 12 h old) is away from home, one extra Open-Meteo call fetches the weather at its location ("Currently where you are (10 km from home)", with the phone engine's rain), else home's. They go out quiet (-1: no sound or vibration).
+Priority: every weather warning (rain at any tier, here or where you are, typhoon posts, OpenWeather alerts; `weather test-alert` too) goes out high (Pushover priority 1, `WEATHER_ALERT_PRIO`: rings through quiet hours). "Cleared" posts are normal (0). While the phone is away, home's warnings go out quiet (-1). The 2-hourly "Currently" updates are for where you are: while the phone (OwnTracks, a fix under 12 h old) is away from home, one extra Open-Meteo call fetches the weather at its location ("Currently where you are (10 km from home)", with the phone engine's rain), else home's. They go out quiet (-1: no sound or vibration).
 
 1. Create an account at [Pushover](https://pushover.net/) and install the mobile app.
 2. Copy your **User Key** (`PUSHOVER_USER`).
@@ -135,12 +135,13 @@ The firmware dynamically balances Home and Phone nowcasting:
 - **Away (Distance >= 1 km)**:
   - Two independent nowcast engines run: **HOME** and **PHONE**.
   - **Phone Priority**: Phone engine gets 65% of the nowcasting call budget, Home engine gets 35%.
-  - When the phone engine detects rain arriving within 60 min (or raining now), it sends **one alert** per rain event:
-    - Discord #weather-announcement (`DISCORD_CH_WEATHER`): "Rain at your location in ~N min (X mm/h, from NW)"
-    - Pushover: POST to `https://api.pushover.net/1/messages.json` with title "Rain soon".
-  - **Re-arm**: The phone rain alert re-arms only after 60 minutes of continuously dry conditions.
-  - The home engine's warnings and the 2-hourly weather updates go to the same channel
-    (sections 8 and 9).
+  - **Warnings follow the phone**: the full warning set of section 8 (tier, ETA, start,
+    end, cleared) runs for the phone's place, titled "where you are", at
+    `WEATHER_ALERT_PRIO`. Home's warnings still post, at Pushover priority -1 (quiet),
+    until the phone is back within 1 km; then home's warnings take over again.
+  - The 2-hourly update (section 10) is for the phone's place too.
+- **Fix age**: a phone fix counts for 12 h (`OWNTRACKS_MAX_AGE_S`). OpenWeather (section
+  11b) follows the phone on the same rule.
 
 ---
 
@@ -180,8 +181,9 @@ countdowns below run from the clock instead.
    - Time $t$ counts from slot $k = 0$'s midpoint; the search starts at *now*
      (from the slot timestamps and the clock) and runs to $t = 105$ min in 5-minute steps.
    - At each $t$, checks combined rain rate: $\max(\text{center forecast}(t), F[0](\text{center} - v \cdot t))$.
-   - Start is the earliest $t$ where the combined rate exceeds $0.5$ mm/h; end is the
-     first step after it under $0.3$ mm/h.
+   - Start is the earliest $t$ where the combined rate exceeds $0.3$ mm/h
+     (`NOWCAST_RAIN_MMH`; Open-Meteo's smallest step is 0.4 mm/h, so this catches
+     drizzle); end is the first step after it under $0.1$ mm/h (`NOWCAST_RAIN_END_MMH`).
    - Past the 105-min horizon the end comes from the hourly forecast: the first hour under 0.2 mm.
    - Intensity is the maximum rate between start and end.
 4. **RainAlert State**: absolute `startUnix` / `endUnix`, so the ETA and the time left count
@@ -197,11 +199,12 @@ countdowns below run from the clock instead.
 
 ## 8. Warnings
 
-Five tiers, mildest first:
+Six tiers, mildest first:
 
 | Tier | When |
 |---|---|
-| Light Rain | under 7.6 mm/h |
+| Drizzle | under 0.5 mm/h (`WEATHER_LIGHT_RAIN_MMH`) |
+| Light Rain | 0.5 to 7.6 mm/h |
 | Heavy Shower | 7.6 mm/h or more (nowcast or hourly forecast) |
 | Storm | thunder (WMO 95-99) or gusts of 62+ km/h (Beaufort 8) in the hourly forecast while it rains |
 | Typhoon | a GDACS cyclone of typhoon strength whose centre comes within 300 km |
@@ -286,9 +289,12 @@ tropical cyclone with its JTWC track and forecast:
 
 ## 10. Weather Updates
 
-Every 2 h from 06:00 to 20:00 local, `Currently in <place> | HH:MM` goes to
+Every 2 h from 04:00 to 20:00 local (`WEATHER_SUMMARY_FIRST_HOUR`,
+`WEATHER_SUMMARY_LAST_HOUR`), `Currently in <place> | HH:MM` goes to
 #weather-announcement: temperature, today's range, conditions, wind, AQI, rain status and
-any tracked typhoon. The 06:00 one adds the 3-day forecast. The posted slot is kept in NVS
+any tracked typhoon. While the phone is away (section 6) one extra Open-Meteo call gets
+the weather at its location instead: `Currently where you are (N km from home) | HH:MM`.
+The 04:00 one (`WEATHER_MORNING_HOUR`) adds the 3-day forecast. The posted slot is kept in NVS
 (`upd_slot`) so a reboot in the same hour doesn't repeat it.
 
 ---
@@ -332,7 +338,7 @@ A second rain source next to Open-Meteo: `timeline/1min` gives precipitation (mm
 
 **Cadence and budget**: one call every 2 min; every 90 s while rain is expected or falling at that place, or a weather alert is in force. At most **960 calls per UTC day**, counted on the board (NVS `o_day`, `o_calls`, saved every 10 calls and with the Open-Meteo counters). At 960 it stops until 00:00 UTC. A rejected key (401) pauses it for 30 min, a rate limit (429) for 15. The key is in the URL, so URLs are never logged.
 
-**Merging** (`owmRainSummary` in owm.cpp, `mergeRain` in weather.cpp): rain counts from 0.5 mm/h, Open-Meteo's nowcast threshold. A source counts as *fresh and dry* when its last answer saw no rain: OpenWeather for 5 min after a fetch (its 60 minutes), Open-Meteo for 20 min after a nowcast (its next 60 minutes).
+**Merging** (`owmRainSummary` in owm.cpp, `mergeRain` in weather.cpp): rain counts from 0.3 mm/h (`OWM_RAIN_MMH`), Open-Meteo's nowcast threshold. A source counts as *fresh and dry* when its last answer saw no rain: OpenWeather for 5 min after a fetch (its 60 minutes), Open-Meteo for 20 min after a nowcast (its next 60 minutes).
 
 - **Both see rain**: a warning. OpenWeather's start time wins, the intensity is the higher of the two.
 - **One sees rain** (thresholds in settings.h):
@@ -357,6 +363,7 @@ Access commands via USB-UART or Discord `/actions` command:
 | Command | Description |
 |---|---|
 | `weather show` | Prints current weather, home engine status (tier, start and end), phone engine status, OpenWeather (place, last hour, alerts, calls today), which source sees the rain, tracked cyclones, and budget usage. |
+| `weather refresh` | Fetches the forecast, AQI, nowcast and GDACS list again now. |
 | `weather home <lat>,<lon> [name]` | Sets home coordinates and location name. Persists to NVS and triggers immediate poll. |
 | `weather demo [rain\|typhoon]` | Loads sample weather onto the display for 5 min: dry, a heavy shower in 25 min, or a typhoon at home. Polls leave it alone and nothing is posted. |
 | `weather clear` | Clears all weather, rain alert and cyclone buffers. |
