@@ -1,6 +1,7 @@
 idf_component_register(
   SRC_DIRS "."
   INCLUDE_DIRS "."
+  EMBED_FILES gifs.bin
   PRIV_REQUIRES
     esp_driver_gpio esp_driver_ledc esp_driver_spi esp_driver_uart esp_driver_tsens
     esp_lcd esp_timer esp_event esp_netif esp_wifi nvs_flash

@@ -11,7 +11,6 @@
 #include "host_uart.h"
 #include "usb.h"
 
-static volatile bool s_muted = false;
 static char *s_capBuf = nullptr;
 static unsigned s_capSize = 0, s_capLen = 0;
 static TaskHandle_t s_capTask = nullptr;
@@ -25,11 +24,9 @@ void logCapture(char *buf, unsigned size) {
 }
 
 
-void logMute(bool m) { s_muted = m; }
-
 static void logEmit(const char *buf, size_t len) {
   discordLog(buf, len);
-  if (!s_muted) hostUartPrintln(buf);
+  hostUartPrintln(buf);
   if (usbCdcConnected()) {
     usbCdcWrite(buf, len);
     usbCdcWrite("\n", 1);
@@ -59,7 +56,6 @@ static TaskHandle_t s_inLog[8];   // tasks inside logVprintf
 static portMUX_TYPE s_inLogMux = portMUX_INITIALIZER_UNLOCKED;
 
 static int logVprintf(const char *fmt, va_list a) {
-  if (s_muted) return 0;
   TaskHandle_t me = xTaskGetCurrentTaskHandle();   // null before the scheduler runs
   int slot = -1;
   bool nested = false;

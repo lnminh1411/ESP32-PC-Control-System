@@ -9,8 +9,6 @@ extern "C" {
 void hostUartBegin();
 int hostUartAvailable();
 int hostUartRead();
-int hostUartPeek();
-size_t hostUartReadBytes(void *buf, size_t len, uint32_t timeoutMs);
 void hostUartWrite(const void *data, size_t len);
 void hostUartPrint(const char *s);
 void hostUartPrintln(const char *s);

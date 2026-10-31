@@ -1,7 +1,10 @@
 # Benchmark
 
-Carrier board (ESP32-S3 rev 0.2, 240 MHz, 16 MB flash, 8 MB octal PSRAM at
-80 MHz), firmware as of 2026-10-26, PC on, Wi-Fi at -27 dBm.
+Carrier board (ESP32-S3 rev 0.2, 240 MHz, 16 MB flash, octal PSRAM at 40 MHz
+with ECC, 7680 KB usable), firmware as of 2026-11-01, PC on, Wi-Fi at -18 dBm.
+The dated sections below were measured at the time, the ones before
+2026-10-28 with PSRAM at 80 MHz and without ECC (why it changed:
+[firmware.md](firmware.md#psram-hardening)).
 Run it again with the console command `bench all` (`bench usage` for memory use only,
 `bench usb <KB>` for USB),
 and time Wi-Fi from the PC with
@@ -9,23 +12,23 @@ and time Wi-Fi from the PC with
 
 ## Usage
 
-From `bench usage` (part of `bench all`), after three bench rounds (see below), PC on.
-Taken before the USB stream buffers moved to PSRAM: see "USB buffers, cache
-lines, one draw per pass" below for the ~29 KB that came back since.
+From `bench usage` (part of `bench all`), PC on. PSRAM and the app image are
+from the 42-frame GIF pack, with all three panels having shown a GIF. Each
+panel that shows one holds 75 KB of PSRAM.
 
 | Memory | Used | Notes |
 |---|---|---|
-| SRAM (512 KB) | 442 KB (86%) | 165 KB static (code in IRAM, data/bss, ROM, cache); heap 346 KB with 276 KB in use, 71 KB free, largest block 31 KB; lowest free ever: 34 KB |
-| PSRAM (8 MB) | 5041 KB (62%) | lowest free ever 1097 KB (bench buffers), largest free block 3136 KB |
+| SRAM (512 KB) | 443 KB (87%) | 172 KB static (code in IRAM, data/bss, ROM, cache); heap 339 KB with 270 KB in use, 70 KB free, largest block 31 KB; lowest free ever: 29 KB |
+| PSRAM (7680 KB) | 4374 KB (57%) | lowest free ever 2456 KB, largest free block 3263 KB |
 | Flash (16 MB) | fully partitioned | app slots 2 x 3 MB (OTA), FAT 9.8 MB, NVS 20 KB, core dump 64 KB |
-| App image | 1559 KB of 3072 KB (51%) | code 1006 KB, data 467 KB |
-| FAT /ffat | 4508 KB of 9996 KB (45%) | gif.bin 4501 KB, layout.json, saved text images |
-| NVS | 199 of 630 entries | 8 namespaces |
+| App image | 2439 KB of 3072 KB (79%) | 793 KB of it is the GIF pack |
+| FAT /ffat | 4 KB of 9996 KB (0%) | layout.json, saved text images |
+| NVS | 229 of 630 entries | 12 namespaces |
 
-Task stacks, least ever free (bytes): main 6696, weather 4612, discord 4300,
-httpd 3404, websocket 3324, flush 2820, wifi 2688, TinyUSB 2124, esp_timer 1876,
-mdns 1784, tiT 1372, Tmr Svc 1328, led 1200, sys_evt 792, IDLE 688-696,
-ipc 500-508.
+Task stacks, least ever free (bytes): main 6572, discord 5488, httpd 4904,
+websocket 4608, weather 3444, TinyUSB 2872, flush 2816, wifi 2528, esp_timer 2056,
+mdns 1396, Tmr Svc 1332, tiT 1312, mqtt 1232, led 1204, heapguard 796, sys_evt 784,
+IDLE 692-700, ipc 496-504.
 
 ## Internal RAM, before and after 2026-10-26
 
@@ -134,23 +137,25 @@ lines one byte at a time, the same as for the burst over COM12 (117 ms).
 | CPU | double multiply-add (software) | 3 MFLOPS |
 | SRAM | copy / write / read | 239-377 / 238-738 / 119 MB/s (varies run to run with alignment) |
 | SRAM | random read | 13 ns |
-| PSRAM | copy / write / read (1 MB buffers) | 31 / 48 / 72 MB/s (22 / 35 / 53 with 32-byte cache lines) |
-| PSRAM | random read (1 MB span) | 697 ns (503 with 32-byte cache lines: each miss now fetches 64 bytes) |
-| PSRAM to SRAM | copy in 4 KB pieces | 86 MB/s (58-62 with 32-byte lines) |
-| Flash | raw partition read (4 KB) | 11.5 MB/s |
-| Flash | memory-mapped read (cache) | 32 MB/s (26.5 with 32-byte lines) |
-| Flash | FAT file read (gif.bin, 4.5 MB) | 5.7 MB/s |
-| Display SPI | full 240x320 RGB444 frame (115 200 B) | 27.8-28.9 ms, 4.0-4.1 MB/s, 80-83% of the 40 MHz wire (29.6-30.6 ms with 32-byte lines) |
-| USB CDC | board to PC | 0.93 MB/s sent, 0.78 MB/s received by the PC (2026-10-25) |
-| USB CDC | PC to board, text lines parsed | 0.4 MB/s (43 KB in 105 ms) |
-| USB | cover art, PC service to board | 115 ms on WinUSB bulk, 688 ms on HID |
-| Wi-Fi | HTTP download to the PC (4 MB, 9 runs) | 0.62-0.92 MB/s |
-| Wi-Fi | ping | 2-15 ms, 6 ms average |
+| PSRAM | copy / write / read (1 MB buffers) | 15 / 23 / 41 MB/s (31 / 48 / 72 at 80 MHz) |
+| PSRAM | random read (1 MB span) | 1410-1420 ns (697 at 80 MHz) |
+| PSRAM | stress, 4 MB x 8 passes | 0 bad words, 2.5 s |
+| PSRAM to SRAM | copy in 4 KB pieces | 43 MB/s (86 at 80 MHz) |
+| Flash | raw partition read (4 KB) | 10.8 MB/s |
+| Flash | memory-mapped read (cache) | 27.5-30.4 MB/s |
+| Display SPI | full 240x320 RGB444 frame (115 200 B) | 32.9-37.2 ms, 3.1-3.5 MB/s, 62-70% of the 40 MHz wire (27.8-28.9 ms, 4.0-4.1 MB/s with PSRAM at 80 MHz) |
+| USB CDC | board to PC | 0.70 MB/s (`bench usb 2048`) |
+| USB CDC | PC to board, text lines parsed | 0.4 MB/s (43 KB in 105 ms, 2026-10-26) |
+| USB | cover art, PC service to board | 115 ms on WinUSB bulk, 688 ms on HID (2026-10-26) |
+| Wi-Fi | HTTP download to the PC (4 MB, 3 runs) | 0.84-0.89 MB/s |
+| Wi-Fi | ping | 2-5 ms, 3 ms average |
 
 Notes:
-- A full frame takes ~28 ms per panel, so all three panels repainting at once
-  cap out near 12 fps; the dirty-rect diff is what keeps normal faces at their
+- A full frame takes ~35 ms per panel, so all three panels repainting at once
+  cap out near 10 fps; the dirty-rect diff is what keeps normal faces at their
   frame rates. SPI runs at 40 MHz because 80 MHz gave blank panels.
+- `bench spi` reads the canvas from PSRAM. PSRAM went from 80 to 40 MHz on
+  2026-10-28, the likely cause of the slower frame (not measured on its own).
 - Wi-Fi throughput is low on purpose: 8 static RX and 8 static TX buffers and
   a BA window of 8 free internal RAM for TLS (see `sdkconfig.defaults`).
   Nothing on the board needs more than ~100 KB/s.
@@ -179,3 +184,36 @@ end. `CONFIG_MBEDTLS_DYNAMIC_BUFFER` is now off.
 | Incremental build | 33-42 s | 16-23 s |
 | Clean build | 269 s | 158-197 s |
 | Crashes | 0 | 0, through both cyclone fetches |
+
+## GIFs built into the firmware, 2026-11-01
+
+The GIFs moved from an upload in FAT, decoded at boot into whole RGB444 frames,
+to `gifs.bin` in the app image: per-GIF palettes, frame 0 whole and the other
+frames as their dirty rects, zlib-compressed in flash and inflated into PSRAM
+at boot. Both GIFs now play at 20 fps (Neuro 22 frames, Evil Neuro 20, 50 ms
+each); the first pack had 27 frames at 15 and 10 fps. "Before" is the previous
+firmware with its single test GIF, and its ~3.8 MB is an estimate.
+
+| | Before | First pack, 27 frames | Now, 42 frames |
+|---|---|---|---|
+| GIF pack | none | 532 KB | 793 KB |
+| Frames in PSRAM | ~3.8 MB with tables and buffers | 1780 KB | 2722 KB |
+| PSRAM used, `bench usage`, three panel buffers (75 KB each) | 5179 KB | 3428 KB | 4374 KB |
+| PSRAM free, lowest ever without bench buffers | 1438 KB | 3426 KB | 2456 KB |
+| App image | 1650 KB | 2178 KB | 2439 KB |
+| FAT /ffat | 4508 KB | 4 KB | 4 KB |
+| Decoding at boot | 4.5 MB read from FAT | 329 ms to inflate | 498 ms to inflate |
+
+Dirty rects cover most of the screen on most frames (86-95% before the Neuro
+rebuild), since most of each picture moves, which is why the frames take this
+much PSRAM.
+
+| GIF playback at 20 fps | Frame rate | Frame times | Bus |
+|---|---|---|---|
+| One panel | 19.5 fps (17.7-20.5) | 1.04x nominal | 1.9 MB/s, 41% |
+| Two panels | 17.8 fps | 1.12x nominal | 70% |
+| Three panels | 12.7 fps | 1.67x nominal | 73% |
+
+A frame takes 26-28 ms to push. The GIF slows down rather than drop frames, so
+on three panels it plays at about 60% speed; three panels at 20 fps need about
+5.7 MB/s, more than the 40 MHz wire carries.

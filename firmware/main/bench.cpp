@@ -96,11 +96,7 @@ static void benchUsage() {
 
   uint64_t fTotal = 0, fFree = 0;
   if (esp_vfs_fat_info("/ffat", &fTotal, &fFree) == ESP_OK) {
-    FILE *f = fopen(GIF_FILE, "rb");
-    long gifLen = 0;
-    if (f) { fseek(f, 0, SEEK_END); gifLen = ftell(f); fclose(f); }
-    snprintf(extra, sizeof extra, " | gif.bin %ld KB", gifLen / 1024);
-    kbLine("FAT /ffat", (size_t)(fTotal - fFree), (size_t)fTotal, extra);
+    kbLine("FAT /ffat", (size_t)(fTotal - fFree), (size_t)fTotal, "");
   }
 
   nvs_stats_t ns;
@@ -314,19 +310,6 @@ static void benchFlash() {
   }
   yieldTick();
 
-  FILE *f = fopen(GIF_FILE, "rb");
-  if (f) {
-    const size_t FC = 32 * 1024;
-    uint8_t *fb = (uint8_t *)heap_caps_malloc(FC, MALLOC_CAP_SPIRAM);
-    size_t got = 0, n;
-    t0 = us();
-    while (fb && (n = fread(fb, 1, FC, f)) > 0) got += n;
-    dt = us() - t0;
-    fclose(f);
-    free(fb);
-    logMsg("bench flash: FAT file read %.2f MB/s (%s, %u KB)", mbps(got, dt), GIF_FILE, (unsigned)(got / 1024));
-  }
-  yieldTick();
 }
 
 static void benchSpi() {

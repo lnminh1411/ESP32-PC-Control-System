@@ -95,7 +95,7 @@
 #define ONBOARD_RGB_GPIO 48                       // the module's own WS2812 (not on the carrier; YD-style boards need the "RGB" jumper bridged), held off
 #endif
 #ifndef UART_BAUD
-#define UART_BAUD 3000000                         // host UART (CH343): console and GIF upload
+#define UART_BAUD 3000000                         // host UART (CH343): console
 #endif
 
 // ---- Panels ----
@@ -322,6 +322,9 @@
 #endif
 #ifndef VIEW_GIF_MIN_FRAME_MS
 #define VIEW_GIF_MIN_FRAME_MS 16                  // GIF face: at most ~60 fps (GIF frame times still apply)
+#endif
+#ifndef GIF_SWITCH_S
+#define GIF_SWITCH_S 15                           // firmware/gifs/gifs.json with several GIFs: each loops this long, in turn
 #endif
 #ifndef VIEW_METRICS_PAGE_MS
 #define VIEW_METRICS_PAGE_MS 5000                 // metrics face pages through overflow cards this often

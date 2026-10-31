@@ -11,8 +11,6 @@
 
 #include "config.h"
 
-static int s_peek = -1;
-
 void hostUartBegin() {
   const uart_config_t cfg = {
     .baud_rate = UART_BAUD,
@@ -32,50 +30,13 @@ void hostUartBegin() {
 int hostUartAvailable() {
   size_t len = 0;
   uart_get_buffered_data_len(UART_NUM_0, &len);
-  return (int)len + (s_peek != -1 ? 1 : 0);
-}
-
-int hostUartPeek() {
-  if (s_peek != -1) return s_peek;
-  uint8_t b;
-  int n = uart_read_bytes(UART_NUM_0, &b, 1, 0);
-  if (n == 1) {
-    s_peek = b;
-    return s_peek;
-  }
-  return -1;
+  return (int)len;
 }
 
 int hostUartRead() {
-  if (s_peek != -1) {
-    int c = s_peek;
-    s_peek = -1;
-    return c;
-  }
   uint8_t b;
   int n = uart_read_bytes(UART_NUM_0, &b, 1, 0);
   return (n == 1) ? (int)b : -1;
-}
-
-size_t hostUartReadBytes(void *buf, size_t len, uint32_t timeoutMs) {
-  if (!buf || len == 0) return 0;
-  uint8_t *p = (uint8_t *)buf;
-  size_t readCount = 0;
-
-  if (s_peek != -1) {
-    *p++ = (uint8_t)s_peek;
-    s_peek = -1;
-    readCount++;
-    len--;
-  }
-
-  if (len > 0) {
-    TickType_t ticks = timeoutMs ? pdMS_TO_TICKS(timeoutMs) : 0;
-    int n = uart_read_bytes(UART_NUM_0, p, len, ticks);
-    if (n > 0) readCount += (size_t)n;
-  }
-
-  return readCount;
 }
 
 void hostUartWrite(const void *data, size_t len) {

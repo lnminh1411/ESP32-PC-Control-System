@@ -48,11 +48,35 @@ forces every face in turn, captures it and tiles the results (run it from an
 elevated shell). `--real-media` keeps the track the PC is playing, with its real
 cover art, in place of the made-up one.
 
+## Changing the GIFs
+
+The GIFs are part of the firmware. Their sources are in `firmware/gifs/`, and
+`firmware/gifs/gifs.json` lists them in play order (`every` keeps every Nth
+frame, up to 4 GIFs and 64 frames in all). After changing either, regenerate
+the pack and flash:
+
+```bash
+python scripts/gif_pack.py
+```
+
+It writes `firmware/main/gifs.bin` (committed) and prints the pack size, the
+PSRAM the frames take after boot and the colour error of each palette.
+`GIF_SWITCH_S` sets how long each GIF plays.
+
+The two `*_20fps.gif` files are made from the originals kept beside them with
+the RIFE models from FluidFrames, which only give the midpoint of two frames:
+
+- `evil_neuro_20fps.gif` is all 10 frames of `evil_neuro.gif` plus a RIFE Lite
+  midpoint after each, last-to-first pair included.
+- `neuro_20fps.gif` is every third frame of `neuro.gif` (33 frames at 30 fps)
+  plus the RIFE midpoint of the two real frames between them. In the source
+  the tail jumps sides from one frame to the next, and RIFE cuts it there, so
+  output frames 5, 9, 13 and 15 use the later real frame instead.
+
 ## Other uploads
 
 | Script | Does |
 |---|---|
-| `python scripts/gif_stream.py anim.gif [--port COMn]` | Scales a GIF to the panel and streams it as RGB565 over the CH343 UART at 3 Mbaud into `/ffat/gif.bin`, with a checksum per frame |
 | `python scripts/layout_upload.py FILE.json [--port COMn \| --host <name>.local]` | Checks a dashboard layout and uploads it over the console or HTTP `PUT /layout` ([layouts.md](layouts.md)) |
 | `python scripts/make_vlw.py FONT.otf SIZE NAME OUT.cpp` | Turns a font into a LovyanGFX VLW array for `firmware/main/font_*.cpp` |
 | `python scripts/check_pins.py` | Checks the `PIN_*` settings against `pcb/main.ato` |

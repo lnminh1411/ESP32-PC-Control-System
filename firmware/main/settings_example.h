@@ -74,7 +74,7 @@
 #define PIN_MOBO_RST 1                            // motherboard RST header (opto row 5)
 #define PIN_LED 2                                 // status LED (PWM)
 #define ONBOARD_RGB_GPIO 48                       // the module's own WS2812 (not on the carrier; YD-style boards need the "RGB" jumper bridged), held off
-#define UART_BAUD 3000000                         // host UART (CH343): console and GIF upload
+#define UART_BAUD 3000000                         // host UART (CH343): console
 
 // ---- Panels ----
 #define N_PANELS 3                                // ST7789 panels on the bus
@@ -169,6 +169,7 @@
 #define VIEW_BUS_BUDGET_PCT 85                    // share of the SPI bus the panels may use (`fps budget` changes it)
 #define VIEW_MIN_FRAME_MS 50                      // canvas faces: at most 20 fps
 #define VIEW_GIF_MIN_FRAME_MS 16                  // GIF face: at most ~60 fps (GIF frame times still apply)
+#define GIF_SWITCH_S 15                           // firmware/gifs/gifs.json with several GIFs: each loops this long, in turn
 #define VIEW_METRICS_PAGE_MS 5000                 // metrics face pages through overflow cards this often
 
 // ---- PC shutdown / restart announcements (pc_going.cpp) ----

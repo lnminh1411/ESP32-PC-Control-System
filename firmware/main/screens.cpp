@@ -1574,7 +1574,7 @@ void screensDraw(Face f, LGFX_Sprite &c) {
       break;
 
     case FACE_GIF:
-      // Plain GIF face: no canvas drawing needed (flush task copies pre-packed frames)
+      // Plain GIF face: no canvas drawing needed (flush task pushes the frames)
       break;
 
     case FACE_GIF_RESTART:

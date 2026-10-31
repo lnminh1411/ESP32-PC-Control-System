@@ -139,22 +139,23 @@ extern "C" void app_main() {
   logMsg("carrier rev 3.1 | %d panels, dirty-rect RGB444, SPI %d Hz%s | PSRAM free %u | fat %s",
          N_PANELS, SPI_HZ, MOBO_RST_HOLD_TEST ? " | TEST: mobo RST held HIGH" : "",
          (unsigned)freePsram(), fatOk ? "ok" : "FAILED");
-  hostUartPrintln("READY");
 
-  // 5. GIF: 1.5 s window for a host upload, else the saved one
-  consoleUploadWindow(1500);
-  if (!gif.n && gifLoad()) logMsg("gif: %u frames %ux%u from flash", gif.n, gif.w, gif.h);
-  if (!gif.n) logMsg("gif: none stored -- run scripts/gif_stream.py");
+  // 5. GIF: the pack built into the firmware, inflated into PSRAM
+  uint32_t gifT0 = nowMs();
+  if (gifLoad())
+    logMsg("gif: %u GIFs, %u frames %ux%u, %u KB PSRAM, inflated in %u ms", gif.nSeg, gif.n, gif.w, gif.h,
+           (unsigned)(gif.bytes / 1024), (unsigned)(nowMs() - gifT0));
+  else
+    logMsg("gif: pack failed to load");
   for (int i = 0; i < N_PANELS; i++) viewEnter(i, panels[i].view);   // GIF offsets now that frames exist
 
-  // Wi-Fi only after the GIF is read: a WPA3 handshake running alongside the
-  // 140 KB flash read deadlocked the two cores at boot (interrupt watchdog)
+  // Wi-Fi only after the GIF is read: a WPA3 handshake running alongside a
+  // long flash read deadlocked the two cores at boot (interrupt watchdog)
   netInit();                           // joins Wi-Fi in the background
   discordInit();
   weatherInit();
   logResetReason();
   heapGuardStart();   // debug: heap corruption hunt
-  hostUartPrintln("PLAY");
   statusLedReady();
 
   esp_task_wdt_add(nullptr);           // a stalled main loop panics after 20 s (core dump + reboot)

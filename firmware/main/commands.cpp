@@ -128,7 +128,7 @@ static void cmdStatus(const char *, const char *) {
   for (int i = 0; i < N_PANELS; i++)
     logMsg("  panel %d: %-6s %5.1f fps %6.1f KB/s  bus %5.1f ms/s", i + 1, viewName(panels[i].view),
            panels[i].fps, panels[i].kbps, panels[i].busMs);
-  logMsg("  gif: %u frames %ux%u", gif.n, gif.w, gif.h);
+  logMsg("  gif: %u GIFs, %u frames %ux%u, %u KB PSRAM", gif.nSeg, gif.n, gif.w, gif.h, (unsigned)(gif.bytes / 1024));
   logMsg("  wifi %s %d dBm | discord %s", netUp() ? netIp() : "down", netRssi(),
          discordUp() ? "online" : "offline");
   logMsg("  pc stats: %d numbers, %d texts, %s", pcStatsCount(), pcTextCount(), pcStatsFresh() ? "live" : "no data");
@@ -347,11 +347,12 @@ static void cmdShot(const char *a1, const char *) {
   if (!copy) { logMsg("shot: no memory"); return; }
   Panel &p = panels[n - 1];
   memcpy(copy, p.canvas->getBuffer(), bytes);   // snapshot: the canvas keeps changing
-  if (p.gifMode && gif.n && gif.packed[p.gifShown < 0 ? 0 : p.gifShown]) {
-    // GIF faces bypass the canvas: unpack the frame on glass (RGB444, 2 px
-    // in 3 bytes) and keep only the overlay band from the canvas
-    const uint8_t *src = gif.packed[p.gifShown < 0 ? 0 : p.gifShown];
-    int x0 = ((TFT_W - gif.pw) / 2) & ~1, y0 = (TFT_H - gif.h) / 2;
+  displayWait(n - 1);   // the flush task writes the GIF frame while it pushes
+  if (p.gifMode && gif.n && p.gifCur && p.gifShown >= 0) {
+    // GIF faces bypass the canvas: the panel's current frame through its
+    // palette, and only the overlay band from the canvas
+    const uint16_t *pal = gif.pal[gifSegOf(p.gifShown)];
+    int x0 = ((TFT_W - gif.w) / 2) & ~1, y0 = (TFT_H - gif.h) / 2;
     for (int y = 0; y < TFT_H; y++) {
       bool inBand = p.bandY1 > p.bandY0 && y >= p.bandY0 && y < p.bandY1;
       for (int x = 0; x < TFT_W; x++) {
@@ -359,11 +360,9 @@ static void cmdShot(const char *a1, const char *) {
         if (inBand && !(cp[0] == (C_GIF_KEY >> 8) && cp[1] == (C_GIF_KEY & 0xFF))) continue;   // overlay pixel
         int gx = x - x0, gy = y - y0;
         uint16_t c = 0;
-        if (gx >= 0 && gx < gif.pw && gy >= 0 && gy < gif.h) {
-          const uint8_t *q = src + ((size_t)gy * gif.pw + (gx & ~1)) * 3 / 2;
-          int r, g, b;
-          if (!(gx & 1)) { r = q[0] >> 4; g = q[0] & 15; b = q[1] >> 4; }
-          else           { r = q[1] & 15; g = q[2] >> 4; b = q[2] & 15; }
+        if (gx >= 0 && gx < gif.w && gy >= 0 && gy < gif.h) {
+          uint16_t q = pal[p.gifCur[(size_t)gy * gif.w + gx]];
+          int r = q >> 8, g = (q >> 4) & 15, b = q & 15;
           c = (uint16_t)((r << 12) | (r >> 3 << 11) | (g << 7) | (g >> 2 << 5) | (b << 1) | (b >> 3));
         }
         copy[((size_t)y * TFT_W + x) * 2] = c >> 8;

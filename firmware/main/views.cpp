@@ -193,17 +193,6 @@ void viewsNoteAction(const char *what) {
   }
 }
 
-void viewsShowGifFrame(int idx) {
-  for (int i = 0; i < N_PANELS; i++) {
-    Panel &p = panels[i];
-    if (p.gifMode) {
-      p.gifFrame = idx;
-      displaySubmit(i);
-      displayWait(i);
-    }
-  }
-}
-
 enum FieldFont { F_SMALL, F_BODY, F_BIG, F_HEAD };
 
 static void field(LGFX_Sprite &c, int y, FieldFont ff, uint16_t col, const char *fmt, ...) {
@@ -467,7 +456,7 @@ void viewEnter(int i, View v) {
   panelFace[i] = FACE_NONE;   // auto views pick their face on the next service pass
   p.canvas->fillScreen(C_BG);
   memset(p.sent, 0xA5, (size_t)TFT_W * TFT_H * 2);
-  p.gifIdx = gif.n ? (uint16_t)(i * gif.n / N_PANELS) : 0;
+  p.gifIdx = gifStartFrame(i, N_PANELS, nowMs());
   p.dueMs = nowMs();
   panelDirty[i] = true;
   panelFirstFrame[i] = true;
@@ -723,7 +712,7 @@ void viewsService() {
       // keep the GIF's own cadence; once a whole frame behind, slip instead of bursting
       p.dueMs += gif.durMs[idx];
       if ((int32_t)(now - p.dueMs) > (int32_t)gif.durMs[idx]) p.dueMs = now;
-      p.gifIdx = (idx + 1) % gif.n;
+      p.gifIdx = gifNextFrame(idx, now);
       panelFirstFrame[best] = false;
     } else {
       if (p.view == VIEW_STATUS) drawStatus(p);

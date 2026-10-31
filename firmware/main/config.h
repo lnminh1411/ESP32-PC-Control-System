@@ -26,6 +26,5 @@ static constexpr int PIN_DOOR[4] = PIN_DOOR_LIST;   // keyfob B1-B4 (opto rows 1
 #error "MOBO_RST_HOLD_TEST holds the PC in reset: also pass -DBENCH_NO_MOTHERBOARD=1 if J6 only has a test LED"
 #endif
 
-// ---- GIF storage / upload ----
+// ---- GIF storage ----
 #define MAX_FRAMES 64
-#define GIF_FILE   "/ffat/gif.bin"  // "GIF5" + w,h,n + durations + frames

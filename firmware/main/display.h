@@ -7,8 +7,8 @@
 //             internal RAM when fitting, PSRAM otherwise);
 //   sent   -- what the panel shows now (PSRAM).
 // The flush task diffs canvas vs sent in 8-row bands and pushes RGB444
-// (12 bpp, 2 px in 3 bytes). GIF panels bypass canvas and copy pre-packed
-// RGB444 rows straight to DMA.
+// (12 bpp, 2 px in 3 bytes). GIF panels bypass canvas: each keeps its current
+// frame as palette indices and pushes them through the GIF's palette.
 #pragma once
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
@@ -51,6 +51,7 @@ struct Panel {
   volatile bool busy;
   int16_t gifShown;                 // index on glass, -1 = unknown
   uint16_t gifFrame;                // frame index to push
+  uint8_t *gifCur;                  // frame gifShown as palette indices (PSRAM, from the panel's first GIF push)
 
   // Dynamic FPS engine fields
   uint32_t lastFrameBytes;          // bytes sent in the most recent flush

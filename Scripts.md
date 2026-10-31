@@ -39,8 +39,8 @@ Generates VRML 3D fit-check models for the boost converter and microcontroller e
 ### check_pins.py
 Validates firmware GPIO definitions against the atopile hardware pin map. Helps catch pin assignment mismatches before flashing. Located at `scripts/check_pins.py`.
 
-### gif_stream.py
-Streams RGB565 GIF frames over USB-UART to the ESP32-S3 for storage in FAT and playback. Validates transmission integrity using per-frame checksums. Located at `scripts/gif_stream.py`.
+### gif_pack.py
+Builds `firmware/main/gifs.bin`, the GIF pack embedded in the firmware, from `firmware/gifs/gifs.json` and the GIFs it lists. Run `python scripts/gif_pack.py` after changing them, then flash; it prints the pack and PSRAM sizes. Located at `scripts/gif_pack.py`.
 
 ### idf_flash.py
 Builds and flashes `firmware` over the native USB port hands-off: stops the ESP32PcStats service (no UAC prompt when it is already stopped), does a 1200-baud touch on COM12, waits for the ROM downloader port and runs `idf.py flash`. Run it with the ESP-IDF Python (`C:\Espressif\python_env\idf5.5_py3.12_env\Scripts\python.exe scripts\idf_flash.py [--no-build]`). Located at `scripts/idf_flash.py`.

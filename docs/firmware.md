@@ -24,7 +24,7 @@ Building and flashing: [build-and-flash.md](build-and-flash.md). Settings:
 | `weather`, `nowcast`, `owm`, `cyclone`, `owntracks`, `pushover` | Open-Meteo forecast and AQI, rain nowcast and warnings, OpenWeather One Call 4.0 minute-by-minute rain and alerts, GDACS typhoon tracking, phone location over MQTT, Pushover copies of the PC and weather announcements ([weather.md](weather.md)) |
 | `board_time` | Wall clock: SNTP over Wi-Fi, else the time the PC sends |
 | `net`, `discord` | Wi-Fi (TX power capped, self-healing rejoin), mDNS, HTTP server (`/ota`, `/layout`, `/bench`); Discord bot with an `/actions` panel and a standing #control panel ([discord.md](discord.md)) |
-| `gif_store` | GIF frames pre-packed as RGB444 with per-frame dirty rects, saved to FAT |
+| `gif_store` | GIFs built into the firmware (`gifs.bin`, from `scripts/gif_pack.py`): inflated into PSRAM at boot as palette frames, each storing only its dirty rects |
 | `commands`, `console`, `usb`, `host_uart`, `log` | The text command set ([console.md](console.md)); USB CDC, CH343 UART (3 Mbaud), WinUSB bulk and vendor-HID transports; the log fan-out (UART, CDC, Discord #logging) |
 | `sys`, `heapguard`, `bench` | Reset reason and core dump summary at boot, brownout settle, PSRAM ECC log; debug heap guard (internal heap check every 20 ms, ROM printf ring kept across resets, socket-VFS watchpoints); `bench` tests |
 
@@ -40,8 +40,8 @@ Building and flashing: [build-and-flash.md](build-and-flash.md). Settings:
   down instead of dropping frames when the bus is busy. `fps` shows and
   tunes it.
 - **RGB444 on the wire** (12 bits per pixel, 25% less data than RGB565).
-- **Two cores:** core 1 draws, core 0 diffs and sends. One GIF plays at its
-  native 29.7 fps with the bus at 47%.
+- **Two cores:** core 1 draws, core 0 diffs and sends. A GIF on one panel
+  keeps its own frame times (20 fps, 1.9 MB/s).
 
 ## Other behaviour
 
@@ -86,16 +86,49 @@ Building and flashing: [build-and-flash.md](build-and-flash.md). Settings:
 VFS select tables kept in internal RAM, a 20 s task watchdog that panics, ELF
 core dumps to flash, app rollback, and the console on the CH343 UART at
 3 Mbaud. The partition table (`firmware/partitions.csv`) has two 3 MB app
-slots, a 9.9 MB FAT partition (`/ffat`: GIF, layout, pinned text) and a
+slots, a 9.9 MB FAT partition (`/ffat`: layout, pinned text) and a
 64 KB core dump partition.
 
 ## PSRAM hardening
 
-The PC's power-on sags the board's 5 V supply ([power-and-night.md](power-and-night.md#power-on-brownout)),
-and that flipped bits in PSRAM (2026-10-26..28: corrupted heap blocks and
-socket pointers, interrupt watchdog resets). The firmware now runs PSRAM at
-40 MHz (no MSPI timing tuning at boot) with ECC on (512 KB of the 8 MB goes
-to it), logs ECC corrections every 10 s with the PC state, keeps the VFS
-select tables in internal RAM, caps Wi-Fi TX power at 8 dBm to draw less from
-the shared 5 V, and restarts once more after a brownout boot (above). The SRAM and PSRAM
-numbers behind these choices are in [benchmark.md](benchmark.md).
+PSRAM runs at 40 MHz with ECC. Until 2026-10-28 it ran at 80 MHz without
+ECC, and from 10-25 to 10-28 the board kept crashing.
+
+**The crashes.** Every one hit data kept in PSRAM: a lwIP timer pointer with
+one bit flipped (`0x3c6dda68` read back as `0x3d6dda68`), free-list pointers
+in the PSRAM heap, TLS records failing their MAC check, and the socket VFS
+function pointers. Most were cache errors (exccause 0x47). The heap canaries
+next to the damage were intact, a pattern test (`bench psram 2`) found no bad
+words with the board idle, and two code sweeps fixed 11 bugs but none that
+wrote into those structures.
+
+**The bitflip.** At 14:43 on 10-28 the PC was woken, and the board browned
+out and restarted. The new run's first message, "Board restarted after
+brownout (supply voltage dropped)", reached Discord as "Boird resuasted agter
+browno}t ({upply)vom|age!droypee)". Each wrong letter is the right one with a
+single bit turned from 0 to 1. The string is correct in flash, so its copy in
+PSRAM had gone bad. Seconds later heapguard found three PSRAM canaries
+overwritten, one with the start of a Discord gateway message, and the board
+crashed. The cause is electrical: the board runs from the motherboard's 5 V,
+which sags as the PC powers on ([power-and-night.md](power-and-night.md#power-on-brownout))
+and dips under load.
+
+**Why 40 MHz.** At 80 MHz, ESP-IDF tunes the MSPI read timing at every boot.
+A boot after a brownout runs that tuning while the supply is still low, and
+the board keeps that timing for the whole run, which fits the garbled boot.
+At 40 MHz there is no tuning (IDF only tunes above 40 MHz) and each bit has
+twice the time on the bus, so a dip in the supply has more margin before reads
+go wrong. That matters because some crashes came 7 to 20 minutes into a run
+with the PC on and no power event, which a bad boot tuning does not explain.
+
+**The rest of the fix** (commit f366c8b):
+- ECC corrects single-bit errors. 512 KB of the 8 MB holds the check bits,
+  leaving 7680 KB. `sys.cpp` reads the hardware's corrected-error counter
+  every 10 s and logs `psram: ECC corrected ...` with the PC state.
+- A brownout boot restarts once more after 3 s (above).
+- The VFS select tables live in internal RAM.
+- Wi-Fi TX power is capped at 8 dBm to draw less from the shared 5 V.
+
+**Cost:** PSRAM bandwidth roughly halves (copy 15 MB/s instead of 31), and a
+full panel frame takes 33-37 ms instead of 28-29 ms. The numbers are in
+[benchmark.md](benchmark.md).

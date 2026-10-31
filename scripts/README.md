@@ -5,7 +5,7 @@ Two kinds of script live here:
 - **`pcbnew` scripts** (the board build chain) run under KiCad's own bundled
   Python, the only one with the `pcbnew` module. Below, `<kicad-python>`
   means that interpreter, e.g. `"C:\Program Files\KiCad\10.0\bin\python.exe"`.
-- **Plain-Python scripts** (`check_pins.py`, `gif_stream.py`,
+- **Plain-Python scripts** (`check_pins.py`, `gif_pack.py`,
   `make_fit_models.py`, `render_board.py`, `export_gerbers.py`) run under
   the system Python.
 
@@ -167,13 +167,14 @@ CI runs it on every push.
 python scripts/check_pins.py
 ```
 
-### gif_stream.py
+### gif_pack.py
 
-Uploads a GIF to `firmware/main` over the CH343 USB-UART (3 Mbaud): every
-frame scaled to fit 240x320, raw big-endian RGB565, with a checksum per frame
-and a resend on mismatch. The device saves it to its FAT partition and
-replays it on every boot. Needs pyserial, numpy and Pillow.
+Builds `firmware/main/gifs.bin`, the GIF pack embedded in the firmware, from
+the GIFs listed in `firmware/gifs/gifs.json`: frames scaled to 240x320, one
+palette of up to 256 RGB444 colours per GIF, and only each frame's dirty rects
+stored, zlib-compressed. Format in `firmware/main/gif_store.h`. Needs numpy
+and Pillow.
 
 ```bash
-python scripts/gif_stream.py animation.gif --port COM15 --watch 15
+python scripts/gif_pack.py
 ```
