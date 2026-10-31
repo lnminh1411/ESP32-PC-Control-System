@@ -20,9 +20,9 @@ panel that shows one holds 75 KB of PSRAM.
 |---|---|---|
 | SRAM (512 KB) | 443 KB (87%) | 172 KB static (code in IRAM, data/bss, ROM, cache); heap 339 KB with 270 KB in use, 70 KB free, largest block 31 KB; lowest free ever: 29 KB |
 | PSRAM (7680 KB) | 4374 KB (57%) | lowest free ever 2456 KB, largest free block 3263 KB |
-| Flash (16 MB) | fully partitioned | app slots 2 x 3 MB (OTA), FAT 9.8 MB, NVS 20 KB, core dump 64 KB |
-| App image | 2439 KB of 3072 KB (79%) | 793 KB of it is the GIF pack |
-| FAT /ffat | 4 KB of 9996 KB (0%) | layout.json, saved text images |
+| Flash (16 MB) | fully partitioned | app slots 2 x 5 MB (OTA), FAT 5.9 MB, NVS 20 KB, core dump 64 KB |
+| App image | 2439 KB of 5120 KB (48%) | 793 KB of it is the GIF pack |
+| FAT /ffat | 4 KB of 5932 KB (0%) | layout.json, saved text images |
 | NVS | 229 of 630 entries | 12 namespaces |
 
 Task stacks, least ever free (bytes): main 6572, discord 5488, httpd 4904,
@@ -217,3 +217,7 @@ much PSRAM.
 A frame takes 26-28 ms to push. The GIF slows down rather than drop frames, so
 on three panels it plays at about 60% speed; three panels at 20 fps need about
 5.7 MB/s, more than the 40 MHz wire carries.
+
+The app slots then grew from 3 MB to 5 MB each and FAT shrank from 9.9 MB
+to 5.9 MB (`partitions.csv`, flashed over USB). The same image now fills 48%
+of its slot instead of 79%, leaving about 2.6 MB for more GIFs.

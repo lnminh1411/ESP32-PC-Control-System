@@ -85,9 +85,11 @@ Building and flashing: [build-and-flash.md](build-and-flash.md). Settings:
 16 MB QIO flash, octal PSRAM at 40 MHz with ECC (below), Wi-Fi, lwIP and the
 VFS select tables kept in internal RAM, a 20 s task watchdog that panics, ELF
 core dumps to flash, app rollback, and the console on the CH343 UART at
-3 Mbaud. The partition table (`firmware/partitions.csv`) has two 3 MB app
-slots, a 9.9 MB FAT partition (`/ffat`: layout, pinned text) and a
-64 KB core dump partition.
+3 Mbaud. The partition table (`firmware/partitions.csv`) has two 5 MB app
+slots (the GIF pack is in the app image), a 5.9 MB FAT partition (`/ffat`:
+layout, pinned text) and a 64 KB core dump partition. A partition table
+change only reaches the board over USB (`idf_flash.py`), not OTA; moving
+`/ffat` reformats it.
 
 ## PSRAM hardening
 
