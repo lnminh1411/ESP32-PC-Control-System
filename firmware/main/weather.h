@@ -4,6 +4,7 @@
 // loads sample data so the screens can be checked.
 #pragma once
 #include <stdint.h>
+#include <time.h>
 
 // WMO weather code groups the icons are picked from
 enum WxIcon : uint8_t { WX_CLEAR, WX_PARTLY, WX_CLOUDY, WX_FOG, WX_DRIZZLE, WX_RAIN, WX_SHOWERS, WX_SNOW, WX_STORM };
@@ -52,9 +53,10 @@ struct RainAlert {
 };
 
 // Rain end sources, also the slots of the end tracker (`weather show`).
-// RANGE: the middle of the shower's usual length, when nothing else has an end
-enum : uint8_t { RAIN_END_NONE, RAIN_END_NOWCAST, RAIN_END_OWM, RAIN_END_UPWIND, RAIN_END_HOURLY, RAIN_END_RANGE, RAIN_END_N };
-const char *rainEndSrcName(uint8_t src);   // "nowcast", "OpenWeather", "upwind", "hourly", "range"
+// RANGE: the middle of the shower's usual length, when nothing else has an end.
+// New slots go last: the stats are kept in NVS by slot
+enum : uint8_t { RAIN_END_NONE, RAIN_END_NOWCAST, RAIN_END_OWM, RAIN_END_UPWIND, RAIN_END_HOURLY, RAIN_END_RANGE, RAIN_END_TOMORROW, RAIN_END_N };
+const char *rainEndSrcName(uint8_t src);   // "nowcast", "OpenWeather", "upwind", "hourly", "range", "Tomorrow"
 // Steady rain (WMO 51-67) can last hours; a shower (80-82, or rain the hourly
 // forecast misses) and a thunderstorm (95-99) have a usual length
 enum : uint8_t { RAIN_KIND_STEADY, RAIN_KIND_SHOWER, RAIN_KIND_THUNDER };
@@ -62,9 +64,9 @@ enum : uint8_t { RAIN_KIND_STEADY, RAIN_KIND_SHOWER, RAIN_KIND_THUNDER };
 bool rainKindRange(uint8_t kind, int *loMin, int *hiMin);
 
 // RADAR: RainViewer sees rain falling at the place now (observed, not a forecast)
-enum : uint8_t { RAIN_SRC_OPEN_METEO = 1, RAIN_SRC_OPENWEATHER = 2, RAIN_SRC_RADAR = 4 };
-const char *rainSrcName(const RainAlert &a);   // "Open-Meteo", "OpenWeather", "both", "radar", "radar+OM"...
-// "Seen by OpenWeather (Open-Meteo: dry)"; returns the length written
+enum : uint8_t { RAIN_SRC_OPEN_METEO = 1, RAIN_SRC_OPENWEATHER = 2, RAIN_SRC_RADAR = 4, RAIN_SRC_TOMORROW = 8 };
+const char *rainSrcName(const RainAlert &a);   // "Open-Meteo", "Tomorrow", "OM+TIO", "all", "radar", "radar+OM"...
+// "Seen by Open-Meteo and Tomorrow.io (OpenWeather: dry)"; returns the length written
 int rainSrcLine(char *out, int cap, const RainAlert &a);
 
 // Tropical cyclone near home (GDACS track + forecast)
@@ -88,6 +90,7 @@ Cyclone weatherCyclone();
 const char *wxTierName(WxTier t);         // "Heavy Shower"
 int rainEtaMin(const RainAlert &a);       // minutes to rain start, from the clock; -1 = none
 int rainLeftMin(const RainAlert &a);      // minutes to rain end, from the clock; -1 = unknown
+int64_t utcMkTime(const struct tm *t);    // struct tm read as UTC -> unix
 void weatherInit();
 void weatherPoll();
 void weatherCommand(const char *a1, const char *a2);   // `weather <demo|clear|show>`

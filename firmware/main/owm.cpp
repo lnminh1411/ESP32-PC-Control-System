@@ -12,8 +12,6 @@
 #include "net.h"
 #include "settings_or_example.h"
 
-static const float RAIN_MMH = OWM_RAIN_MMH;   // what counts as rain: the Open-Meteo nowcast's threshold
-
 static uint32_t callDay;              // UTC day of callsToday
 static uint32_t callsToday;
 static uint32_t backoffUntil;         // UTC: a rejected key or a rate limit pauses calls
@@ -183,7 +181,7 @@ bool owmFetchAlert(const char *id, char *buf, size_t cap, OwmAlert *out) {
   return true;
 }
 
-bool owmRainSummary(const OwmMinutely &m, uint32_t nowUnix, OwmRain *out) {
+bool owmRainSummary(const OwmMinutely &m, uint32_t nowUnix, OwmRain *out, float rainMmh) {
   *out = {};
   if (!m.valid || !m.n) return false;
   // minutes already past drop off the front
@@ -192,7 +190,7 @@ bool owmRainSummary(const OwmMinutely &m, uint32_t nowUnix, OwmRain *out) {
   out->coversUntil = m.dt0 + (uint32_t)m.n * 60;
   int first = -1, last = -1, run = 0;
   for (int i = skip; i < m.n; i++) {
-    if (m.mm[i] < RAIN_MMH) { run = 0; continue; }
+    if (m.mm[i] < rainMmh) { run = 0; continue; }
     if (first < 0) first = i;
     last = i;
     if (++run > out->run) out->run = (uint8_t)run;

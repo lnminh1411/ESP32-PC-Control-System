@@ -11,7 +11,7 @@ Runs on the carrier firmware (ESP-IDF 5.5) in its own FreeRTOS task.
 - **Home Weather Display**: Displayed on Screen 2 (Media face) whenever the host PC is off, asleep, or restarting. Shows current temperature, min/max, weather icon, wind speed/direction, US AQI, and a 3-day forecast with daily highs/lows.
 - **Dedicated Network Task**: All network transactions (Open-Meteo HTTP requests, Pushover HTTPS POSTs, MQTT processing) run in a dedicated FreeRTOS task on Core 0 (`stack = 9 KB`, 48 KB PSRAM buffer), never blocking the main loop or display rendering.
 - **Thread Safety**: Finished structs (`WeatherNow`, `RainAlert`) are published to the main loop under mutex. When changed, `viewsMarkDirty(-1)` is triggered from `weatherPoll()` on the main loop.
-- **Two sources**: Open-Meteo (forecast, AQI, the 17-point nowcast) and, with `OWM_API_KEY` set, OpenWeather One Call 4.0's minute-by-minute rain for the next hour (section 11b). Rain alerts use both.
+- **Three forecast sources**: Open-Meteo (forecast, AQI, the 17-point nowcast) and, with their keys set, the minute-by-minute rain of the next hour from OpenWeather One Call 4.0 (section 11b) and Tomorrow.io (section 11d). Rain alerts use all of them, plus the radar (section 11c).
 - **SNTP Synchronization**: Once Wi-Fi connects, `board_time.cpp` starts `esp_sntp` pointing to `pool.ntp.org`. Time from the PC stats service (`pc.epoch`) only overrides time if SNTP has never synced. Forecast `utc_offset_seconds` automatically sets local timezone offset if PC stats has not provided `pc.tz_min`.
 
 ---
@@ -145,7 +145,7 @@ The firmware dynamically balances Home and Phone nowcasting:
     warning still out is posted once more, ringing.
   - The 2-hourly update (section 10) is for the phone's place too.
 - **Fix age**: a phone fix counts for 12 h (`OWNTRACKS_MAX_AGE_S`). OpenWeather (section
-  11b) follows the phone on the same rule.
+  11b), the radar (11c) and Tomorrow.io (11d) follow the phone on the same rule.
 
 ---
 
@@ -240,10 +240,10 @@ Rain (home engine) to #weather-announcement:
 No source sees a rain's end reliably more than about an hour out. The end is taken, first
 that has one:
 
-1. **Nowcast and OpenWeather**: Open-Meteo's nowcast end (about 105 min ahead) and
-   OpenWeather's minute-by-minute end (inside its hour, with 10+ dry minutes after). The
-   OpenWeather end counts only once two of its hours in a row agree on it within 5 min.
-   With both, the later one.
+1. **Nowcast, OpenWeather and Tomorrow.io**: Open-Meteo's nowcast end (about 105 min ahead)
+   and the minute-by-minute ends of OpenWeather and Tomorrow.io (inside their hour, with 10+
+   dry minutes after). A minute-by-minute end counts only once two of that source's hours in
+   a row agree on it within 5 min. With more than one, the latest.
 2. **Upwind probe** (home only): while rain is coming or falling and the nowcast found it
    moving (5+ km/h), every 10 min (`WEATHER_UPWIND_POLL_MS`) one Open-Meteo call for 8
    points along the motion vector, where the rain that reaches home in 10, 20, 30, 45, 60,
@@ -260,7 +260,8 @@ that has one:
    (`WEATHER_SHOWER_*`, `WEATHER_TSTORM_*`), steady rain (51-67) `no end in the 12 h forecast`.
 
 **Accuracy tracking**: for each rain at home, the board keeps every source's first end
-estimate (nowcast, OpenWeather, upwind, hourly, and the middle of the usual range) and
+estimate (nowcast, OpenWeather, Tomorrow.io, upwind, hourly, and the middle of the usual
+range) and
 scores it against when the rain was seen to stop: the first poll in which no source sees
 rain at that minute, once it has stayed so for 10 min. Per source it keeps the number of
 rains, the mean minutes off, the bias (+ = guessed too late) and how far ahead the first
@@ -338,7 +339,7 @@ Open-Meteo allows up to 10,000 calls per UTC day. The firmware enforces a conser
 
 ## 11b. OpenWeather One Call 4.0
 
-A second rain source next to Open-Meteo: `timeline/1min` gives precipitation (mm/h) for each of the next 60 minutes, measured for the exact place, plus the IDs of the weather alerts in force there (`firmware/main/owm.cpp`).
+A rain source next to Open-Meteo and Tomorrow.io (11d): `timeline/1min` gives precipitation (mm/h) for each of the next 60 minutes, measured for the exact place, plus the IDs of the weather alerts in force there (`firmware/main/owm.cpp`).
 
 **Setup**
 
@@ -352,19 +353,19 @@ A second rain source next to Open-Meteo: `timeline/1min` gives precipitation (mm
 
 **Empty answers**: OpenWeather sometimes answers 200 with no minutes (`"data": []`) for a few minutes at a time. A failed answer is retried once after 30 s, and for up to 15 min the last good hour still counts while its minutes reach 30 min ahead, so a blank spell doesn't read as dry. A rejected key (401) pauses it for 30 min, a rate limit (429) for 15. The key is in the URL, so URLs are never logged.
 
-**Merging** (`owmRainSummary` in owm.cpp, `mergeRain` in weather.cpp): rain counts from 0.3 mm/h (`OWM_RAIN_MMH`), Open-Meteo's nowcast threshold. A source counts as *fresh and dry* when its last answer saw no rain: OpenWeather for 5 min after a fetch (its 60 minutes), Open-Meteo for 20 min after a nowcast (its next 60 minutes).
+**Merging** (`owmRainSummary` in owm.cpp, `mergeRain` in weather.cpp): rain counts from 0.3 mm/h (`OWM_RAIN_MMH`), Open-Meteo's nowcast threshold. A source counts as *fresh and dry* when its last answer saw no rain: OpenWeather for 5 min after a fetch (its 60 minutes), Tomorrow.io for 8 min (its 60 minutes), Open-Meteo for 20 min after a nowcast (its next 60 minutes).
 
-- **Both see rain**: a warning. OpenWeather's start time wins, the intensity is the higher of the two.
+- **Two or three see rain**: a warning. The earliest minute-by-minute start wins (Open-Meteo's only when neither has one), the intensity is the highest.
 - **One sees rain** (thresholds in settings.h):
-  - 2 mm/h or more (`WEATHER_RAIN_SURE_MMH`): a warning, whatever the other says.
-  - OpenWeather alone with a peak under 0.8 mm/h and fewer than 3 rain minutes in a row (`OWM_RAIN_SOLID_*`): a watch.
-  - The other source fresh and dry over that time: a watch; a warning only once it rains and the lone source has seen it for 3 polls in a row.
+  - 2 mm/h or more (`WEATHER_RAIN_SURE_MMH`): a warning, whatever the others say.
+  - OpenWeather or Tomorrow.io alone with a peak under 0.8 mm/h and fewer than 3 rain minutes in a row (`OWM_RAIN_SOLID_*`): a watch.
+  - Another source fresh and dry over that time: a watch; a warning only once it rains and the lone source has seen it for 3 polls in a row.
   - Otherwise: a warning when it starts within 30 min (`WEATHER_RAIN_SURE_MIN`) or the lone source has seen it for 2 polls in a row; a watch before that.
-- **Neither**: dry. "Cleared" follows two polls without a warning.
-- The end: see 8b (OpenWeather's counts once two hours in a row agree on it).
+- **None**: dry. "Cleared" follows two polls without a warning.
+- The end: see 8b (a minute-by-minute end counts once two of that source's hours in a row agree on it).
 - During a watch OpenWeather polls at the rain cadence, to confirm or drop it sooner.
 
-Discord rain posts and the media screen's rain box say who saw it: Open-Meteo, OpenWeather, both, or the radar (11c).
+Discord rain posts and the media screen's rain box say who saw it: `Open-Meteo`, `OpenWeather`, `Tomorrow`, `OM+OWM`, `OM+TIO`, `OWM+TIO`, `all`, or the radar (11c) with them (`radar`, `radar+OM`, `radar+2`, `radar+all`). Posts spell it out: `Seen by Open-Meteo and Tomorrow.io (OpenWeather: dry)`.
 
 **Weather alerts**: a new alert ID gets one `alert/{id}` call (one per poll at most) and a red post in #weather-announcement: the event, the issuer, start and end, and the first 200 characters of the text.
 
@@ -392,6 +393,39 @@ runs, and on 10-29 neither saw the drizzle at 05:00. The radar sees rain that is
 - `weather show` prints the place, the frame, the strongest echo at the place and the
   nearest echo's distance; the log notes when the place turns wet or dry on the radar.
 
+## 11d. Tomorrow.io
+
+A third forecast source, minute by minute like OpenWeather (`firmware/main/tomorrow.cpp`).
+`TOMORROW_API_KEY` in settings.h (app.tomorrow.io, free tier); empty = off.
+
+- **Place**: the same as OpenWeather's (the phone while away, else home). A move fetches the
+  new place right away, one call.
+- **Fetch**: `GET /v4/timelines?location=<lat>,<lon>&fields=precipitationIntensity&timesteps=1m&startTime=now&endTime=nowPlus1h&units=metric&apikey=...`.
+  The answer is 61 intervals, about 4.7 KB:
+  `{"data":{"timelines":[{"timestep":"1m","endTime":...,"startTime":...,"intervals":[{"startTime":"2026-10-31T00:23:00Z","values":{"precipitationIntensity":0}},...]}]}}`.
+  Without `endTime` it is 361 intervals and 28 KB. `/v4/weather/forecast` sends 22 fields a
+  minute (29 KB) and has no `precipitationIntensity` (it has `rainIntensity`). The first 60 are kept, in mm/h, in an `OwmMinutely`, and `owmRainSummary` reads them
+  like OpenWeather's. The board scans the text instead of building cJSON nodes for each
+  minute. The key is in the URL, so URLs are never logged.
+- **Cadence**: every 6 min (`TOMORROW_POLL_MS`), every 3 while rain is warned, watched or
+  falling at the place or a radar echo is within 30 km (`TOMORROW_POLL_RAIN_MS`). A failed
+  call is retried once a minute later.
+- **Budget**: the free tier allows 500 calls a day and 25 an hour. The board stops at 480 a
+  UTC day (`TOMORROW_CALLS_PER_DAY`) and 20 a clock hour, paced like OpenWeather (the day's
+  share so far plus 30). A dry day costs 240 calls; the rain cadence all day would cost
+  480. Counted on the board (NVS `t_day`, `t_calls`, `t_hour`, `t_hcalls`, saved every 5 calls
+  and with the other counters). A rejected key (401) pauses it for 30 min, a rate limit (429)
+  for 15.
+- **Merging**: rain counts from 0.3 mm/h (`TOMORROW_RAIN_MMH`). An hour stays fresh for 8 min
+  after a good fetch. It takes part as 11b describes: any two sources that see rain make a
+  warning, one alone follows the single-source rules with its own count of polls in a row,
+  and a fresh, dry Tomorrow.io contradicts a lone source like a fresh, dry OpenWeather. The
+  radar's override (11c) comes last, unchanged.
+- **The end**: Tomorrow.io's end is its own slot in the end tracker (8b), named `Tomorrow`.
+  `endst` keeps its stats by slot and the new one is last, so the stats from before it stay.
+- `weather show` prints the place, the last fetch, dry, raining or rain within the hour, the
+  peak, calls today and this hour, and the last error.
+
 ---
 
 ## 12. Console Commands
@@ -400,13 +434,13 @@ Access commands via USB-UART or Discord `/actions` command:
 
 | Command | Description |
 |---|---|
-| `weather show` | Prints current weather, home engine status (tier, start and end), phone engine status, OpenWeather (place, last hour, alerts, calls today), the radar (frame, echo here, nearest echo), which source sees the rain, tracked cyclones, and budget usage. |
+| `weather show` | Prints current weather, home engine status (tier, start and end), phone engine status, OpenWeather (place, last hour, alerts, calls today), Tomorrow.io (place, last hour, calls today and this hour), the radar (frame, echo here, nearest echo), which source sees the rain, tracked cyclones, and budget usage. |
 | `weather refresh` | Fetches the forecast, AQI, nowcast and GDACS list again now. |
 | `weather home <lat>,<lon> [name]` | Sets home coordinates and location name. Persists to NVS and triggers immediate poll. |
 | `weather demo [rain\|typhoon]` | Loads sample weather onto the display for 5 min: dry, a heavy shower in 25 min, or a typhoon at home. Polls leave it alone and nothing is posted. |
 | `weather clear` | Clears all weather, rain alert and cyclone buffers. |
 | `weather storms` | Fetches the GDACS list and every nearby storm's track again now. |
-| `weather owm-check [minute][L]` | Runs the merge on a made-up OpenWeather hour, 20 min of rain from that minute (4 mm/h; `L` = 0.6 mm/h), against home's Open-Meteo result, and prints the verdict (warning, watch, raining, dry), start, end, where the end comes from, the kind of rain and the sources. Nothing is stored or posted. |
+| `weather owm-check [minute][L][T\|B]` | Runs the merge on a made-up hour, 20 min of rain from that minute (4 mm/h; `L` = 0.6 mm/h), given to OpenWeather, to Tomorrow.io (`T`) or to both (`B`), against home's Open-Meteo result and the other source's real hour, and prints the verdict (warning, watch, raining, dry), start, end, where the end comes from, the kind of rain and the sources. Nothing is stored or posted. |
 | `weather end-reset` | Clears the rain-end accuracy stats (8b). |
 | `weather test-alert` | Sends an immediate test notification through both Discord and Pushover channels. |
 

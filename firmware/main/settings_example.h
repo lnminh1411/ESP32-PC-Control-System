@@ -238,6 +238,12 @@
 #define OWM_POLL_RAIN_MS (90 * 1000)              // poll while warned, raining or under an alert
 #define OWM_POLL_MS (120 * 1000)                  // poll otherwise
 
+// ---- Tomorrow.io (tomorrow.cpp; key: TOMORROW_API_KEY) ----
+#define TOMORROW_CALLS_PER_DAY 480                // daily call budget (free tier: 500, and 25 an hour; the board stops at 20)
+#define TOMORROW_RAIN_MMH 0.3f                    // minutely precipitation over this counts as rain
+#define TOMORROW_POLL_RAIN_MS (3 * 60 * 1000)     // poll while rain is warned, watched, falling or an echo is within 30 km
+#define TOMORROW_POLL_MS (6 * 60 * 1000)          // poll otherwise
+
 // ---- RainViewer radar (radar.cpp; free, no key) ----
 #define RADAR_ENABLED 1                           // 0 = off
 #define RADAR_RAIN_DBZ 15                         // echo this strong counts as rain (15 dBZ ~ 0.3 mm/h)

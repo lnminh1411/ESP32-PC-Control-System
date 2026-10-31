@@ -25,6 +25,7 @@
 #include "owntracks.h"
 #include "pushover.h"
 #include "radar.h"
+#include "tomorrow.h"
 #include "settings_or_example.h"
 #include "sys.h"
 #include "views.h"
@@ -114,6 +115,7 @@ enum ErrMask : uint16_t {
   ERR_TC_TRACK    = 1 << 9,
   ERR_OWM         = 1 << 10,
   ERR_RADAR       = 1 << 11,
+  ERR_TOMORROW    = 1 << 12,
 };
 static uint16_t loggedErrors;
 static char lastError[96];               // shown by `weather show`
@@ -146,29 +148,33 @@ WeatherNow weatherNow() { return wxCopy(now_); }
 RainAlert rainAlertHome() { return wxCopy(rainHome); }
 RainAlert rainAlertPhone() { return wxCopy(rainPhone); }
 
+// The forecast sources in a RAIN_SRC_* mask as an index into the name tables
+static int modelsOf(uint8_t mask) {
+  return (mask & (RAIN_SRC_OPEN_METEO | RAIN_SRC_OPENWEATHER)) | (mask & RAIN_SRC_TOMORROW ? 4 : 0);
+}
+
 const char *rainSrcName(const RainAlert &a) {
-  uint8_t s = a.src & (RAIN_SRC_OPEN_METEO | RAIN_SRC_OPENWEATHER);
-  if (a.src & RAIN_SRC_RADAR)
-    return s == RAIN_SRC_OPENWEATHER ? "radar+OWM" : s == RAIN_SRC_OPEN_METEO ? "radar+OM" : s ? "all three" : "radar";
-  return s == RAIN_SRC_OPENWEATHER ? "OpenWeather" : s == RAIN_SRC_OPEN_METEO ? "Open-Meteo" : s ? "both" : "--";
+  static const char *MODELS[8] = {"--", "Open-Meteo", "OpenWeather", "OM+OWM", "Tomorrow", "OM+TIO", "OWM+TIO", "all"};
+  static const char *RADAR[8] = {"radar", "radar+OM", "radar+OWM", "radar+2", "radar+TIO", "radar+2", "radar+2", "radar+all"};
+  return (a.src & RAIN_SRC_RADAR ? RADAR : MODELS)[modelsOf(a.src)];
 }
 
 int rainSrcLine(char *out, int cap, const RainAlert &a) {
-  const uint8_t both = RAIN_SRC_OPEN_METEO | RAIN_SRC_OPENWEATHER;
-  uint8_t s = a.src & both, other = s ^ both;
+  static const char *LONG[8] = {"--", "Open-Meteo", "OpenWeather", "Open-Meteo and OpenWeather", "Tomorrow.io",
+                                "Open-Meteo and Tomorrow.io", "OpenWeather and Tomorrow.io",
+                                "Open-Meteo, OpenWeather and Tomorrow.io"};
+  int s = modelsOf(a.src), dry = modelsOf(a.dry);
   int n;
   if (a.src & RAIN_SRC_RADAR)
-    n = snprintf(out, cap, "On the radar now%s%s", s == both ? ", and in Open-Meteo and OpenWeather" : s ? ", and in " : " (the forecasts missed it)",
-                 s == both ? "" : s == RAIN_SRC_OPEN_METEO ? "Open-Meteo" : s ? "OpenWeather" : "");
-  else if (s == both) n = snprintf(out, cap, "Seen by Open-Meteo and OpenWeather");
-  else if (s && (a.dry & other))
-    n = snprintf(out, cap, "Seen by %s only (%s: dry)", rainSrcName(a), other == RAIN_SRC_OPEN_METEO ? "Open-Meteo" : "OpenWeather");
-  else n = snprintf(out, cap, "Seen by %s", rainSrcName(a));
+    n = snprintf(out, cap, "On the radar now%s%s", s ? ", and in " : " (the forecasts missed it)", s ? LONG[s] : "");
+  else if (s && dry)
+    n = snprintf(out, cap, "Seen by %s%s (%s: dry)", LONG[s], s & (s - 1) ? "" : " only", LONG[dry]);
+  else n = snprintf(out, cap, "Seen by %s", LONG[s]);
   return n < cap ? n : cap - 1;
 }
 
 const char *rainEndSrcName(uint8_t src) {
-  static const char *N[RAIN_END_N] = {"--", "nowcast", "OpenWeather", "upwind", "hourly", "range"};
+  static const char *N[RAIN_END_N] = {"--", "nowcast", "OpenWeather", "upwind", "hourly", "range", "Tomorrow"};
   return src < RAIN_END_N ? N[src] : "--";
 }
 
@@ -179,7 +185,8 @@ bool rainKindRange(uint8_t kind, int *loMin, int *hiMin) {
 }
 
 // Open-Meteo's own nowcast results; rainHome / rainPhone are these merged
-// with OpenWeather's minute-by-minute hour (owm.h) for the place it covers
+// with OpenWeather's and Tomorrow.io's minute-by-minute hours (owm.h,
+// tomorrow.h) for the place they cover
 static RainAlert omHome, omPhone;
 static OwmMinutely owmLast;          // the last good OpenWeather hour
 static bool owmOnPhone;              // ...for the phone, not home
@@ -188,6 +195,11 @@ static uint8_t omHomeWet, omPhoneWet;  // nowcasts in a row that saw rain
 static uint8_t owmWet;               // OpenWeather hours in a row that saw rain (its place)
 static uint32_t owmEndLast;          // the rain end in OpenWeather's last hour (0 = none)
 static bool owmEndOk;                // ...within 5 min of the one before: steady enough to use
+static OwmMinutely tioLast;          // the last good Tomorrow.io hour
+static bool tioOnPhone;              // ...for the phone, not home
+static uint8_t tioWet;               // Tomorrow.io hours in a row that saw rain (its place)
+static uint32_t tioEndLast;          // the rain end in Tomorrow.io's last hour (0 = none)
+static bool tioEndOk;                // ...within 5 min of the one before: steady enough to use
 static uint32_t upwindEnd, upwindAt; // home rain end from the upwind probe (0 = none); when it ran
 static bool upwindBeyond;            // the probe's last point (2 h out) still had rain
 static char owmSeen[8][40];          // alert IDs already posted
@@ -206,8 +218,8 @@ const char *wxTierName(WxTier t) {
   }
 }
 
-// struct tm read as UTC -> unix (newlib has no timegm)
-static int64_t utcMkTime(const struct tm *t) {
+// newlib has no timegm
+int64_t utcMkTime(const struct tm *t) {
   int y = t->tm_year + 1900, m = t->tm_mon + 1;
   y -= m <= 2;
   int64_t era = (y >= 0 ? y : y - 399) / 400;
@@ -731,23 +743,37 @@ static bool owmFresh(bool phone, uint32_t now) {
   return owmFailUnix > owmLast.fetchedUnix && age < 15 * 60 && coversUntil > now + 30 * 60;
 }
 
+// Tomorrow.io's hour counts for 8 min after it was fetched (it polls every 6
+// at most), for its place only
+static bool tioFresh(bool phone, uint32_t now) {
+  return tioLast.valid && tioOnPhone == phone && now - tioLast.fetchedUnix < 8 * 60;
+}
+
 // Open-Meteo's nowcast counts while its slowest cadence (15 min) could still be running
 static bool omFresh(bool phone, uint32_t now) {
   uint32_t at = phone ? omPhoneAt : omHomeAt;
   return at && now - at < 20 * 60;
 }
 
-// Open-Meteo's nowcast (in *a) and OpenWeather's hour (m, null = none fresh)
-// weighed into one call. Both see rain: a warning. One alone: a warning when
-// it is heavy (WEATHER_RAIN_SURE_MMH); else, if the other source is fresh and
+// A minute-by-minute source for the merge: its hour (null = none fresh), its
+// polls in a row with rain, and whether two of its hours agree on the end
+struct MinuteSrc {
+  const OwmMinutely *m;
+  uint8_t held;
+  bool endOk;
+};
+
+// Open-Meteo's nowcast (in *a), OpenWeather's hour and Tomorrow.io's hour
+// weighed into one call. Two or more see rain: a warning, from the earliest
+// minute-by-minute start, at the highest intensity. One alone: a warning when
+// it is heavy (WEATHER_RAIN_SURE_MMH); else, if another source is fresh and
 // dry over that time, only once it rains and has held 3 polls; else when it
-// is close (WEATHER_RAIN_SURE_MIN) or has held 2 polls. OpenWeather alone also
-// needs more than a sprinkle (OWM_RAIN_SOLID_*). Anything less is a watch: on
-// the screens, never posted. *Held: each source's polls in a row with rain.
-// The end: the later of the nowcast's and OpenWeather's, OpenWeather's only
-// once two of its hours agree on it (owmEndOk).
-static void mergeModels(RainAlert *a, bool phone, const OwmMinutely *m, uint8_t omHeld, uint8_t owmHeld, bool owmEndOk) {
-  const uint8_t both = RAIN_SRC_OPEN_METEO | RAIN_SRC_OPENWEATHER;
+// is close (WEATHER_RAIN_SURE_MIN) or has held 2 polls. A minute-by-minute
+// source alone also needs more than a sprinkle (OWM_RAIN_SOLID_*). Anything
+// less is a watch: on the screens, never posted. *held: each source's polls
+// in a row with rain. The end: the latest of the three, a minute-by-minute
+// one only once two of its hours agree on it (endOk).
+static void mergeModels(RainAlert *a, bool phone, uint8_t omHeld, const MinuteSrc &owm, const MinuteSrc &tio) {
   uint32_t now = (uint32_t)time(nullptr);
   bool omWet = a->active || a->raining;
   a->src = omWet ? RAIN_SRC_OPEN_METEO : 0;
@@ -756,40 +782,50 @@ static void mergeModels(RainAlert *a, bool phone, const OwmMinutely *m, uint8_t 
   a->endUnknown = false;
   a->endSrc = (omWet && a->endUnix) ? RAIN_END_NOWCAST : RAIN_END_NONE;
   a->kind = RAIN_KIND_STEADY;
-  OwmRain o = {};
-  bool owmOk = m && owmRainSummary(*m, now, &o);
+  OwmRain o = {}, t = {};
+  bool owmOk = owm.m && owmRainSummary(*owm.m, now, &o);
+  bool tioOk = tio.m && owmRainSummary(*tio.m, now, &t, TOMORROW_RAIN_MMH);
   if (owmOk && !o.sees) a->dry |= RAIN_SRC_OPENWEATHER;
-  if (o.sees) {
-    a->src |= RAIN_SRC_OPENWEATHER;
-    if (o.peak > a->mmh) a->mmh = o.peak;
-    if (o.rainingNow) {
-      if (!a->raining) a->startUnix = o.startUnix;
+  if (tioOk && !t.sees) a->dry |= RAIN_SRC_TOMORROW;
+  if (o.sees) a->src |= RAIN_SRC_OPENWEATHER;
+  if (t.sees) a->src |= RAIN_SRC_TOMORROW;
+  if (o.sees || t.sees) {
+    const OwmRain &first = !t.sees || (o.sees && o.startUnix <= t.startUnix) ? o : t;   // rain now starts at now
+    float peak = o.peak > t.peak ? o.peak : t.peak;
+    if (peak > a->mmh) a->mmh = peak;
+    if (first.rainingNow) {
+      if (!a->raining) a->startUnix = first.startUnix;
       a->raining = true;
       a->active = false;
     } else if (!a->raining) {
       a->active = true;
-      a->startUnix = o.startUnix;   // the minute-by-minute start wins
-      a->etaMin = (uint16_t)((o.startUnix - now + 30) / 60);
+      a->startUnix = first.startUnix;   // the minute-by-minute start wins
+      a->etaMin = (uint16_t)((first.startUnix - now + 30) / 60);
     }
     if (!omWet) {   // Open-Meteo's start and end, if any, are of later rain
       a->endUnix = 0;
       a->endSrc = RAIN_END_NONE;
     }
-    if (o.endUnix && owmEndOk && o.endUnix > a->endUnix) {
+    if (o.endUnix && owm.endOk && o.endUnix > a->endUnix) {
       a->endUnix = o.endUnix;
       a->endSrc = RAIN_END_OWM;
     }
+    if (t.endUnix && tio.endOk && t.endUnix > a->endUnix) {
+      a->endUnix = t.endUnix;
+      a->endSrc = RAIN_END_TOMORROW;
+    }
   }
-  if (!a->src || a->src == both) return;
+  if (!a->src || (a->src & (a->src - 1))) return;   // nobody, or two or more
 
-  bool owmOnly = a->src == RAIN_SRC_OPENWEATHER;
-  bool contradicted = owmOnly ? (a->dry & RAIN_SRC_OPEN_METEO)
-                              : (a->dry & RAIN_SRC_OPENWEATHER) && a->startUnix < o.coversUntil;
+  bool omOnly = a->src == RAIN_SRC_OPEN_METEO, owmOnly = a->src == RAIN_SRC_OPENWEATHER;
+  const OwmRain &lone = owmOnly ? o : t;
+  bool contradicted = (a->dry & RAIN_SRC_OPEN_METEO) || ((a->dry & RAIN_SRC_OPENWEATHER) && a->startUnix < o.coversUntil) ||
+                      ((a->dry & RAIN_SRC_TOMORROW) && a->startUnix < t.coversUntil);
   int eta = a->raining ? 0 : (a->startUnix > now ? (int)((a->startUnix - now) / 60) : a->etaMin);
-  uint8_t held = owmOnly ? owmHeld : omHeld;
+  uint8_t held = omOnly ? omHeld : owmOnly ? owm.held : tio.held;
   bool warnIt;
   if (a->mmh >= WEATHER_RAIN_SURE_MMH) warnIt = true;
-  else if (owmOnly && o.peak < OWM_RAIN_SOLID_MMH && o.run < OWM_RAIN_SOLID_MIN) warnIt = false;
+  else if (!omOnly && lone.peak < OWM_RAIN_SOLID_MMH && lone.run < OWM_RAIN_SOLID_MIN) warnIt = false;
   else if (contradicted) warnIt = a->raining && held >= 3;
   else warnIt = eta <= WEATHER_RAIN_SURE_MIN || held >= 2;
   if (warnIt) return;
@@ -809,8 +845,8 @@ static bool radarFresh(bool phone, uint32_t now) {
 // The models' call, then the radar's: rain on the radar at the place is
 // falling now, so it is a warning whatever the models say (they missed the
 // 05:00 drizzle of 10-29)
-static void mergeRain(RainAlert *a, bool phone, const OwmMinutely *m, uint8_t omHeld, uint8_t owmHeld, bool owmEndOk) {
-  mergeModels(a, phone, m, omHeld, owmHeld, owmEndOk);
+static void mergeRain(RainAlert *a, bool phone, uint8_t omHeld, const MinuteSrc &owm, const MinuteSrc &tio) {
+  mergeModels(a, phone, omHeld, owm, tio);
   uint32_t now = (uint32_t)time(nullptr);
   if (!radarFresh(phone, now)) return;
   if (!radarRainingHere(radarLast)) {
@@ -831,9 +867,11 @@ static void mergeRain(RainAlert *a, bool phone, const OwmMinutely *m, uint8_t om
   if (radarLast.mmhHere > a->mmh) a->mmh = radarLast.mmhHere;
 }
 
-static void mergeOwm(RainAlert *a, bool phone) {
-  bool fresh = owmFresh(phone, (uint32_t)time(nullptr));
-  mergeRain(a, phone, fresh ? &owmLast : nullptr, phone ? omPhoneWet : omHomeWet, owmWet, owmEndOk);
+static void mergeSources(RainAlert *a, bool phone) {
+  uint32_t now = (uint32_t)time(nullptr);
+  MinuteSrc owm = {owmFresh(phone, now) ? &owmLast : nullptr, owmWet, owmEndOk};
+  MinuteSrc tio = {tioFresh(phone, now) ? &tioLast : nullptr, tioWet, tioEndOk};
+  mergeRain(a, phone, phone ? omPhoneWet : omHomeWet, owm, tio);
 }
 
 // The upwind probe's answer counts for 15 min (it runs every 10 while it matters)
@@ -950,10 +988,10 @@ static void trackEnd(const RainAlert &a, const uint32_t est[RAIN_END_N], uint32_
   logMsg("weather: rain %s-%s over; first end guesses off by (min): %s", c1, c2, n ? line : "no guesses");
 }
 
-// rainHome from Open-Meteo's nowcast and OpenWeather's hour, after either
+// rainHome from Open-Meteo's nowcast and the minute-by-minute hours, after any
 static void publishHome() {
   RainAlert a = omHome;
-  mergeOwm(&a, false);
+  mergeSources(&a, false);
   uint32_t now = (uint32_t)time(nullptr);
   // while it rains the nowcast's start is "now": keep the rain's real start
   if (a.raining && endTrk.open && endTrk.rained && endTrk.rainFrom < a.startUnix) a.startUnix = endTrk.rainFrom;
@@ -966,6 +1004,7 @@ static void publishHome() {
   if (a.active || a.raining || a.watch) {
     if (omHome.active || omHome.raining) est[RAIN_END_NOWCAST] = omHome.endUnix;
     if (owmFresh(false, now) && owmEndOk) est[RAIN_END_OWM] = owmEndLast;
+    if (tioFresh(false, now) && tioEndOk) est[RAIN_END_TOMORROW] = tioEndLast;
     if (upwindFresh(now)) est[RAIN_END_UPWIND] = upwindEnd;
     if (a.startUnix) {
       est[RAIN_END_HOURLY] = endFromHourly(a.startUnix);
@@ -1555,7 +1594,7 @@ static void runPhoneNowcast(char *buf, size_t cap) {
 // rainPhone from both sources (rainWarnTick warns for it while you are away)
 static void publishPhone() {
   RainAlert alert = omPhone;
-  mergeOwm(&alert, true);
+  mergeSources(&alert, true);
   fillEnd(&alert, false);
   if (alert.active || alert.raining || alert.watch) alert.tier = rainTierMm(alert.mmh);
   if (wxMutex) xSemaphoreTake(wxMutex, portMAX_DELAY);
@@ -1622,7 +1661,8 @@ static void loadNvsConfig() {
       nvs_get_u32(h, "b_fc", &budgetFcCalls);
     }
     size_t esLen = sizeof endStats;
-    if (nvs_get_blob(h, "endst", endStats, &esLen) != ESP_OK || esLen != sizeof endStats) memset(endStats, 0, sizeof endStats);
+    // a shorter blob is from before a slot was added at the end: the rest stay 0
+    if (nvs_get_blob(h, "endst", endStats, &esLen) != ESP_OK || esLen % sizeof(EndStat)) memset(endStats, 0, sizeof endStats);
     nvs_close(h);
   }
 }
@@ -1736,6 +1776,49 @@ static void radarTick(char *buf, size_t cap, bool force, uint32_t *lastMs, uint3
   if (onPhone || moved) publishPhone();
 }
 
+// Tomorrow.io's hour for the same place as OpenWeather's: every 6 min, every 3
+// while rain is near or falling there. 240 calls a dry day, 480 at most
+static void tioTick(char *buf, size_t cap, bool force, uint32_t *lastMs, uint32_t curMs) {
+  bool onPhone = owntracksEnabled() && owntracksValid() && !owntracksIsMerged(homeLat, homeLon);
+  double lat = homeLat, lon = homeLon;
+  if (onPhone) owntracksGetLocation(&lat, &lon, nullptr, nullptr);
+  const RainAlert &t = onPhone ? rainPhone : rainHome;
+  bool near = radarLast.valid && radarLast.nearKm >= 0 && radarLast.nearKm <= 30;
+  uint32_t every = (t.active || t.raining || t.watch || near) ? TOMORROW_POLL_RAIN_MS : TOMORROW_POLL_MS;
+  // moved: the new place right away, once (owmTick has the why)
+  static int8_t tioTriedPhone = -1;
+  if (onPhone != tioOnPhone && tioTriedPhone != (int8_t)onPhone) force = true;
+  if (!force && *lastMs && curMs - *lastMs < every) return;
+  if (!tioBudgetLeft()) return;
+  *lastMs = curMs;
+  tioTriedPhone = (int8_t)onPhone;
+  OwmMinutely m;
+  static bool retried;   // one quick retry per failure spell
+  if (!tioFetchMinutely(lat, lon, buf, cap, &m)) {
+    char err[96];
+    snprintf(err, sizeof err, "weather: Tomorrow.io: %s", tioLastError());
+    logErrorOnce(ERR_TOMORROW, err);
+    if (!retried) {   // again in a minute, inside tioFresh's window
+      retried = true;
+      *lastMs = curMs - every + 60 * 1000;
+    }
+    return;
+  }
+  retried = false;
+  clearError(ERR_TOMORROW);
+  bool moved = onPhone != tioOnPhone;
+  OwmRain o;
+  bool sees = owmRainSummary(m, (uint32_t)time(nullptr), &o, TOMORROW_RAIN_MMH) && o.sees;
+  tioWet = !sees ? 0 : moved ? 1 : (uint8_t)(tioWet < 99 ? tioWet + 1 : 99);
+  uint32_t prevEnd = moved ? 0 : tioEndLast;
+  tioEndLast = sees ? o.endUnix : 0;
+  tioEndOk = tioEndLast && prevEnd && labs((long)tioEndLast - (long)prevEnd) <= 5 * 60;
+  tioLast = m;
+  tioOnPhone = onPhone;
+  publishHome();
+  if (onPhone || moved) publishPhone();
+}
+
 // The demo's end, `weather clear` and `weather home`, in the task that owns
 // the data and the warnings
 static void weatherTaskHousekeeping() {
@@ -1792,6 +1875,7 @@ static void weatherTask(void *) {
   uint32_t lastPhoneNowcastMs = 0;
   uint32_t lastOwmMs = 0;
   uint32_t lastRadarMs = 0;
+  uint32_t lastTioMs = 0;
   uint32_t lastUpwindMs = 0;
   uint32_t lastNvsSaveMs = nowMs();
   bool prevNetUp = false;
@@ -1892,6 +1976,9 @@ static void weatherTask(void *) {
     // 3c. The radar for the same place: rain falling now, which the models can miss
     if (RADAR_ENABLED) radarTick(httpBuf, httpBufCap, forceImmediate, &lastRadarMs, curMs);
 
+    // 3d. Tomorrow.io's minute-by-minute hour for the same place
+    if (tioEnabled()) tioTick(httpBuf, httpBufCap, forceImmediate, &lastTioMs, curMs);
+
     forceImmediate = false;
 
     // 4. Warnings and the 2-hourly update; storms re-judged every 30 s
@@ -1907,6 +1994,7 @@ static void weatherTask(void *) {
     if (curMs - lastNvsSaveMs >= 15 * 60 * 1000) {
       saveBudgetNvs();
       owmSaveCount();
+      tioSaveCount();
       lastNvsSaveMs = curMs;
     }
   }
@@ -1952,6 +2040,7 @@ void weatherInit() {
   wxMutex = xSemaphoreCreateMutex();
   loadNvsConfig();
   owmInit();
+  tioInit();
   applyConfiguredHome();
   owntracksInit();
   pushoverInit();
@@ -2047,9 +2136,10 @@ void weatherCommand(const char *a1, const char *a2) {
     logMsg("weather: cyclone refresh queued");
     return;
   } else if (a1 && !strcmp(a1, "owm-check")) {
-    // the merge on a made-up OpenWeather hour (20 min of rain from minute N,
-    // 4 mm/h; "12L" = 0.6 mm/h), home's Open-Meteo result and both sources'
-    // poll counts as they are, nothing posted: `weather owm-check 12`
+    // the merge on a made-up hour (20 min of rain from minute N, 4 mm/h; "12L"
+    // = 0.6 mm/h) for OpenWeather, Tomorrow.io ("12T") or both ("12B"); home's
+    // Open-Meteo result, the other source's real hour and the poll counts as
+    // they are, nothing posted: `weather owm-check 12`
     int from = a2 ? atoi(a2) : 10;
     float mmh = (a2 && strpbrk(a2, "Ll")) ? 0.6f : 4.0f;
     OwmMinutely m = {};
@@ -2058,10 +2148,14 @@ void weatherCommand(const char *a1, const char *a2) {
     m.dt0 = m.fetchedUnix;
     m.n = 60;
     for (int i = 0; i < 60; i++) m.mm[i] = (i >= from && i < from + 20) ? mmh : 0.0f;
+    bool toTio = a2 && strpbrk(a2, "TtBb"), toOwm = !a2 || !strpbrk(a2, "Tt");
+    uint32_t nowU = m.fetchedUnix;
+    MinuteSrc owm = {toOwm ? &m : owmFresh(false, nowU) ? &owmLast : nullptr, owmWet, true};
+    MinuteSrc tio = {toTio ? &m : tioFresh(false, nowU) ? &tioLast : nullptr, tioWet, true};
     RainAlert r = omHome;
-    mergeRain(&r, false, &m, omHomeWet, owmWet, true);
+    mergeRain(&r, false, omHomeWet, owm, tio);
     fillEnd(&r, true);
-    char st[16], en[16], src[64];
+    char st[16], en[16], src[80];
     fmtClock(st, sizeof st, r.startUnix, false);
     fmtClock(en, sizeof en, r.endUnix, false);
     rainSrcLine(src, sizeof src, r);
@@ -2093,7 +2187,7 @@ void weatherCommand(const char *a1, const char *a2) {
              rainHome.raining ? "now" : "soon", s, rainHome.endUnix ? e : "12 h+", rainHome.mmh,
              rainHome.from[0] ? rainHome.from : "--", (unsigned)(homeNowcast.cadenceMs() / 60000));
     } else if (rainHome.watch) {
-      char s[16], src[64];
+      char s[16], src[80];
       fmtClock(s, sizeof s, rainHome.startUnix, false);
       rainSrcLine(src, sizeof src, rainHome);
       logMsg("weather: home engine: watch, %s possible from %s (%.1f mm/h, not warned) | %s | cadence %u min",
@@ -2150,6 +2244,22 @@ void weatherCommand(const char *a1, const char *a2) {
              owmOnPhone ? "phone" : "home", when, !owmLast.valid ? "no data yet" : first < 0 ? "dry for 60 min" :
              first == 0 ? "raining" : "rain within the hour", peak, (unsigned)owmLast.nAlerts,
              (unsigned)owmCallsToday(), (unsigned)OWM_DAILY_CALLS, owmLastError()[0] ? " | " : "", owmLastError());
+    }
+    // Tomorrow.io
+    if (!tioEnabled()) {
+      logMsg("weather: Tomorrow.io: off (TOMORROW_API_KEY empty)");
+    } else {
+      OwmRain o;
+      bool ok = owmRainSummary(tioLast, (uint32_t)time(nullptr), &o, TOMORROW_RAIN_MMH);
+      float peak = 0;
+      for (int i = 0; i < tioLast.n; i++)
+        if (tioLast.mm[i] > peak) peak = tioLast.mm[i];
+      char when[24] = "--";
+      if (tioLast.valid) fmtClock(when, sizeof when, tioLast.fetchedUnix, false);
+      logMsg("weather: Tomorrow.io: %s, last %s: %s, peak %.1f mm/h | %u/%u calls today, %u/%u this hour%s%s",
+             tioOnPhone ? "phone" : "home", when, !tioLast.valid ? "no data yet" : !ok ? "hour run out" : !o.sees ? "dry for 60 min" :
+             o.rainingNow ? "raining" : "rain within the hour", peak, (unsigned)tioCallsToday(), (unsigned)TIO_DAILY_CALLS,
+             (unsigned)tioCallsThisHour(), (unsigned)TIO_HOURLY_CALLS, tioLastError()[0] ? " | " : "", tioLastError());
     }
     // Radar
     if (!RADAR_ENABLED) {

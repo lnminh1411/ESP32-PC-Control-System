@@ -43,8 +43,9 @@ bool owmFetchMinutely(double lat, double lon, char *buf, size_t cap, OwmMinutely
 bool owmFetchAlert(const char *id, char *buf, size_t cap, OwmAlert *out);
 void owmSaveCount();                     // persist today's count (every few calls is enough)
 
-// What the hour says about rain (OWM_RAIN_MMH and up), minutes already past
-// dropped. weather.cpp weighs it against Open-Meteo's nowcast.
+// What the hour says about rain (rainMmh and up), minutes already past
+// dropped. weather.cpp weighs it against Open-Meteo's nowcast. Tomorrow.io's
+// hour (tomorrow.h) goes through here too, with its own threshold.
 struct OwmRain {
   bool sees;                // rain somewhere in the rest of the hour
   bool rainingNow;          // ...in the current minute
@@ -55,4 +56,4 @@ struct OwmRain {
   uint32_t coversUntil;     // the hour's last minute (UTC)
 };
 // false when no minute of the hour is left
-bool owmRainSummary(const OwmMinutely &m, uint32_t nowUnix, OwmRain *out);
+bool owmRainSummary(const OwmMinutely &m, uint32_t nowUnix, OwmRain *out, float rainMmh = OWM_RAIN_MMH);
