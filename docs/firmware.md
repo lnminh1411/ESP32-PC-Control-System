@@ -24,7 +24,7 @@ Building and flashing: [build-and-flash.md](build-and-flash.md). Settings:
 | `weather`, `nowcast`, `owm`, `cyclone`, `owntracks`, `pushover` | Open-Meteo forecast and AQI, rain nowcast and warnings, OpenWeather One Call 4.0 minute-by-minute rain and alerts, GDACS typhoon tracking, phone location over MQTT, Pushover copies of the PC and weather announcements ([weather.md](weather.md)) |
 | `board_time` | Wall clock: SNTP over Wi-Fi, else the time the PC sends |
 | `net`, `discord` | Wi-Fi (TX power capped, self-healing rejoin), mDNS, HTTP server (`/ota`, `/layout`, `/bench`); Discord bot with an `/actions` panel and a standing #control panel ([discord.md](discord.md)) |
-| `gif_store` | GIFs built into the firmware (`gifs.bin`, from `scripts/gif_pack.py`): inflated into PSRAM at boot as palette frames, each storing only its dirty rects |
+| `gif_store` | GIFs built into the firmware (`gifs.bin`, from `scripts/gif_pack.py`): palette frames, each storing only its dirty rects, kept compressed in flash and inflated as they play |
 | `commands`, `console`, `usb`, `host_uart`, `log` | The text command set ([console.md](console.md)); USB CDC, CH343 UART (3 Mbaud), WinUSB bulk and vendor-HID transports; the log fan-out (UART, CDC, Discord #logging) |
 | `sys`, `heapguard`, `bench` | Reset reason and core dump summary at boot, brownout settle, PSRAM ECC log; debug heap guard (internal heap check every 20 ms, ROM printf ring kept across resets, socket-VFS watchpoints); `bench` tests |
 
@@ -74,6 +74,7 @@ Building and flashing: [build-and-flash.md](build-and-flash.md). Settings:
 |---|---|---|---|
 | main | 1 | 10 KB | Draws the faces; console, USB, power, night and the rest of the main loop (20 s task watchdog) |
 | `flush` | 0 | 4 KB | Diffs each canvas against the glass, sends the dirty rectangles |
+| `gifdec` | 1 | 3 KB | Inflates each GIF frame from flash into the panel's frame buffer, then hands it to `flush` (main's priority: about 30% of core 1 for a 20 fps GIF) |
 | `led` | 0 | 2 KB | Status LED patterns |
 | `discord` | 0 | 10 KB | Discord gateway and REST |
 | `weather` | 0 | 9 KB | Open-Meteo, OpenWeather, GDACS; the Pushover queue |

@@ -27,4 +27,4 @@ static constexpr int PIN_DOOR[4] = PIN_DOOR_LIST;   // keyfob B1-B4 (opto rows 1
 #endif
 
 // ---- GIF storage ----
-#define MAX_FRAMES 64
+#define MAX_FRAMES 512   // frame tables, 76 B a frame in PSRAM; frames themselves stay in flash

@@ -140,11 +140,10 @@ extern "C" void app_main() {
          N_PANELS, SPI_HZ, MOBO_RST_HOLD_TEST ? " | TEST: mobo RST held HIGH" : "",
          (unsigned)freePsram(), fatOk ? "ok" : "FAILED");
 
-  // 5. GIF: the pack built into the firmware, inflated into PSRAM
-  uint32_t gifT0 = nowMs();
+  // 5. GIF: the pack built into the firmware, frames inflate as they play
   if (gifLoad())
-    logMsg("gif: %u GIFs, %u frames %ux%u, %u KB PSRAM, inflated in %u ms", gif.nSeg, gif.n, gif.w, gif.h,
-           (unsigned)(gif.bytes / 1024), (unsigned)(nowMs() - gifT0));
+    logMsg("gif: %u GIFs, %u frames %ux%u, %u KB pack in flash, %u KB PSRAM", gif.nSeg, gif.n, gif.w, gif.h,
+           (unsigned)(gif.packBytes / 1024), (unsigned)(gif.bytes / 1024));
   else
     logMsg("gif: pack failed to load");
   for (int i = 0; i < N_PANELS; i++) viewEnter(i, panels[i].view);   // GIF offsets now that frames exist

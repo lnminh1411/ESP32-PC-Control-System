@@ -52,15 +52,18 @@ cover art, in place of the made-up one.
 
 The GIFs are part of the firmware. Their sources are in `firmware/gifs/`, and
 `firmware/gifs/gifs.json` lists them in play order (`every` keeps every Nth
-frame, up to 4 GIFs and 64 frames in all). After changing either, regenerate
-the pack and flash:
+frame, up to 8 GIFs and 512 frames in all; the 5 MB app slot is the real
+limit, about 19 KB a frame). After changing either, regenerate the pack and
+flash:
 
 ```bash
 python scripts/gif_pack.py
 ```
 
 It writes `firmware/main/gifs.bin` (committed) and prints the pack size, the
-PSRAM the frames take after boot and the colour error of each palette.
+size of the frames once inflated and the colour error of each palette. The
+board keeps the frames compressed in flash and inflates each as it plays,
+about 15 ms of core 1 a frame.
 `GIF_SWITCH_S` sets how long each GIF plays.
 
 The two `*_20fps.gif` files are made from the originals kept beside them with

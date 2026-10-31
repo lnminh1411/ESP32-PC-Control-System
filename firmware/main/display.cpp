@@ -30,6 +30,7 @@ static uint8_t *dmaBuf[2];
 static volatile uint32_t txDone;
 static uint32_t txIssued;
 static QueueHandle_t flushQueue;
+static QueueHandle_t gifQueue;      // GIF panels to inflate before flush
 static TaskHandle_t flushTaskHandle;   // the only task that waits on DMA
 static volatile float busWirePct = 0.0f;
 
@@ -43,6 +44,7 @@ static bool IRAM_ATTR onTxDone(esp_lcd_panel_io_handle_t, esp_lcd_panel_io_event
 }
 
 uint32_t displaySpinUs;   // perf: time the flush task spends blocked on DMA
+uint32_t gifDecodeUs, gifDecodeN;   // perf: time gifdec spends inflating, frames inflated
 
 // Blocks (core 0 free for other work) until at most inFlight transfers are
 // queued. Each finished transfer notifies; the timeout only guards against a
@@ -232,27 +234,16 @@ static void pushBand(Panel &p, const uint16_t *pal, int x0, int y0) {
   p.bytes += rowBytes * (yB - yA);
 }
 
+// gifdec has put frame gifFrame in gifCur
 static void pushGif(Panel &p) {
-  if (!gif.n) return;
-  if (!p.gifCur) {   // first time on this panel
-    p.gifCur = (uint8_t *)heap_caps_malloc((size_t)gif.w * gif.h, MALLOC_CAP_SPIRAM);
-    if (!p.gifCur) {
-      static bool told;
-      if (!told) logMsg("gif: no PSRAM for a panel buffer");
-      told = true;
-      return;
-    }
-    p.gifShown = -1;
-  }
+  if (!gif.n || !p.gifCur) return;
   uint32_t t0 = nowUs();
   uint16_t fIdx = p.gifFrame;
   int x0 = ((TFT_W - gif.w) / 2) & ~1;
   int y0 = (TFT_H - gif.h) / 2;
-  uint16_t prevIdx = gifPrevFrame(fIdx);   // a segment switch is a full push
   const uint16_t *pal = gif.pal[gifSegOf(fIdx)];
   bool band = p.bandY1 > p.bandY0, bandDirty = false;
-  if (p.gifShown == (int16_t)prevIdx) {
-    gifApplyFrame(p.gifCur, fIdx);
+  if (!p.gifFull) {
     uint8_t nr = gif.nRects[fIdx];
     for (uint8_t i = 0; i < nr; i++) {
       const GifRect &r = gif.rects[fIdx][i];
@@ -260,7 +251,6 @@ static void pushGif(Panel &p) {
       if (y0 + r.y < p.bandY1 && y0 + r.y + r.h > p.bandY0) bandDirty = true;
     }
   } else {
-    gifBuildFrame(p.gifCur, fIdx);
     pushGifRect(p, pal, 0, 0, gif.w, gif.h, x0, y0);
     bandDirty = true;
   }
@@ -316,10 +306,50 @@ static void flushTask(void *) {
   }
 }
 
+// Inflates GIF frames from flash into each panel's gifCur, then hands the
+// panel to flush. Core 1 at the main task's priority, so the two share time
+// slices: below it, gifdec only split the idle time with IDLE1 and a 20 fps
+// GIF fell to 10 fps.
+static void gifDecodeTask(void *) {
+  for (;;) {
+    int idx;
+    if (xQueueReceive(gifQueue, &idx, portMAX_DELAY) != pdTRUE) continue;
+    Panel &p = panels[idx];
+    if (!p.gifCur) {   // first time on this panel
+      p.gifCur = (uint8_t *)heap_caps_malloc((size_t)gif.w * gif.h, MALLOC_CAP_SPIRAM);
+      if (!p.gifCur) {
+        static bool told;
+        if (!told) logMsg("gif: no PSRAM for a panel buffer");
+        told = true;
+        p.busy = false;
+        continue;
+      }
+      p.gifShown = -1;
+    }
+    uint16_t f = p.gifFrame;
+    uint32_t t0 = nowUs();
+    // the frame before f on the glass: inflate f's rects over it; else (a
+    // segment switch, a new face) rebuild from the key frame and push it whole
+    p.gifFull = p.gifShown != (int16_t)gifPrevFrame(f);
+    bool ok = p.gifFull ? gifBuildFrame(p.gifCur, f) : gifApplyFrame(p.gifCur, f);
+    gifDecodeUs += nowUs() - t0;
+    gifDecodeN++;
+    if (!ok) {
+      static bool told;
+      if (!told) logMsg("gif: frame %u did not inflate", f);
+      told = true;
+      p.gifShown = -1;   // gifCur is partly written: the next frame rebuilds, the glass keeps the last one
+      p.busy = false;
+      continue;
+    }
+    xQueueSend(flushQueue, &idx, portMAX_DELAY);
+  }
+}
+
 void displaySubmit(int panel) {
   if (panel < 0 || panel >= N_PANELS) return;
   panels[panel].busy = true;
-  xQueueSend(flushQueue, &panel, portMAX_DELAY);
+  xQueueSend(panels[panel].gifMode ? gifQueue : flushQueue, &panel, portMAX_DELAY);
 }
 
 void displayWait(int panel) {
@@ -442,7 +472,9 @@ void displayInit() {
          panels[2].canvasInternal ? "internal" : "psram");
 
   flushQueue = xQueueCreate(N_PANELS, sizeof(int));
+  gifQueue = xQueueCreate(N_PANELS, sizeof(int));
   xTaskCreatePinnedToCore(flushTask, "flush", 4096, nullptr, 2, &flushTaskHandle, 0);
+  xTaskCreatePinnedToCore(gifDecodeTask, "gifdec", 3072, nullptr, 1, nullptr, 1);
 }
 
 // ---- backlights & NVS persistence ----

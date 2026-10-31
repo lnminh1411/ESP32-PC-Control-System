@@ -27,8 +27,8 @@ OUT = os.path.join(ROOT, "firmware", "main", "gifs.bin")
 PANEL_W, PANEL_H = 240, 320
 BAND = 8                # rows, as computeFrameRects did on the board
 MAX_DIRTY_RECTS = 8     # gif_store.h
-MAX_GIF_SEGS = 4        # gif_store.h
-MAX_FRAMES = 64         # config.h
+MAX_GIF_SEGS = 8        # gif_store.h
+MAX_FRAMES = 512        # config.h
 
 
 def fill_panel(img):
@@ -144,7 +144,7 @@ def pack_gif(name, every):
         body += struct.pack("<I", len(z)) + z
     print(f"{name}: {len(frames)} frames, {sum(durations)} ms a loop, {len(palette)} colours, "
           f"worst colour error {worst:.2f} of 15 (RGB444 distance, {moved * 100:.2f}% of pixels moved), "
-          f"pack {len(body) / 1024:.1f} KB, PSRAM {psram / 1024:.1f} KB")
+          f"pack {len(body) / 1024:.1f} KB, {psram / 1024:.1f} KB inflated")
     return body, len(frames), psram
 
 
@@ -160,8 +160,8 @@ def main():
     data += b"".join(p[0] for p in packed)
     with open(OUT, "wb") as f:
         f.write(data)
-    print(f"{OUT}: {len(gifs)} GIFs, {total} frames, pack {len(data)} bytes ({len(data) / 1024:.1f} KB), "
-          f"PSRAM after decode {psram} bytes ({psram / 1024:.1f} KB)")
+    print(f"{OUT}: {len(gifs)} GIFs, {total} frames, pack {len(data)} bytes ({len(data) / 1024:.1f} KB) "
+          f"in the app image (5 MB slot), {psram / 1024:.1f} KB inflated, frame by frame as they play")
 
 
 if __name__ == "__main__":

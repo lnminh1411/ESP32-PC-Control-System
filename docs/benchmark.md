@@ -12,16 +12,16 @@ and time Wi-Fi from the PC with
 
 ## Usage
 
-From `bench usage` (part of `bench all`), PC on. PSRAM and the app image are
-from the 42-frame GIF pack, with all three panels having shown a GIF. Each
-panel that shows one holds 75 KB of PSRAM.
+From `bench usage` (part of `bench all`), PC on, 62-frame GIF pack inflated as
+it plays, one panel having shown a GIF. Each panel that shows one holds 75 KB
+of PSRAM.
 
 | Memory | Used | Notes |
 |---|---|---|
-| SRAM (512 KB) | 443 KB (87%) | 172 KB static (code in IRAM, data/bss, ROM, cache); heap 339 KB with 270 KB in use, 70 KB free, largest block 31 KB; lowest free ever: 29 KB |
-| PSRAM (7680 KB) | 4374 KB (57%) | lowest free ever 2456 KB, largest free block 3263 KB |
+| SRAM (512 KB) | 446 KB (87%) | 173 KB static (code in IRAM, data/bss, ROM, cache); heap 338 KB; lowest free ever: 25 KB, largest block 30 KB |
+| PSRAM (7680 KB) | 1585 KB (21%) | lowest free ever 5017 KB, largest free block 6015 KB |
 | Flash (16 MB) | fully partitioned | app slots 2 x 5 MB (OTA), FAT 5.9 MB, NVS 20 KB, core dump 64 KB |
-| App image | 2439 KB of 5120 KB (48%) | 793 KB of it is the GIF pack |
+| App image | 2848 KB of 5120 KB (56%) | 1201 KB of it is the GIF pack |
 | FAT /ffat | 4 KB of 5932 KB (0%) | layout.json, saved text images |
 | NVS | 229 of 630 entries | 12 namespaces |
 
@@ -221,3 +221,36 @@ on three panels it plays at about 60% speed; three panels at 20 fps need about
 The app slots then grew from 3 MB to 5 MB each and FAT shrank from 9.9 MB
 to 5.9 MB (`partitions.csv`, flashed over USB). The same image now fills 48%
 of its slot instead of 79%, leaving about 2.6 MB for more GIFs.
+
+### Frames inflated as they play
+
+The frames then stopped being inflated into PSRAM at boot. They stay
+compressed in flash, and the `gifdec` task (core 1) inflates each one just
+before the flush task pushes it. Measured with the 42-frame pack, PC on, GIF
+on panel 1:
+
+| | Inflated at boot | Inflated as they play |
+|---|---|---|
+| PSRAM used (`bench usage`) | 4374 KB (three panel buffers) | 1584 KB (one panel buffer) |
+| PSRAM lowest free | 2456 KB | 5094 KB |
+| Frames in PSRAM | 2722 KB | none: 113 KB of tables and one 75 KB inflate buffer |
+| SRAM lowest free | 29 KB | 25 KB |
+| Boot | 498 ms to inflate | none |
+| Frame cap | 64 | 512, and 8 GIFs |
+
+| Inflating | Core 1 | Panel 1 fps |
+|---|---|---|
+| `gifdec` at priority 0 (below main) | 80% | 9.8: it shared only the idle time, with IDLE1 |
+| `gifdec` at main's priority (1) | 66-92% | 19.4-20.0 |
+
+- **Per frame:** 15-16 ms of CPU. The inflate state sits in PSRAM: in internal
+  RAM it was no faster and took 11 KB of the scarce SRAM (lowest free fell to
+  14 KB).
+- **CPU:** a 20 fps GIF takes about 30% of core 1. Core 1 reached 92% only
+  with the media face also redrawing at 17 fps; with the other faces at 2 fps
+  it sits near 66%.
+- **Three panels:** 11-13 fps per panel, the same as before: the SPI bus is
+  the limit, not inflating.
+- **March 7th** then joined as a third GIF: 1 s of its 30 fps source (frames
+  120-149, a loop that closes), RIFE-interpolated to 20 frames at 20 fps. The
+  pack is 1201 KB for 62 frames, and the app image fills 56% of its slot.

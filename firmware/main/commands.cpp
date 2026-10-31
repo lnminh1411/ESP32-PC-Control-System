@@ -80,10 +80,13 @@ static void cmdSocks(const char *, const char *) {
 static void cmdPerf(const char *, const char *) {
   static TaskStatus_t prev[40];
   static UBaseType_t nPrev;
-  static uint32_t prevUs, prevSpin;
+  static uint32_t prevUs, prevSpin, prevDec, prevDecN;
   extern uint32_t displaySpinUs;
   uint32_t spin = displaySpinUs - prevSpin;
   prevSpin = displaySpinUs;
+  uint32_t dec = gifDecodeUs - prevDec, decN = gifDecodeN - prevDecN;
+  prevDec = gifDecodeUs;
+  prevDecN = gifDecodeN;
   TaskStatus_t cur[40];
   uint32_t total;
   UBaseType_t n = uxTaskGetSystemState(cur, 40, &total);
@@ -103,6 +106,7 @@ static void cmdPerf(const char *, const char *) {
            100 - idle[0] * 100.0f / dt, 100 - idle[1] * 100.0f / dt, busLoadPct());
     logMsg("  flush DMA wait %.1f%%  fps %.1f / %.1f / %.1f", spin * 100.0f / dt,
            panels[0].fps, panels[1].fps, panels[2].fps);
+    if (decN) logMsg("  gif inflate %.1f%% of core 1, %.1f ms a frame", dec * 100.0f / dt, dec / 1000.0f / decN);
     logMsg("  canvas internal %d/%d/%d  internal heap free %uK", panels[0].canvasInternal,
            panels[1].canvasInternal, panels[2].canvasInternal,
            (unsigned)(freeInternal() / 1024));
@@ -128,7 +132,8 @@ static void cmdStatus(const char *, const char *) {
   for (int i = 0; i < N_PANELS; i++)
     logMsg("  panel %d: %-6s %5.1f fps %6.1f KB/s  bus %5.1f ms/s", i + 1, viewName(panels[i].view),
            panels[i].fps, panels[i].kbps, panels[i].busMs);
-  logMsg("  gif: %u GIFs, %u frames %ux%u, %u KB PSRAM", gif.nSeg, gif.n, gif.w, gif.h, (unsigned)(gif.bytes / 1024));
+  logMsg("  gif: %u GIFs, %u frames %ux%u, %u KB pack in flash, %u KB PSRAM", gif.nSeg, gif.n, gif.w, gif.h,
+         (unsigned)(gif.packBytes / 1024), (unsigned)(gif.bytes / 1024));
   logMsg("  wifi %s %d dBm | discord %s", netUp() ? netIp() : "down", netRssi(),
          discordUp() ? "online" : "offline");
   logMsg("  pc stats: %d numbers, %d texts, %s", pcStatsCount(), pcTextCount(), pcStatsFresh() ? "live" : "no data");
