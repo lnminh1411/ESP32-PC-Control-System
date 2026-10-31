@@ -45,7 +45,8 @@ python scripts/readme_shots.py docs/images/screens.png
 `panel_shot.py` saves one panel. `readme_shots.py` builds
 [images/screens.png](images/screens.png): it stops the stats service, feeds the board a made-up stats frame,
 forces every face in turn, captures it and tiles the results (run it from an
-elevated shell).
+elevated shell). `--real-media` keeps the track the PC is playing, with its real
+cover art, in place of the made-up one.
 
 ## Other uploads
 

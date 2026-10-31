@@ -9,7 +9,11 @@ The cover art (generated here) and the title bitmap (rendered with the
 service's own GDI calls and font) are sent too, so the media face shows
 neither the track the PC is playing nor `?` for the Japanese title.
 
-  python scripts/readme_shots.py docs/images/screens.png [--port COM12] [--keep DIR]
+  python scripts/readme_shots.py docs/images/screens.png [--port COM12] [--keep DIR] [--real-media]
+
+--real-media keeps what the PC is playing: the board's live media.* values
+are read before the service stops, and the cover art the board already holds
+for that track is shown instead of the generated one.
 
 Needs an elevated shell (sc stop/start).
 """
@@ -19,6 +23,7 @@ import ctypes
 import os
 import random
 import subprocess
+import sys
 import threading
 import time
 import zlib
@@ -56,6 +61,7 @@ BASE_TEXT = {
     "claude.plan": "Claude Max 5x", "claude.s_pace_v": "ok",
     "agy.active": "user@example.com", "agy2.email": "user@example.com", "agy2.plan": "Pro",
     "ai.phase_name": "idle", "ai.tool": "grep_search",
+    "pc.vpn": "vpn", "pc.vpn_stack": "vpn", "pc.exit_loc": "SG",
 }
 LOCAL_AI_BUSY = ({"ai.phase": 4, "ai.active": 1}, {"ai.phase_name": "generating"})
 # PC usage warnings (pcwarn.cpp, default limits): fed as real stats so the
@@ -113,9 +119,11 @@ class Feeder:
             self.send(f"@{kind} d {b64[i:i + 160]}")
         self.send(f"@{kind} end {end_id} {zlib.crc32(data):08x}")
 
-    def send_media(self):
-        """Cover art and the non-ASCII title, which the board would ask the service for."""
-        self.send_blob("a", f"{ART_ID} 144 144 444", ART_ID, rgb444(cover()))
+    def send_media(self, real=False):
+        """Cover art and the non-ASCII title, which the board would ask the service for.
+        real: the board keeps the live track's art, only the title is sent."""
+        if not real:
+            self.send_blob("a", f"{ART_ID} 144 144 444", ART_ID, rgb444(cover()))
         title = self.text["media.title"]
         tid = zlib.crc32(title.encode("utf-8"))
         w, h, ascent, packed = render_text(title, *TITLE_FONT)
@@ -146,6 +154,36 @@ class Feeder:
         while not self.stop.is_set():
             self.frame()
             time.sleep(0.5)
+
+
+MEDIA_NUM = ("media.art_id", "media.pos_s", "media.len_s", "media.playing")
+MEDIA_TEXT = ("media.title", "media.artist", "media.source")
+
+
+def live_media(ser):
+    """The board's current media.* values (`pcstats`), or None when nothing plays."""
+    ser.reset_input_buffer()
+    ser.write(b"pcstats\n")
+    end, raw = time.time() + 3, b""
+    while time.time() < end:
+        raw += ser.read(4096)
+    num, text = {}, {}
+    for line in raw.decode("utf-8", "replace").splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) != 2:
+            continue
+        k, v = parts
+        if k in MEDIA_TEXT and v.startswith('"') and v.endswith('"'):
+            text[k] = v[1:-1]
+        elif k in MEDIA_NUM:
+            try:
+                num[k] = float(v)
+            except ValueError:
+                pass
+    if not text.get("media.title") or not num.get("media.art_id"):
+        return None
+    num["media.ok"] = 1
+    return num, text
 
 
 def cover():
@@ -280,7 +318,19 @@ def main():
     ap.add_argument("out")
     ap.add_argument("--port", default="COM12")
     ap.add_argument("--keep", help="also save each capture here")
+    ap.add_argument("--real-media", action="store_true", help="show the track the PC is playing, with its cover art")
     a = ap.parse_args()
+
+    sys.stdout.reconfigure(errors="replace")   # a track title the console's code page lacks
+    real = None
+    if a.real_media:
+        with serial.Serial(a.port, 115200, timeout=0.5) as s:
+            real = live_media(s)
+        print(f"real media: {real[1]['media.title']} / {real[1].get('media.artist', '')}" if real
+              else "real media: nothing playing, using the made-up track")
+        if real:
+            BASE_STATS.update(real[0])
+            BASE_TEXT.update(real[1])
 
     subprocess.run(["sc", "stop", SERVICE], capture_output=True)
     time.sleep(2)
@@ -299,7 +349,7 @@ def main():
                 if setup:
                     feed.send(setup)
                 if face == "media":
-                    feed.send_media()
+                    feed.send_media(real is not None)
                 feed.send(f"face {panel} {face}")
                 # let the face render (and a GIF reach a real frame)
                 time.sleep(WARN_SETTLE_S if over and over[0].keys() & WARN_ALL[0].keys() else 2)

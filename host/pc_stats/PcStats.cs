@@ -723,11 +723,12 @@ partial class PcStats : ServiceBase {
   // PcHwCtl's power watcher (docs/ipc.md#power-actions-and-events there):
   // hw.going*, hw.last_down*, hw.wake_*, hw.update_pending* and hw.power_do*
   // go out as pc.*, and hw.update_running as pc.update (the board's name).
+  // Its VPN check (hw.vpn, vpn_by, vpn_stack, exit_ip/loc/warp) as pc.vpn* / pc.exit_*.
   static string BoardKey(string source, string key) {
     if (source != "hw") return key;
     if (key.StartsWith("hw.mon.", StringComparison.Ordinal)) return key.Substring(3);
     if (key == "hw.update_running") return "pc.update";
-    if (Regex.IsMatch(key, @"^hw\.((disp|sys|exec)_req|going|last_down|wake_|update_pending|power_do)")) return "pc" + key.Substring(2);
+    if (Regex.IsMatch(key, @"^hw\.((disp|sys|exec)_req|going|last_down|wake_|update_pending|power_do|vpn|exit_)")) return "pc" + key.Substring(2);
     return key;
   }
 

@@ -4,6 +4,7 @@
 
 #include <ctype.h>
 #include <math.h>
+#include <nvs.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -120,7 +121,7 @@ static void formatRate(double b, char *buf, size_t len) {
   if (isnan(b)) {
     snprintf(buf, len, "--");
   } else {
-    // no decimal from 100 up, so the rate stays clear of a 2-digit-day uptime
+    // no decimal from 100 up, so the rate stays clear of the VPN status
     bool mb = b >= 1048576.0;
     double v = mb ? b / 1048576.0 : b / 1024.0;
     snprintf(buf, len, v >= 100.0 ? "%.0f %s" : "%.1f %s", v, mb ? "MB/s" : "KB/s");
@@ -184,7 +185,7 @@ static void formatUptime(double uptimeSec, char *buf, size_t len) {
   uint32_t m = (s / 60) % 60;
   uint32_t sec = s % 60;
   if (d >= 100) {
-    // 3-digit days: seconds dropped so it stays clear of the net rates
+    // 3-digit days: seconds dropped so it stays short
     snprintf(buf, len, "%lud %02lu:%02lu", (unsigned long)d, (unsigned long)h, (unsigned long)m);
   } else if (d > 0) {
     snprintf(buf, len, "%lud %02lu:%02lu:%02lu", (unsigned long)d, (unsigned long)h, (unsigned long)m,
@@ -366,6 +367,61 @@ static inline void drawNetArrow(LGFX_Sprite &c, int x, int y, bool down, uint16_
   } else {
     c.fillTriangle(x, y + 6, x + 8, y + 6, x + 4, y, hex);
   }
+}
+
+// VPN status from PcHwCtl's check (pc.vpn_stack, pc.exit_loc): "VPN  VN" over
+// "WARP+VPN". Green when the exit is outside the home country, amber when it
+// isn't (WARP tunnels but keeps your location), dim "Off" without a tunnel.
+// The home country is the exit seen with no tunnel, kept in NVS.
+static void drawVpn(LGFX_Sprite &c, int x, int y) {
+  static char home[4];
+  static bool homeLoaded;
+  if (!homeLoaded) {
+    homeLoaded = true;
+    nvs_handle_t h;
+    size_t len = sizeof home;
+    if (nvs_open("screens", NVS_READONLY, &h) == ESP_OK) {
+      if (nvs_get_str(h, "vpn_home", home, &len) != ESP_OK) home[0] = 0;
+      nvs_close(h);
+    }
+  }
+  const char *kind = pcText("pc.vpn"), *stack = pcText("pc.vpn_stack"), *loc = pcText("pc.exit_loc");
+  if (strlen(loc) != 2) loc = "";   // "-" while PcHwCtl's trace has no answer
+  if (!strcmp(kind, "none") && loc[0] && strlen(loc) < sizeof home && strcmp(loc, home)) {
+    snprintf(home, sizeof home, "%s", loc);
+    nvs_handle_t h;
+    if (nvs_open("screens", NVS_READWRITE, &h) == ESP_OK) {
+      nvs_set_str(h, "vpn_home", home);
+      nvs_commit(h);
+      nvs_close(h);
+    }
+  }
+
+  char val[24];
+  uint16_t col = C_DIM;
+  if (!kind[0]) {
+    snprintf(val, sizeof val, "--");
+  } else if (!strcmp(kind, "none")) {
+    snprintf(val, sizeof val, "Off");
+  } else {
+    // "warp+vpn" -> "WARP+VPN"
+    const char *s = stack[0] && strcmp(stack, "none") ? stack : kind;
+    size_t i = 0;
+    for (; s[i] && i < sizeof val - 1; i++) val[i] = (char)toupper((unsigned char)s[i]);
+    val[i] = 0;
+    col = (loc[0] && home[0] && !strcmp(loc, home)) ? C_WARN : C_GOOD;
+  }
+  c.setFont(fontSmall());
+  c.setTextColor(C_DIM);
+  c.setTextDatum(lgfx::textdatum_t::top_left);
+  c.drawString("VPN", x, y);
+  if (loc[0]) {   // the exit's country
+    c.setTextColor(C_TEXT);
+    c.drawString(loc, x + c.textWidth("VPN") + 8, y);
+  }
+  c.setFont(fontHead());
+  c.setTextColor(col);
+  c.drawString(val, x, y + 16);
 }
 
 // Warning overlay box for restarting / updating on GIF faces.
@@ -658,8 +714,17 @@ static void drawPcStats(LGFX_Sprite &c) {
   c.setTextDatum(lgfx::textdatum_t::top_left);
   c.drawString("CPU", 12, 9);
 
+  // PC uptime in the CPU card's header, right of the label: the value bright,
+  // "up" dim
+  char buf[48], upBuf[32];
+  formatUptime(pcStat("uptime"), upBuf, sizeof(upBuf));
+  c.setTextColor(C_TEXT);
+  c.setTextDatum(lgfx::textdatum_t::top_right);
+  c.drawString(upBuf, 228, 9);
+  c.setTextColor(C_DIM);
+  c.drawString("up", 228 - c.textWidth(upBuf) - 5, 9);
+
   double cpuLoad = pcStat("cpu_load");
-  char buf[48];
   if (isnan(cpuLoad)) snprintf(buf, sizeof(buf), "--");
   else snprintf(buf, sizeof(buf), "%.0f%%", cpuLoad);
   c.setFont(fontBig());
@@ -912,19 +977,9 @@ static void drawMedia(LGFX_Sprite &c) {
     c.drawString("Nothing playing", 120, y0 + 100);
   }
 
-  // Uptime and Network throughput card
+  // VPN and Network throughput card (uptime lives in the PC stats face's CPU card)
   drawCard(c, 4, 240, 232, 76);
-  c.setFont(fontSmall());
-  c.setTextColor(C_FAINT);
-  c.setTextDatum(lgfx::textdatum_t::top_left);
-  c.drawString("UPTIME", 12, 246);
-
-  char upBuf[32];
-  formatUptime(pcStat("uptime"), upBuf, sizeof(upBuf));
-  c.setFont(fontHead());
-  c.setTextColor(C_TEXT);
-  c.setTextDatum(lgfx::textdatum_t::top_left);
-  c.drawString(upBuf, 12, 262);
+  drawVpn(c, 12, 246);
 
   // Network down throughput
   drawNetArrow(c, 220, 251, true, C_CPU);

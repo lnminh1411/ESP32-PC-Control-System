@@ -41,7 +41,7 @@
 #include <stdint.h>
 
 #define PCSTATS_MAX 160
-#define PCSTATS_TEXT_MAX 64   // media.* and pc.going* pushed past the old 24
+#define PCSTATS_TEXT_MAX 80   // media.* and pc.going* pushed past the old 24, pc.vpn* past 64
 
 void pcStatsLine(const char *line);   // console hands '@' lines here (already wired in console.cpp)
 double pcStat(const char *key);        // NAN if unknown, empty, or no sample for 5 s
