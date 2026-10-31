@@ -278,9 +278,12 @@ void cycloneJudge(const CycloneTrack &tr, double homeLat, double homeLon, time_t
   int pi = nearestPoint(tr, inRange ? tNow : arrive ? arrive : closestT);
   const char *cat = tr.cat[pi];
   bool typhoon = cat[0] ? typhoonClass(cat) : tr.windKmh >= 118;
+  // a tropical storm (63+ km/h) brings some of Hanoi's worst rain: tracked too
+  bool storm = typhoon || (cat[0] ? !strcmp(cat, "TS") || !strcmp(cat, "STS") : tr.windKmh >= 63);
   // GDACS gives the peak wind of the whole storm, not at arrival
   out->superTyphoon = typhoon && (!strcmp(cat, "STY") || tr.windKmh >= 184);
-  out->active = typhoon && inRange;
-  out->tracked = typhoon && (inRange || arrive);
+  out->tropicalStorm = storm && !typhoon;
+  out->active = storm && inRange;
+  out->tracked = storm && (inRange || arrive);
   out->arriveUnix = inRange ? 0 : arrive;
 }

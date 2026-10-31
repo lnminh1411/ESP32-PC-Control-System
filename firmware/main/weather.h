@@ -61,16 +61,18 @@ enum : uint8_t { RAIN_KIND_STEADY, RAIN_KIND_SHOWER, RAIN_KIND_THUNDER };
 // The usual length of a shower or thunderstorm in minutes; false for steady rain
 bool rainKindRange(uint8_t kind, int *loMin, int *hiMin);
 
-enum : uint8_t { RAIN_SRC_OPEN_METEO = 1, RAIN_SRC_OPENWEATHER = 2 };
-const char *rainSrcName(const RainAlert &a);   // "Open-Meteo", "OpenWeather", "both"
+// RADAR: RainViewer sees rain falling at the place now (observed, not a forecast)
+enum : uint8_t { RAIN_SRC_OPEN_METEO = 1, RAIN_SRC_OPENWEATHER = 2, RAIN_SRC_RADAR = 4 };
+const char *rainSrcName(const RainAlert &a);   // "Open-Meteo", "OpenWeather", "both", "radar", "radar+OM"...
 // "Seen by OpenWeather (Open-Meteo: dry)"; returns the length written
 int rainSrcLine(char *out, int cap, const RainAlert &a);
 
 // Tropical cyclone near home (GDACS track + forecast)
 struct Cyclone {
-  bool tracked;          // a typhoon whose track comes within range of home
+  bool tracked;          // a typhoon or tropical storm whose track comes within range of home
   bool active;           // within range now
   bool superTyphoon;
+  bool tropicalStorm;    // below typhoon strength (posted at follow-up priority)
   char name[20];         // "KAJIKI"
   uint32_t arriveUnix;   // first time within range (UTC); 0 = already in range
   uint16_t distKm;       // centre's distance from home now
@@ -78,11 +80,11 @@ struct Cyclone {
   uint16_t windKmh;      // peak wind GDACS reports for the storm
 };
 
-const WeatherNow &weatherNow();
-const RainAlert &rainAlertHome();
+WeatherNow weatherNow();          // copies, taken under the weather lock
+RainAlert rainAlertHome();
 bool weatherHomeLocation(double *lat, double *lon);   // false while no home is set
-const RainAlert &rainAlertPhone();
-const Cyclone &weatherCyclone();
+RainAlert rainAlertPhone();
+Cyclone weatherCyclone();
 const char *wxTierName(WxTier t);         // "Heavy Shower"
 int rainEtaMin(const RainAlert &a);       // minutes to rain start, from the clock; -1 = none
 int rainLeftMin(const RainAlert &a);      // minutes to rain end, from the clock; -1 = unknown

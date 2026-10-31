@@ -15,6 +15,10 @@ extern "C" {
 // nullptr with *id set to the request id. Callable from any task.
 const char *hwSend(const char *command, uint32_t *id);
 
+// The answer to request id, if hw.reply holds it now: true with "ok" or
+// "err ..." in out. Doesn't wait (the main loop polls it).
+bool hwReplyFor(uint32_t id, char *out, size_t outSize);
+
 // Waits for the answer to request id: true with "ok" or "err ..." in out, false
 // on timeout. Blocks, so never call it from the main loop (it reads PC lines).
 bool hwWaitReply(uint32_t id, uint32_t timeoutMs, char *out, size_t outSize);

@@ -1,6 +1,8 @@
 #include "power.h"
 
 #include <esp_random.h>
+#include <math.h>
+#include <nvs.h>
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
@@ -31,6 +33,35 @@ static char s_action[16] = "";
 static char s_nonce[16] = "";
 static uint32_t s_reqTimeMs = 0;
 
+// Hibernation on the PC (pc.hib from the helper: S4 and a hiberfile), kept in
+// NVS so it is known while the PC is off. -1 = never heard
+static int8_t s_hib = -2;   // -2: NVS not read yet
+
+static void hibFollow() {
+  if (s_hib == -2) {
+    s_hib = -1;
+    nvs_handle_t h;
+    if (nvs_open("power", NVS_READONLY, &h) == ESP_OK) {
+      nvs_get_i8(h, "hib", &s_hib);
+      nvs_close(h);
+    }
+  }
+  double v = pcStat("pc.hib");
+  if (isnan(v)) return;
+  int8_t hib = v >= 0.5 ? 1 : 0;
+  if (hib == s_hib) return;
+  logMsg("power: hibernation on the PC is %s", hib ? "on" : "off");
+  s_hib = hib;
+  nvs_handle_t h;
+  if (nvs_open("power", NVS_READWRITE, &h) == ESP_OK) {
+    nvs_set_i8(h, "hib", s_hib);
+    nvs_commit(h);
+    nvs_close(h);
+  }
+}
+
+int powerHibernateOn() { return s_hib < 0 ? -1 : s_hib; }   // read by other tasks: hibFollow stays in powerPoll's
+
 const char *powerRequest(const char *action) {
   if (!action || !*action) return "action required";
 
@@ -43,6 +74,7 @@ const char *powerRequest(const char *action) {
   if (!isSleep && !isHibernate && !isRestart && !isShutdown && !isLock) {
     return "unknown action (must be sleep, hibernate, restart, shutdown, lock)";
   }
+  if (isHibernate && powerHibernateOn() == 0) return "hibernation is off on the PC (powercfg /h on)";
 
   if (pcState() != PC_ON && !pcStatsFresh()) {
     return "PC not on";
@@ -95,6 +127,7 @@ const char *powerRequest(const char *action) {
 }
 
 void powerPoll() {
+  hibFollow();
   if (!s_pending) return;
 
   const char *ack = pcText("power.ack");

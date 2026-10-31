@@ -24,6 +24,7 @@
 #include "owm.h"
 #include "owntracks.h"
 #include "pushover.h"
+#include "radar.h"
 #include "settings_or_example.h"
 #include "sys.h"
 #include "views.h"
@@ -52,6 +53,21 @@ static int trackShown = -1;     // index in tracks_ behind cyclone_
 // `weather demo`: polls leave the demo data alone and nothing is posted
 static uint32_t demoUntilMs;
 static bool demoOn() { return demoUntilMs && (int32_t)(demoUntilMs - nowMs()) > 0; }
+// The real data the demo covers, put back when it ends (before rainWarnTick
+// reads it: the demo's shower was posted as real once)
+static WeatherNow demoSavedNow;
+static RainAlert demoSavedHome;
+static Cyclone demoSavedCyclone;
+static bool demoSaved;
+// `weather clear` from the console: done by the weather task, which owns the
+// warning state it resets too
+static volatile bool clearReq;
+static volatile bool endResetReq;   // `weather end-reset`, done by the weather task
+static struct {
+  double lat, lon;
+  char name[48];
+  volatile bool set;
+} homeReq;
 
 // Discord colours: approaching > 20 min, close or here, cleared
 static constexpr uint32_t COL_YELLOW = 0xF1C40F;
@@ -97,6 +113,7 @@ enum ErrMask : uint16_t {
   ERR_TC_HTTP     = 1 << 8,
   ERR_TC_TRACK    = 1 << 9,
   ERR_OWM         = 1 << 10,
+  ERR_RADAR       = 1 << 11,
 };
 static uint16_t loggedErrors;
 static char lastError[96];               // shown by `weather show`
@@ -117,12 +134,22 @@ static void clearError(uint16_t mask) {
   loggedErrors &= ~mask;
 }
 
-const WeatherNow &weatherNow() { return now_; }
-const RainAlert &rainAlertHome() { return rainHome; }
-const RainAlert &rainAlertPhone() { return rainPhone; }
+// Copies under wxMutex: the screens read these while the weather task writes
+// them, and a frame could show half of one update
+template <typename T> static T wxCopy(const T &v) {
+  if (wxMutex) xSemaphoreTake(wxMutex, portMAX_DELAY);
+  T c = v;
+  if (wxMutex) xSemaphoreGive(wxMutex);
+  return c;
+}
+WeatherNow weatherNow() { return wxCopy(now_); }
+RainAlert rainAlertHome() { return wxCopy(rainHome); }
+RainAlert rainAlertPhone() { return wxCopy(rainPhone); }
 
 const char *rainSrcName(const RainAlert &a) {
   uint8_t s = a.src & (RAIN_SRC_OPEN_METEO | RAIN_SRC_OPENWEATHER);
+  if (a.src & RAIN_SRC_RADAR)
+    return s == RAIN_SRC_OPENWEATHER ? "radar+OWM" : s == RAIN_SRC_OPEN_METEO ? "radar+OM" : s ? "all three" : "radar";
   return s == RAIN_SRC_OPENWEATHER ? "OpenWeather" : s == RAIN_SRC_OPEN_METEO ? "Open-Meteo" : s ? "both" : "--";
 }
 
@@ -130,7 +157,10 @@ int rainSrcLine(char *out, int cap, const RainAlert &a) {
   const uint8_t both = RAIN_SRC_OPEN_METEO | RAIN_SRC_OPENWEATHER;
   uint8_t s = a.src & both, other = s ^ both;
   int n;
-  if (s == both) n = snprintf(out, cap, "Seen by Open-Meteo and OpenWeather");
+  if (a.src & RAIN_SRC_RADAR)
+    n = snprintf(out, cap, "On the radar now%s%s", s == both ? ", and in Open-Meteo and OpenWeather" : s ? ", and in " : " (the forecasts missed it)",
+                 s == both ? "" : s == RAIN_SRC_OPEN_METEO ? "Open-Meteo" : s ? "OpenWeather" : "");
+  else if (s == both) n = snprintf(out, cap, "Seen by Open-Meteo and OpenWeather");
   else if (s && (a.dry & other))
     n = snprintf(out, cap, "Seen by %s only (%s: dry)", rainSrcName(a), other == RAIN_SRC_OPEN_METEO ? "Open-Meteo" : "OpenWeather");
   else n = snprintf(out, cap, "Seen by %s", rainSrcName(a));
@@ -162,7 +192,7 @@ static uint32_t upwindEnd, upwindAt; // home rain end from the upwind probe (0 =
 static bool upwindBeyond;            // the probe's last point (2 h out) still had rain
 static char owmSeen[8][40];          // alert IDs already posted
 static uint8_t owmSeenNext;
-const Cyclone &weatherCyclone() { return cyclone_; }
+Cyclone weatherCyclone() { return wxCopy(cyclone_); }
 
 const char *wxTierName(WxTier t) {
   switch (t) {
@@ -249,6 +279,12 @@ static void loadDemo(int mode) {
   memcpy(w.days, days, sizeof days);
 
   if (wxMutex) xSemaphoreTake(wxMutex, portMAX_DELAY);
+  if (!demoSaved) {
+    demoSavedNow = now_;
+    demoSavedHome = rainHome;
+    demoSavedCyclone = cyclone_;
+    demoSaved = true;
+  }
   now_ = w;
   rainHome = {};
   cyclone_ = {};
@@ -621,8 +657,6 @@ static void fetchAirQuality(char *buf, size_t cap) {
   cJSON_Delete(root);
 }
 
-static uint32_t homePolls;   // good home nowcasts so far
-static uint32_t phonePolls;  // phone ones (either source)
 
 // The hourly forecast has rain (0.2 mm+) in the hour holding t or the next
 static bool hourlyWetNear(uint32_t t) {
@@ -685,8 +719,16 @@ static WxTier rainTier(const RainAlert &a) {
 }
 
 // OpenWeather's hour counts for 5 min after it was fetched, for its place only
+// After a failed answer (OpenWeather's empty minute list comes in spells of
+// up to ~10 min) the last good hour counts for up to 15 min, while its minutes
+// still reach 30 min ahead: a blank spell doesn't read as dry
+static uint32_t owmFailUnix;   // last failed fetch
 static bool owmFresh(bool phone, uint32_t now) {
-  return owmLast.valid && owmOnPhone == phone && now - owmLast.fetchedUnix < 5 * 60;
+  if (!owmLast.valid || owmOnPhone != phone) return false;
+  uint32_t age = now - owmLast.fetchedUnix;
+  if (age < 5 * 60) return true;
+  uint32_t coversUntil = owmLast.dt0 + (uint32_t)owmLast.n * 60;
+  return owmFailUnix > owmLast.fetchedUnix && age < 15 * 60 && coversUntil > now + 30 * 60;
 }
 
 // Open-Meteo's nowcast counts while its slowest cadence (15 min) could still be running
@@ -704,7 +746,7 @@ static bool omFresh(bool phone, uint32_t now) {
 // the screens, never posted. *Held: each source's polls in a row with rain.
 // The end: the later of the nowcast's and OpenWeather's, OpenWeather's only
 // once two of its hours agree on it (owmEndOk).
-static void mergeRain(RainAlert *a, bool phone, const OwmMinutely *m, uint8_t omHeld, uint8_t owmHeld, bool owmEndOk) {
+static void mergeModels(RainAlert *a, bool phone, const OwmMinutely *m, uint8_t omHeld, uint8_t owmHeld, bool owmEndOk) {
   const uint8_t both = RAIN_SRC_OPEN_METEO | RAIN_SRC_OPENWEATHER;
   uint32_t now = (uint32_t)time(nullptr);
   bool omWet = a->active || a->raining;
@@ -753,6 +795,40 @@ static void mergeRain(RainAlert *a, bool phone, const OwmMinutely *m, uint8_t om
   if (warnIt) return;
   a->watch = true;
   a->active = a->raining = false;
+}
+
+// The radar's newest frame for one place (radarTick: the phone while away, else home)
+static RadarObs radarLast;
+static bool radarOnPhone;
+static bool radarWasWet;   // for the log line when the place turns wet or dry
+static bool radarFresh(bool phone, uint32_t now) {
+  return radarLast.valid && radarOnPhone == phone && now - radarLast.fetchedUnix < 20 * 60 &&
+         now - radarLast.frameUnix < RADAR_MAX_AGE_S;
+}
+
+// The models' call, then the radar's: rain on the radar at the place is
+// falling now, so it is a warning whatever the models say (they missed the
+// 05:00 drizzle of 10-29)
+static void mergeRain(RainAlert *a, bool phone, const OwmMinutely *m, uint8_t omHeld, uint8_t owmHeld, bool owmEndOk) {
+  mergeModels(a, phone, m, omHeld, owmHeld, owmEndOk);
+  uint32_t now = (uint32_t)time(nullptr);
+  if (!radarFresh(phone, now)) return;
+  if (!radarRainingHere(radarLast)) {
+    a->dry |= RAIN_SRC_RADAR;
+    return;
+  }
+  a->src |= RAIN_SRC_RADAR;
+  if (!a->raining) {
+    a->startUnix = radarLast.frameUnix;
+    if (a->endUnix && a->endUnix <= now) {
+      a->endUnix = 0;
+      a->endSrc = RAIN_END_NONE;
+    }
+  }
+  a->raining = true;
+  a->active = a->watch = false;
+  a->etaMin = 0;
+  if (radarLast.mmhHere > a->mmh) a->mmh = radarLast.mmhHere;
 }
 
 static void mergeOwm(RainAlert *a, bool phone) {
@@ -902,7 +978,6 @@ static void publishHome() {
 
   if (wxMutex) xSemaphoreTake(wxMutex, portMAX_DELAY);
   rainHome = a;
-  homePolls++;
   if (wxMutex) xSemaphoreGive(wxMutex);
   wxDirty = true;
 }
@@ -955,9 +1030,13 @@ static void runHomeNowcast(char *buf, size_t cap) {
     return;
   }
   clearError(ERR_HOME_PARSE);
+  // a hold counts only when the rain moved in the data: the same hourly
+  // model fetched again every 5 min confirms nothing
+  bool same = alert.startUnix == omHome.startUnix && alert.endUnix == omHome.endUnix && alert.mmh == omHome.mmh;
   omHome = alert;
   omHomeAt = (uint32_t)time(nullptr);
-  omHomeWet = (alert.active || alert.raining) ? (uint8_t)(omHomeWet < 99 ? omHomeWet + 1 : 99) : 0;
+  if (!(alert.active || alert.raining)) omHomeWet = 0;
+  else if (!same || !omHomeWet) omHomeWet = (uint8_t)(omHomeWet < 99 ? omHomeWet + 1 : 99);
   publishHome();
 }
 
@@ -1019,101 +1098,185 @@ static int fmtLength(char *out, int cap, const RainAlert &a) {
   return n < cap ? n : cap - 1;
 }
 
-// Rain warnings to #weather-announcement (a watch posts nothing). While rain is
-// on its way, a post for: the first warning, the ETA dropping inside
-// WEATHER_RAIN_URGENT_MIN (one heads-up), the tier going up, and the start
-// moving 10+ min. While it rains: the rain starting, the tier going up, the
-// end moving 10+ min. Two polls without a warning after either: "cleared".
-// Every hour of the day: warnings ring through quiet hours (WEATHER_ALERT_PRIO).
-// While you are away the warnings follow the phone and ring; home's still go
-// to Discord, quietly (Pushover -1), until you are back.
+// Rain warnings to #weather-announcement (a watch posts nothing). Ringing
+// (the place's priority, WEATHER_ALERT_PRIO through quiet hours): the first
+// warning, the rain starting, the tier going up, and the ETA dropping inside
+// WEATHER_RAIN_URGENT_MIN (one heads-up). Follow-ups (the start or end moving
+// 20+ min, at most one per 30 min) go quietly: Pushover 0 by day, -1 from 22
+// to 06. Cleared after 20 min with neither a warning nor a watch, so a source
+// going blank for a while doesn't clear and re-warn. While you are away the
+// warnings follow the phone; home's go out at -1 until you are back, when a
+// home warning still out is posted again, ringing. Kept in NVS for 3 h: a
+// restart doesn't post the same warning again.
 struct RainWarn {
   WxTier tier;          // tier of the last post; NONE = no warning out
   bool raining;         // the last post said it rains now
   bool urgentPosted;    // the last post was inside WEATHER_RAIN_URGENT_MIN
   uint32_t startPosted; // rain start in that post
   uint32_t endPosted;   // rain end in that post
-  uint32_t pollsSeen;   // the place's polls at the last check
-  uint8_t dryPolls;     // polls without rain since
+  uint32_t followUnix;  // last follow-up post
+  uint32_t quietSince;  // first check with neither a warning nor a watch; 0 = one of them
 };
 static RainWarn warnHome, warnPhone;
+static const uint32_t WARN_SHIFT_S = 20 * 60, WARN_FOLLOW_GAP_S = 30 * 60, WARN_CLEAR_S = 20 * 60;
 
-// Pushover priority: warnings high (WEATHER_ALERT_PRIO), all-clears normal
-static int rainPrio(WxTier) { return WEATHER_ALERT_PRIO; }
+// Follow-ups and all-clears: normal by day, quiet at night; a place already
+// quiet (home while away) stays so
+static int followPrio(int prio) {
+  if (prio < 0) return prio;
+  struct tm t;
+  return boardLocalTime(&t) && (t.tm_hour >= 22 || t.tm_hour < 6) ? -1 : 0;
+}
 
-static void rainWarnPlace(RainWarn &warn, const RainAlert &a, uint32_t polls, const char *place, int prio) {
-  bool newPoll = polls != warn.pollsSeen;
-  warn.pollsSeen = polls;
+static void postRain(const char *title, const char *desc, uint32_t color, int prio) {
+  discordPost(DC_WEATHER, title, desc, color, prio);
+  logMsg("weather: warning posted: %s%s", title, prio < 0 ? " (quiet)" : prio == 0 ? " (no ring)" : "");
+}
+
+// true when warn changed (to save)
+static bool rainWarnPlace(RainWarn &warn, const RainAlert &a, const char *place, int prio) {
+  uint32_t now = (uint32_t)time(nullptr);
+  if (a.active || a.raining || a.watch) warn.quietSince = 0;
+  else if (!warn.quietSince) warn.quietSince = now;
 
   char title[112], desc[320];
   if (a.active) {
-    warn.dryPolls = 0;
     int eta = rainEtaMin(a);
     bool urgent = eta <= WEATHER_RAIN_URGENT_MIN;
-    if (warn.tier != TIER_NONE && !warn.raining) {
-      bool moved = a.startUnix && warn.startPosted && labs((long)a.startUnix - (long)warn.startPosted) >= 600;
-      if (a.tier <= warn.tier && !moved && !(urgent && !warn.urgentPosted)) return;
+    bool fresh = warn.tier == TIER_NONE || warn.raining;   // nothing out, or new rain after the last
+    bool rings = fresh || a.tier > warn.tier || (urgent && !warn.urgentPosted);
+    if (!rings) {
+      bool moved = a.startUnix && warn.startPosted &&
+                   (uint32_t)labs((long)a.startUnix - (long)warn.startPosted) >= WARN_SHIFT_S;
+      if (!moved || now - warn.followUnix < WARN_FOLLOW_GAP_S) return false;
+      warn.followUnix = now;
     }
     snprintf(title, sizeof title, "%s in ~%d min | %s", wxTierName(a.tier), eta, place);
     int n = fmtLength(desc, sizeof desc, a);
     n += snprintf(desc + n, sizeof desc - n, "\n%.1f mm/h%s%s\n", a.mmh, a.from[0] ? ", moving in from " : "", a.from);
     if (n >= (int)sizeof desc) n = sizeof desc - 1;   // full: rainSrcLine gets 1 byte, not a wrapped size
     rainSrcLine(desc + n, sizeof desc - n, a);
-    discordPost(DC_WEATHER, title, desc, urgent ? COL_RED : COL_YELLOW, prio);
-    logMsg("weather: warning posted: %s%s", title, prio < 0 ? " (quiet)" : "");
+    postRain(title, desc, urgent ? COL_RED : COL_YELLOW, rings ? prio : followPrio(prio));
     warn.tier = a.tier;
     warn.raining = false;
     warn.urgentPosted = urgent;
     warn.startPosted = a.startUnix;
-  } else if (a.raining) {
-    warn.dryPolls = 0;
-    long shift = labs((long)a.endUnix - (long)warn.endPosted);
-    bool endKnownChanged = (a.endUnix == 0) != (warn.endPosted == 0);
-    if (warn.raining && a.tier <= warn.tier && !endKnownChanged && shift < 600) return;
+    return true;
+  }
+  if (a.raining) {
+    bool rings = !warn.raining || a.tier > warn.tier;
+    if (!rings) {
+      uint32_t shift = (uint32_t)labs((long)a.endUnix - (long)warn.endPosted);
+      bool endKnownChanged = (a.endUnix == 0) != (warn.endPosted == 0);
+      if ((!endKnownChanged && shift < WARN_SHIFT_S) || now - warn.followUnix < WARN_FOLLOW_GAP_S) return false;
+      warn.followUnix = now;
+    }
     snprintf(title, sizeof title, "%s now | %s", wxTierName(a.tier), place);
     int n = fmtLength(desc, sizeof desc, a);
     n += snprintf(desc + n, sizeof desc - n, "\n%.1f mm/h\n", a.mmh);
     if (n >= (int)sizeof desc) n = sizeof desc - 1;
     rainSrcLine(desc + n, sizeof desc - n, a);
-    discordPost(DC_WEATHER, title, desc, COL_RED, prio);
-    logMsg("weather: warning posted: %s%s", title, prio < 0 ? " (quiet)" : "");
+    postRain(title, desc, COL_RED, rings ? prio : followPrio(prio));
     warn.tier = a.tier;
     warn.raining = true;
     warn.endPosted = a.endUnix;
-  } else if (warn.tier != TIER_NONE && newPoll && ++warn.dryPolls >= 2) {
-    snprintf(title, sizeof title, "Weather Warning Cleared | %s", place);
-    if (warn.raining) snprintf(desc, sizeof desc, "The rain is over.");
-    else if (a.watch) snprintf(desc, sizeof desc, "The rain is no longer expected (only %s still shows a chance).", rainSrcName(a));
-    else snprintf(desc, sizeof desc, "The rain is no longer expected.");
-    discordPost(DC_WEATHER, title, desc, COL_GREEN, prio < 0 ? prio : 0);
-    logMsg("weather: warning cleared");
-    uint32_t seen = warn.pollsSeen;
-    warn = {};
-    warn.pollsSeen = seen;
+    return true;
   }
+  if (warn.tier != TIER_NONE && warn.quietSince && now - warn.quietSince >= WARN_CLEAR_S) {
+    snprintf(title, sizeof title, "Weather Warning Cleared | %s", place);
+    snprintf(desc, sizeof desc, "%s", warn.raining ? "The rain is over." : "The rain is no longer expected.");
+    discordPost(DC_WEATHER, title, desc, COL_GREEN, followPrio(prio));
+    logMsg("weather: warning cleared (%s)", place);
+    warn = {};
+    return true;
+  }
+  return false;
 }
 
 static bool phoneAway() {
   return owntracksEnabled() && owntracksValid() && !owntracksIsMerged(homeLat, homeLon);
 }
 
+static void loadWarnState();
+static void saveWarnState();
+
 static void rainWarnTick() {
-  if (cyclone_.active || demoOn()) return;   // the typhoon posts cover it
-  bool away = phoneAway();   // these tasks are the only writers of rainHome / rainPhone
-  if (away) rainWarnPlace(warnPhone, rainPhone, phonePolls, "where you are", rainPrio(rainPhone.tier));
-  else warnPhone = {};       // back home: home's warnings take over
-  rainWarnPlace(warnHome, rainHome, homePolls, homeName, away ? -1 : rainPrio(rainHome.tier));
+  if (demoOn()) return;
+  static bool loaded, wasAway;
+  if (!loaded) {   // the saved state needs the clock to judge its age
+    time_t t;
+    if (!clockValid(&t)) return;
+    loadWarnState();
+    loaded = true;
+  }
+  bool away = phoneAway();   // this task is the only writer of rainHome / rainPhone
+  bool changed = false;
+  if (away) {
+    changed |= rainWarnPlace(warnPhone, rainPhone, "where you are", WEATHER_ALERT_PRIO);
+  } else if (warnPhone.tier != TIER_NONE || warnPhone.quietSince) {
+    warnPhone = {};   // back home: home's warnings take over
+    changed = true;
+  }
+  if (wasAway && !away && warnHome.tier != TIER_NONE) {
+    warnHome = {};    // posted quietly while away: once more, ringing
+    changed = true;
+  }
+  wasAway = away;
+  if (!cyclone_.active)   // a storm here: its own posts cover home
+    changed |= rainWarnPlace(warnHome, rainHome, homeName, away ? -1 : WEATHER_ALERT_PRIO);
+  if (changed) saveWarnState();
 }
 
-// Typhoon posts: one per GDACS advisory while it is more than 6 h out, one a
-// minute in the last 6 h, one an hour while it is here, "cleared" after.
-static struct {
+// Storm posts (typhoon, or tropical storm at follow-up priority): one per GDACS
+// advisory while it is more than 6 h out; in the last 6 h one on entering,
+// one on turning imminent, else every 30 min or when the arrival moves 30+
+// min; hourly while it is here; "cleared" after. A typhoon's first post and
+// its imminent one ring, the rest follow quietly (followPrio).
+struct StormWarn {
   uint32_t eventId;        // storm the posts are about
   char name[20];
+  bool storm;              // a tropical storm, not a typhoon
   uint32_t episodePosted;  // advisory of the last "heading here" post
-  uint32_t minutePostMs, hourPostMs;
-  bool warned, activePosted;
-} ty;
+  uint32_t nearPostUnix, nearArrivePosted, activePostUnix;
+  bool warned, activePosted, nearPosted, imminentPosted;
+};
+static StormWarn ty;
+
+struct WarnSave {
+  uint32_t version, at;
+  RainWarn home, phone;
+  StormWarn storm;
+};
+
+static void saveWarnState() {
+  WarnSave w = {};
+  w.version = sizeof(WarnSave);
+  w.at = (uint32_t)time(nullptr);
+  w.home = warnHome;
+  w.phone = warnPhone;
+  w.storm = ty;
+  nvs_handle_t h;
+  if (nvs_open("wx", NVS_READWRITE, &h) != ESP_OK) return;
+  nvs_set_blob(h, "warn", &w, sizeof w);
+  nvs_commit(h);
+  nvs_close(h);
+}
+
+static void loadWarnState() {
+  WarnSave w = {};
+  size_t len = sizeof w;
+  nvs_handle_t h;
+  if (nvs_open("wx", NVS_READONLY, &h) != ESP_OK) return;
+  esp_err_t e = nvs_get_blob(h, "warn", &w, &len);
+  nvs_close(h);
+  uint32_t now = (uint32_t)time(nullptr);
+  if (e != ESP_OK || len != sizeof w || w.version != sizeof w || now - w.at > 3 * 3600) return;
+  warnHome = w.home;
+  warnPhone = w.phone;
+  ty = w.storm;
+  if (warnHome.tier != TIER_NONE || warnPhone.tier != TIER_NONE || ty.warned)
+    logMsg("weather: warnings out before the restart kept (no second post)");
+}
 
 static void cycloneTick() {
   time_t now;
@@ -1140,8 +1303,9 @@ static void cycloneTick() {
   if (changed) wxDirty = true;
 
   char title[112], desc[200], when[24], clk[24];
-  uint32_t ms = nowMs();
-  const char *kind = best.superTyphoon ? "Super Typhoon" : "Typhoon";
+  uint32_t nowU = (uint32_t)now;
+  const char *kind = best.superTyphoon ? "Super Typhoon" : best.tropicalStorm ? "Tropical Storm" : "Typhoon";
+  int ring = best.tropicalStorm ? followPrio(0) : WEATHER_ALERT_PRIO;
   if (bestIdx >= 0) {
     const CycloneTrack &tr = tracks_[bestIdx];
     if (ty.eventId != tr.eventId) {
@@ -1149,40 +1313,50 @@ static void cycloneTick() {
       ty.eventId = tr.eventId;
       snprintf(ty.name, sizeof ty.name, "%s", tr.name);
     }
+    ty.storm = best.tropicalStorm;
     if (best.active) {
-      if (ty.activePosted && ms - ty.hourPostMs < 3600 * 1000) return;
+      if (ty.activePosted && nowU - ty.activePostUnix < 3600) return;
       snprintf(title, sizeof title, "%s %s Active | %s", kind, best.name, homeName);
       snprintf(desc, sizeof desc, "Centre ~%u km away, peak wind %u km/h", best.distKm, best.windKmh);
-      discordPost(DC_WEATHER, title, desc, COL_RED, WEATHER_ALERT_PRIO);
+      discordPost(DC_WEATHER, title, desc, COL_RED, ty.activePosted ? followPrio(0) : ring);
       ty.activePosted = ty.warned = true;
-      ty.hourPostMs = ms;
+      ty.activePostUnix = nowU;
     } else {
       long left = (long)best.arriveUnix - (long)now;
       fmtLong(when, sizeof when, left > 0 ? left : 0);
       fmtClock(clk, sizeof clk, best.arriveUnix, true);
       if (left <= WEATHER_TYPHOON_NEAR_S) {
-        if (ty.minutePostMs && ms - ty.minutePostMs < 60 * 1000) return;
-        snprintf(title, sizeof title, "%s %s in ~%s | %s", kind, best.name, when, homeName);
+        bool imminent = left <= WEATHER_TYPHOON_IMMINENT_S;
+        bool rings = !ty.nearPosted || (imminent && !ty.imminentPosted);
+        bool moved = (uint32_t)labs((long)best.arriveUnix - (long)ty.nearArrivePosted) >= 30 * 60;
+        if (!rings && !moved && nowU - ty.nearPostUnix < 30 * 60) return;
+        snprintf(title, sizeof title, "%s %.19s in ~%s | %.40s", kind, best.name, when, homeName);
         snprintf(desc, sizeof desc, "Arrives ~%s, closest ~%u km\nPeak wind %u km/h", clk, best.closestKm, best.windKmh);
-        discordPost(DC_WEATHER, title, desc, left > WEATHER_TYPHOON_IMMINENT_S ? COL_YELLOW : COL_RED, WEATHER_ALERT_PRIO);
-        ty.minutePostMs = ms;
+        discordPost(DC_WEATHER, title, desc, imminent ? COL_RED : COL_YELLOW, rings ? ring : followPrio(0));
+        ty.nearPosted = true;
+        ty.imminentPosted |= imminent;
+        ty.nearPostUnix = nowU;
+        ty.nearArrivePosted = best.arriveUnix;
       } else {
         if (ty.episodePosted == tr.episodeId) return;
         snprintf(title, sizeof title, "%s %s heading for %s", kind, best.name, homeName);
         snprintf(desc, sizeof desc, "Arrives ~%s (in ~%s), closest ~%u km\nPeak wind %u km/h (GDACS advisory %u)", clk,
                  when, best.closestKm, best.windKmh, (unsigned)tr.episodeId);
-        discordPost(DC_WEATHER, title, desc, COL_YELLOW, WEATHER_ALERT_PRIO);
+        discordPost(DC_WEATHER, title, desc, COL_YELLOW, ty.warned ? followPrio(0) : ring);
         ty.episodePosted = tr.episodeId;
         logMsg("weather: %s", title);
       }
       ty.warned = true;
     }
+    saveWarnState();
   } else if (ty.warned) {
     snprintf(title, sizeof title, "Weather Warning Cleared | %s", homeName);
-    snprintf(desc, sizeof desc, ty.activePosted ? "Typhoon %s has passed." : "Typhoon %s is no longer heading here.", ty.name);
-    discordPost(DC_WEATHER, title, desc, COL_GREEN);
-    logMsg("weather: typhoon %s cleared", ty.name);
+    snprintf(desc, sizeof desc, ty.activePosted ? "%s %s has passed." : "%s %s is no longer heading here.",
+             ty.storm ? "Tropical storm" : "Typhoon", ty.name);
+    discordPost(DC_WEATHER, title, desc, COL_GREEN, followPrio(0));
+    logMsg("weather: storm %s cleared", ty.name);
     ty = {};
+    saveWarnState();
   }
 }
 
@@ -1320,14 +1494,14 @@ static void postWeatherUpdate(char *buf, size_t cap) {
     n += snprintf(desc + n, sizeof desc - n, "\n%s possible %s%s (%s only)", wxTierName(r.tier),
                   strcmp(clk, "now") ? "from ~" : "", clk, rainSrcName(r));
   } else {
-    n += snprintf(desc + n, sizeof desc - n, "\nNo rain in the next 2 h");
+    n += snprintf(desc + n, sizeof desc - n, "\nNo rain in the next hour and a half");
   }
   if (cyclone_.tracked && n < (int)sizeof desc) {
     if (cyclone_.active) {
-      n += snprintf(desc + n, sizeof desc - n, "\nTyphoon %s active", cyclone_.name);
+      n += snprintf(desc + n, sizeof desc - n, "\n%s %s active", cyclone_.tropicalStorm ? "Tropical storm" : "Typhoon", cyclone_.name);
     } else {
       fmtClock(clk, sizeof clk, cyclone_.arriveUnix, true);
-      n += snprintf(desc + n, sizeof desc - n, "\nTyphoon %s expected ~%s", cyclone_.name, clk);
+      n += snprintf(desc + n, sizeof desc - n, "\n%s %s expected ~%s", cyclone_.tropicalStorm ? "Tropical storm" : "Typhoon", cyclone_.name, clk);
     }
   }
   if (t.tm_hour == WEATHER_MORNING_HOUR) {
@@ -1370,9 +1544,11 @@ static void runPhoneNowcast(char *buf, size_t cap) {
     return;
   }
   clearError(ERR_PHONE_PARSE);
+  bool same = alert.startUnix == omPhone.startUnix && alert.endUnix == omPhone.endUnix && alert.mmh == omPhone.mmh;
   omPhone = alert;
   omPhoneAt = (uint32_t)time(nullptr);
-  omPhoneWet = (alert.active || alert.raining) ? (uint8_t)(omPhoneWet < 99 ? omPhoneWet + 1 : 99) : 0;
+  if (!(alert.active || alert.raining)) omPhoneWet = 0;
+  else if (!same || !omPhoneWet) omPhoneWet = (uint8_t)(omPhoneWet < 99 ? omPhoneWet + 1 : 99);
   publishPhone();
 }
 
@@ -1386,7 +1562,6 @@ static void publishPhone() {
   rainPhone = alert;
   if (wxMutex) xSemaphoreGive(wxMutex);
 
-  phonePolls++;
 }
 
 bool weatherHomeLocation(double *lat, double *lon) {
@@ -1493,12 +1668,19 @@ static void owmTick(char *buf, size_t cap, bool force, uint32_t *lastMs, uint32_
   *lastMs = curMs;
   owmTriedPhone = (int8_t)onPhone;
   OwmMinutely m;
+  static bool retried;   // one quick retry per failure spell
   if (!owmFetchMinutely(lat, lon, buf, cap, &m)) {
     char err[96];
     snprintf(err, sizeof err, "weather: OpenWeather: %s", owmLastError());
     logErrorOnce(ERR_OWM, err);
+    owmFailUnix = (uint32_t)time(nullptr);
+    if (!retried) {   // the empty spells are often one answer long: again in 30 s
+      retried = true;
+      *lastMs = curMs - every + 30 * 1000;
+    }
     return;
   }
+  retried = false;
   clearError(ERR_OWM);
   bool moved = onPhone != owmOnPhone;
   OwmRain o;
@@ -1512,6 +1694,86 @@ static void owmTick(char *buf, size_t cap, bool force, uint32_t *lastMs, uint32_
   publishHome();                        // home gains or loses OpenWeather
   if (onPhone || moved) publishPhone();
   owmAlertsTick(buf, cap);
+}
+
+// RainViewer's newest frame for the same place as OpenWeather's. Every 10 min
+// (a frame's cadence), every 5 while an echo is within 30 km or rain is near
+static void radarTick(char *buf, size_t cap, bool force, uint32_t *lastMs, uint32_t curMs) {
+  bool onPhone = owntracksEnabled() && owntracksValid() && !owntracksIsMerged(homeLat, homeLon);
+  double lat = homeLat, lon = homeLon;
+  if (onPhone) owntracksGetLocation(&lat, &lon, nullptr, nullptr);
+  const RainAlert &t = onPhone ? rainPhone : rainHome;
+  bool near = radarLast.valid && radarLast.nearKm >= 0 && radarLast.nearKm <= 30;
+  uint32_t every = (t.active || t.raining || t.watch || near) ? RADAR_POLL_MS : RADAR_POLL_DRY_MS;
+  if (onPhone != radarOnPhone) force = true;
+  if (!force && *lastMs && curMs - *lastMs < every) return;
+  *lastMs = curMs;
+  RadarObs o;
+  if (!radarFetch(lat, lon, buf, cap, &o)) {
+    char err[96];
+    snprintf(err, sizeof err, "weather: radar: %s", radarLastError());
+    logErrorOnce(ERR_RADAR, err);
+    *lastMs = curMs - every + 60 * 1000;   // again in a minute
+    if (onPhone != radarOnPhone) radarLast.valid = false;   // the old place's frame says nothing here
+    return;
+  }
+  clearError(ERR_RADAR);
+  bool moved = onPhone != radarOnPhone;
+  radarLast = o;
+  radarOnPhone = onPhone;
+  bool wet = radarRainingHere(o);
+  if (wet != radarWasWet || moved) {
+    char clk[16];
+    fmtClock(clk, sizeof clk, o.frameUnix, false);
+    if (wet)
+      logMsg("weather: radar: rain at %s, %d dBZ (~%.1f mm/h) on %u px, frame %s", onPhone ? "the phone" : "home",
+             o.dbzHere, o.mmhHere, (unsigned)o.pxHere, clk);
+    else if (radarWasWet && !moved)
+      logMsg("weather: radar: dry at %s again, frame %s", onPhone ? "the phone" : "home", clk);
+    radarWasWet = wet;
+  }
+  publishHome();
+  if (onPhone || moved) publishPhone();
+}
+
+// The demo's end, `weather clear` and `weather home`, in the task that owns
+// the data and the warnings
+static void weatherTaskHousekeeping() {
+  if (homeReq.set) {
+    homeReq.set = false;
+    setHomeLocation(homeReq.lat, homeReq.lon, homeReq.name);
+  }
+  if (endResetReq) {
+    endResetReq = false;
+    memset(endStats, 0, sizeof endStats);
+    saveEndStats();
+    logMsg("weather: rain-end accuracy stats cleared");
+  }
+  if (demoSaved && !demoOn()) {
+    if (wxMutex) xSemaphoreTake(wxMutex, portMAX_DELAY);
+    now_ = demoSavedNow;
+    rainHome = demoSavedHome;
+    cyclone_ = demoSavedCyclone;
+    demoSaved = false;
+    if (wxMutex) xSemaphoreGive(wxMutex);
+    wxDirty = true;
+    logMsg("weather: demo over, real data back");
+  }
+  if (clearReq) {
+    clearReq = false;
+    if (wxMutex) xSemaphoreTake(wxMutex, portMAX_DELAY);
+    now_ = {};
+    rainHome = {};
+    rainPhone = {};
+    cyclone_ = {};
+    demoUntilMs = 0;
+    demoSaved = false;
+    if (wxMutex) xSemaphoreGive(wxMutex);
+    warnHome = {};   // no "Cleared" post for a warning nobody saw end
+    warnPhone = {};
+    wxDirty = true;
+    logMsg("weather: cleared");
+  }
 }
 
 static void weatherTask(void *) {
@@ -1529,6 +1791,7 @@ static void weatherTask(void *) {
   uint32_t lastHomeNowcastMs = 0;
   uint32_t lastPhoneNowcastMs = 0;
   uint32_t lastOwmMs = 0;
+  uint32_t lastRadarMs = 0;
   uint32_t lastUpwindMs = 0;
   uint32_t lastNvsSaveMs = nowMs();
   bool prevNetUp = false;
@@ -1554,7 +1817,6 @@ static void weatherTask(void *) {
       testAlertPending = false;
       const char *testMsg = "Rain at your location in ~25 min (2.5 mm/h, from NW) [TEST]";
       discordPost(DC_WEATHER, "Rain soon where you are", testMsg, 0x3498DB, WEATHER_ALERT_PRIO);
-      if (!DISCORD_TOKEN[0]) pushoverQueue("Rain soon where you are", testMsg, WEATHER_ALERT_PRIO);
       logMsg("weather: test-alert sent");
     }
     if (currentNet) pushoverService();
@@ -1627,6 +1889,9 @@ static void weatherTask(void *) {
     // every 90 s while rain or a weather alert is near; 960 calls a day.
     if (owmEnabled()) owmTick(httpBuf, httpBufCap, forceImmediate, &lastOwmMs, curMs);
 
+    // 3c. The radar for the same place: rain falling now, which the models can miss
+    if (RADAR_ENABLED) radarTick(httpBuf, httpBufCap, forceImmediate, &lastRadarMs, curMs);
+
     forceImmediate = false;
 
     // 4. Warnings and the 2-hourly update; storms re-judged every 30 s
@@ -1634,6 +1899,7 @@ static void weatherTask(void *) {
       cycloneTick();
       lastJudgeMs = curMs;
     }
+    weatherTaskHousekeeping();
     rainWarnTick();
     postWeatherUpdate(httpBuf, httpBufCap);
 
@@ -1726,15 +1992,7 @@ void weatherCommand(const char *a1, const char *a2) {
     logMsg("weather: demo data loaded%s for 5 min (no Discord posts)",
            mode == 1 ? " (heavy shower in 25 min)" : mode == 2 ? " (typhoon here)" : "");
   } else if (a1 && !strcmp(a1, "clear")) {
-    if (wxMutex) xSemaphoreTake(wxMutex, portMAX_DELAY);
-    now_ = {};
-    rainHome = {};
-    rainPhone = {};
-    cyclone_ = {};
-    demoUntilMs = 0;
-    if (wxMutex) xSemaphoreGive(wxMutex);
-    wxDirty = true;
-    logMsg("weather: cleared");
+    clearReq = true;   // the weather task does it (it owns the warning state too)
   } else if (a1 && !strcmp(a1, "home")) {
     if (!a2) {
       logMsg("weather: usage weather home <lat>,<lon> [name]");
@@ -1749,7 +2007,7 @@ void weatherCommand(const char *a1, const char *a2) {
     }
     *c1 = '\0';
     char *lonPart = c1 + 1;
-    char name[24] = WEATHER_HOME_NAME;
+    char name[48] = WEATHER_HOME_NAME;
     char *c2 = strchr(lonPart, ',');
     if (c2) {
       *c2 = '\0';
@@ -1769,7 +2027,10 @@ void weatherCommand(const char *a1, const char *a2) {
       logMsg("weather: coordinates out of range (-90..90, -180..180)");
       return;
     }
-    setHomeLocation(lat, lon, name);
+    homeReq.lat = lat;   // the weather task reads home's place at any moment: it sets it
+    homeReq.lon = lon;
+    snprintf(homeReq.name, sizeof homeReq.name, "%s", name);
+    homeReq.set = true;
     logMsg("weather: home set to %s (%.5f, %.5f)", name, lat, lon);
   } else if (a1 && !strcmp(a1, "refresh")) {
     homeChanged = true;     // forecast, AQI and nowcast at once
@@ -1778,9 +2039,7 @@ void weatherCommand(const char *a1, const char *a2) {
     logMsg("weather: refresh queued");
     return;
   } else if (a1 && !strcmp(a1, "end-reset")) {
-    memset(endStats, 0, sizeof endStats);
-    saveEndStats();
-    logMsg("weather: rain-end accuracy stats cleared");
+    endResetReq = true;   // the weather task writes these stats: it clears them
     return;
   } else if (a1 && !strcmp(a1, "storms")) {
     cycloneRefresh = true;
@@ -1882,7 +2141,7 @@ void weatherCommand(const char *a1, const char *a2) {
       int first = -1;
       float peak = 0;
       for (int i = 0; i < owmLast.n; i++) {
-        if (owmLast.mm[i] >= 0.5f && first < 0) first = i;
+        if (owmLast.mm[i] >= OWM_RAIN_MMH && first < 0) first = i;
         if (owmLast.mm[i] > peak) peak = owmLast.mm[i];
       }
       char when[24] = "--";
@@ -1891,6 +2150,21 @@ void weatherCommand(const char *a1, const char *a2) {
              owmOnPhone ? "phone" : "home", when, !owmLast.valid ? "no data yet" : first < 0 ? "dry for 60 min" :
              first == 0 ? "raining" : "rain within the hour", peak, (unsigned)owmLast.nAlerts,
              (unsigned)owmCallsToday(), (unsigned)OWM_DAILY_CALLS, owmLastError()[0] ? " | " : "", owmLastError());
+    }
+    // Radar
+    if (!RADAR_ENABLED) {
+      logMsg("weather: radar: off (RADAR_ENABLED 0)");
+    } else if (!radarLast.valid) {
+      logMsg("weather: radar: no frame yet%s%s", radarLastError()[0] ? " | " : "", radarLastError());
+    } else {
+      char when[16], frame[16], nearS[24] = "none on the tile";
+      fmtClock(when, sizeof when, radarLast.fetchedUnix, false);
+      fmtClock(frame, sizeof frame, radarLast.frameUnix, false);
+      if (radarLast.nearKm >= 0) snprintf(nearS, sizeof nearS, "%d km", radarLast.nearKm);
+      logMsg("weather: radar: %s, last %s (frame %s): %s, here %d dBZ on %u px, nearest echo %s%s%s",
+             radarOnPhone ? "phone" : "home", when, frame, radarRainingHere(radarLast) ? "raining" : "dry",
+             radarLast.dbzHere < -100 ? 0 : radarLast.dbzHere, (unsigned)radarLast.pxHere, nearS,
+             radarLastError()[0] ? " | " : "", radarLastError());
     }
     logMsg("weather: rain seen by: home %s, phone %s", rainSrcName(rainHome), rainSrcName(rainPhone));
 

@@ -230,10 +230,20 @@ double owntracksDistanceTo(double homeLat, double homeLon) {
   return haversineKm(homeLat, homeLon, pLat, pLon);
 }
 
+// Home under OWNTRACKS_HOME_KM, away over OWNTRACKS_AWAY_KM, the last answer
+// between (a fix wandering around the line doesn't flip it, each flip costing
+// an OpenWeather call and a fresh "where you are" warning). A fix vaguer than
+// OWNTRACKS_SWITCH_ACC_M doesn't switch either way.
 bool owntracksIsMerged(double homeLat, double homeLon) {
   if (!owntracksEnabled() || !owntracksValid()) return true;
+  static volatile bool merged = true;   // callers in several tasks: a bool, set whole
   double d = owntracksDistanceTo(homeLat, homeLon);
-  return (d >= 0.0 && d < OWNTRACKS_HOME_KM);
+  uint32_t acc = 0;
+  owntracksGetLocation(nullptr, nullptr, nullptr, &acc);
+  if (d < 0.0 || acc > OWNTRACKS_SWITCH_ACC_M) return merged;
+  if (merged && d >= OWNTRACKS_AWAY_KM) merged = false;
+  else if (!merged && d < OWNTRACKS_HOME_KM) merged = true;
+  return merged;
 }
 
 // A phone that sits still reports nothing (OwnTracks publishes on movement),

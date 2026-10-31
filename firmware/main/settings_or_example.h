@@ -56,6 +56,9 @@
 #ifndef OWM_API_KEY
 #define OWM_API_KEY ""
 #endif
+#ifndef TOMORROW_API_KEY
+#define TOMORROW_API_KEY ""
+#endif
 #ifndef WEATHER_HOME
 #define WEATHER_HOME ""
 #endif
@@ -456,7 +459,7 @@
 #define WEATHER_MORNING_HOUR 4                    // the 3-day forecast post goes out at this hour
 #endif
 #ifndef WEATHER_FORECAST_POLL_MS
-#define WEATHER_FORECAST_POLL_MS (5 * 60 * 1000)  // Open-Meteo forecast poll
+#define WEATHER_FORECAST_POLL_MS (15 * 60 * 1000) // Open-Meteo forecast poll (its data changes hourly)
 #endif
 #ifndef WEATHER_AQI_POLL_MS
 #define WEATHER_AQI_POLL_MS (30 * 60 * 1000)      // air quality poll
@@ -488,7 +491,7 @@
 #define NOWCAST_POLL_NEAR_MS (10 * 60 * 1000)     // poll while rain is in the grid
 #endif
 #ifndef NOWCAST_POLL_DRY_MS
-#define NOWCAST_POLL_DRY_MS (15 * 60 * 1000)      // poll while the grid is dry
+#define NOWCAST_POLL_DRY_MS (30 * 60 * 1000)      // poll while the grid is dry (hourly model data underneath)
 #endif
 
 // ---- OpenWeather One Call 4.0 (owm.cpp; key: OWM_API_KEY) ----
@@ -503,6 +506,29 @@
 #endif
 #ifndef OWM_POLL_MS
 #define OWM_POLL_MS (120 * 1000)                  // poll otherwise
+#endif
+
+// ---- RainViewer radar (radar.cpp; free, no key) ----
+#ifndef RADAR_ENABLED
+#define RADAR_ENABLED 1                           // 0 = off
+#endif
+#ifndef RADAR_RAIN_DBZ
+#define RADAR_RAIN_DBZ 15                         // echo this strong counts as rain (15 dBZ ~ 0.3 mm/h)
+#endif
+#ifndef RADAR_HERE_KM
+#define RADAR_HERE_KM 2.5f                        // "at the place": within this radius...
+#endif
+#ifndef RADAR_HERE_MIN_PX
+#define RADAR_HERE_MIN_PX 3                       // ...on this many pixels (~1.1 km each), not one stray
+#endif
+#ifndef RADAR_MAX_AGE_S
+#define RADAR_MAX_AGE_S (25 * 60)                 // a frame older than this says nothing (they come ~10 min late)
+#endif
+#ifndef RADAR_POLL_MS
+#define RADAR_POLL_MS (5 * 60 * 1000)             // poll while an echo is within 30 km or rain is warned
+#endif
+#ifndef RADAR_POLL_DRY_MS
+#define RADAR_POLL_DRY_MS (10 * 60 * 1000)        // poll otherwise (a new frame every 10 min)
 #endif
 
 // ---- Tropical cyclones (GDACS, cyclone.cpp) ----
@@ -522,6 +548,12 @@
 #endif
 #ifndef OWNTRACKS_HOME_KM
 #define OWNTRACKS_HOME_KM 1.0                     // phone within this of home = at home (one weather engine)
+#endif
+#ifndef OWNTRACKS_AWAY_KM
+#define OWNTRACKS_AWAY_KM 1.5                     // ...and away only past this (a margin: no flapping at the line)
+#endif
+#ifndef OWNTRACKS_SWITCH_ACC_M
+#define OWNTRACKS_SWITCH_ACC_M 500                // a fix vaguer than this (m) doesn't switch home / away
 #endif
 
 // ---- PC helper (ESP32-Helper.exe; build.cmd turns HOST_* into C#, the sensor map stays in stats.ini) ----

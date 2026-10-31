@@ -3612,6 +3612,9 @@ partial class PcStats : ServiceBase {
           tokens.Add("pc.heavy=" + heavy);
           texts.Add(new KeyValuePair<string, string>("pc.heavy_by", heavyBy));
         }
+        // hibernation on or off (PcHwCtl `power caps`, Night.cs): the board hides Hibernate when off
+        int hib = hibOn;
+        if (hib >= 0) tokens.Add("pc.hib=" + hib);
 
         // Power ack
         lock (powerLock) {

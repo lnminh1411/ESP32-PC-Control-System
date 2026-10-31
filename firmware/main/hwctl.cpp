@@ -32,7 +32,7 @@ const char *hwSend(const char *command, uint32_t *id) {
 }
 
 // Copies hw.reply's text into out when it answers request id
-static bool replyFor(uint32_t id, char *out, size_t outSize) {
+bool hwReplyFor(uint32_t id, char *out, size_t outSize) {
   char buf[96];
   pcTextCopy("hw.reply", buf, sizeof buf);   // the bot task reads it too: copied under the table's lock
   char *end;
@@ -45,7 +45,7 @@ static bool replyFor(uint32_t id, char *out, size_t outSize) {
 bool hwWaitReply(uint32_t id, uint32_t timeoutMs, char *out, size_t outSize) {
   uint32_t t0 = nowMs();
   while ((uint32_t)(nowMs() - t0) < timeoutMs) {
-    if (replyFor(id, out, outSize)) return true;
+    if (hwReplyFor(id, out, outSize)) return true;
     discordWaitTick();   // the bot task keeps acking clicks and heartbeating
     vTaskDelay(pdMS_TO_TICKS(50));
   }

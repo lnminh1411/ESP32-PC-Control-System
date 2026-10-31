@@ -105,9 +105,9 @@ EMQX Cloud's Serverless broker is free up to a monthly allowance of session minu
 
 ## 5. Pushover Notification Setup
 
-Pushover sends every #pc-announcement and #weather-announcement post to your phone as a push notification: rain heading your way, weather alerts, cyclones, PC on/off, night mode, board restarts. The Discord title becomes the notification title, and the embed text the message (or the title when there is none). Posts are queued (6 at most) and sent one per second by the weather task. Without a Discord token, only the phone rain alert goes out, straight to Pushover.
+Pushover sends every #pc-announcement and #weather-announcement post to your phone as a push notification: rain heading your way, weather alerts, cyclones, PC on/off, night mode, board restarts. The Discord title becomes the notification title, and the embed text the message (or the title when there is none). Posts are queued (6 at most) and sent one per second by the weather task. Weather posts are queued for Pushover directly, so they reach the phone even without a Discord token.
 
-Priority: every weather warning (rain at any tier, here or where you are, typhoon posts, OpenWeather alerts; `weather test-alert` too) goes out high (Pushover priority 1, `WEATHER_ALERT_PRIO`: rings through quiet hours). "Cleared" posts are normal (0). While the phone is away, home's warnings go out quiet (-1). The 2-hourly "Currently" updates are for where you are: while the phone (OwnTracks, a fix under 12 h old) is away from home, one extra Open-Meteo call fetches the weather at its location ("Currently where you are (10 km from home)", with the phone engine's rain), else home's. They go out quiet (-1: no sound or vibration).
+Priority: a weather warning that needs you (rain's first warning, the rain starting, the tier going up, the 20-min heads-up, a typhoon's first and imminent posts, OpenWeather alerts; `weather test-alert` too) goes out high (Pushover priority 1, `WEATHER_ALERT_PRIO`: rings through quiet hours). Follow-ups (a start or end moving 20+ min, at most one per 30 min), "Cleared" posts and tropical-storm posts are normal (0) by day and quiet (-1) from 22:00 to 06:00. While the phone is away, home's warnings go out quiet (-1). The 2-hourly "Currently" updates are for where you are: while the phone (OwnTracks, a fix under 12 h old) is away from home, one extra Open-Meteo call fetches the weather at its location ("Currently where you are (10 km from home)", with the phone engine's rain), else home's. They go out quiet (-1: no sound or vibration).
 
 1. Create an account at [Pushover](https://pushover.net/) and install the mobile app.
 2. Copy your **User Key** (`PUSHOVER_USER`).
@@ -127,6 +127,9 @@ Priority: every weather warning (rain at any tier, here or where you are, typhoo
 The firmware dynamically balances Home and Phone nowcasting:
 
 - **Haversine Distance**: Calculates distance between `(homeLat, homeLon)` and `(phoneLat, phoneLon)`.
+- **A margin, not a line**: away once the phone is 1.5 km out (`OWNTRACKS_AWAY_KM`), home
+  again under 1 km (`OWNTRACKS_HOME_KM`); between the two the last answer stands. A fix
+  vaguer than 500 m (`OWNTRACKS_SWITCH_ACC_M`) switches neither way.
 - **Merged (Distance < 1 km or Phone Engine Off)**:
   - Phone is considered at home.
   - Only the **HOME** engine runs.
@@ -138,7 +141,8 @@ The firmware dynamically balances Home and Phone nowcasting:
   - **Warnings follow the phone**: the full warning set of section 8 (tier, ETA, start,
     end, cleared) runs for the phone's place, titled "where you are", at
     `WEATHER_ALERT_PRIO`. Home's warnings still post, at Pushover priority -1 (quiet),
-    until the phone is back within 1 km; then home's warnings take over again.
+    until the phone is back within 1 km; then home's warnings take over again, and a home
+    warning still out is posted once more, ringing.
   - The 2-hourly update (section 10) is for the phone's place too.
 - **Fix age**: a phone fix counts for 12 h (`OWNTRACKS_MAX_AGE_S`). OpenWeather (section
   11b) follows the phone on the same rule.
@@ -191,7 +195,7 @@ countdowns below run from the clock instead.
    - `active` (a warning) when rain starts within 60 min; `raining` when it rains now.
    - Inactive: `dryKm = 25` when all 17 points are dry for $k = 0..7$, else 0.
 5. **Adaptive Cadence**:
-   - **All dry**: 15 minutes
+   - **All dry**: 30 minutes
    - **Rain anywhere in grid**: 10 minutes
    - **Warning or raining**: 5 minutes (catches an hourly model update soon after it lands)
 
@@ -214,14 +218,18 @@ Rain (home engine) to #weather-announcement:
 
 - **On its way** (starts within 60 min): a post when the warning starts, then only when the
   ETA drops to 20 min or less (one red heads-up), the tier goes up, or the start time moves
-  10+ min. A plain countdown posts nothing.
+  20+ min (a quiet follow-up, at most one per 30 min). A plain countdown posts nothing.
   Title `Heavy Shower in ~25 min | <place>`, with how long it lasts and when it ends, the
   intensity, and who sees it (`Seen by OpenWeather only (Open-Meteo: dry)`).
   Yellow while more than 20 min out, red from 20 min.
 - **Raining**: one red post `Heavy Shower now | <place>` with the expected end, then a post
-  when the tier goes up or that end moves 10+ min. The display shows no warning box while
-  it rains; the weather face's rain box shows the end time instead.
-- **Cleared**: two polls in a row without a warning after one: green `Weather Warning Cleared`.
+  when the tier goes up (ringing) or that end moves 20+ min (quiet follow-up). The display
+  shows no warning box while it rains; the weather face's rain box shows the end time instead.
+- **Cleared**: 20 min with neither a warning nor a watch after one: green
+  `Weather Warning Cleared`. A source going blank for a poll or two doesn't clear and re-warn.
+- **Restarts**: the warning state is kept in NVS (`wx`/`warn`) for 3 h, so a reboot doesn't
+  post the same warning again.
+- **At night** (20:00-04:00) rain warns like by day: drizzle too.
 - **Watch**: rain only one source sees, and not convincingly (see 11b), is shown on the
   weather face (`Rain possible ~19:31`, `OpenWeather only, 0.6 mm/h`), in `weather show`
   and in the "Currently" update, but never posted as a warning.
@@ -262,9 +270,13 @@ last rain's errors; `weather end-reset` clears them. Each finished rain also log
 
 Typhoons:
 
+- Tracked: typhoons and tropical storms (class TS/STS, or 63+ km/h). A tropical storm
+  posts at follow-up priority (normal by day, quiet at night) and shows as
+  `TROPICAL STORM` on the display.
 - More than 6 h out: one yellow post per GDACS advisory (about every 6 h) with the
   arrival time, closest approach and peak wind.
-- Last 6 h: a post every minute; red warning box on the display.
+- Last 6 h: a post on entering it, one when it turns imminent, else every 30 min or when
+  the arrival moves 30+ min; red warning box on the display.
 - Here (centre within 300 km): red box `TYPHOON <NAME> ACTIVE`, a post every hour. Rain posts
   pause meanwhile.
 - Gone: green `Weather Warning Cleared`.
@@ -304,7 +316,7 @@ The 04:00 one (`WEATHER_MORNING_HOUR`) adds the 3-day forecast. The posted slot 
 Open-Meteo allows up to 10,000 calls per UTC day. The firmware enforces a conservative hard cap of **9,500 calls/day**.
 
 - **Call Accounting**:
-  - Home forecast (with 12 hourly steps): 1 call, every 5 min (288/day)
+  - Home forecast (with 12 hourly steps): 1 call, every 15 min (96/day; the data changes hourly)
   - Home air quality: 1 call, every 30 min (48/day)
   - Nowcast poll (multi-location 17 points): 17 calls
   - GDACS (cyclones) is a separate service and not counted
@@ -334,9 +346,11 @@ A second rain source next to Open-Meteo: `timeline/1min` gives precipitation (mm
 2. In the account's billing settings, cap the daily calls at **1000** (the free tier), so OpenWeather itself never bills for more.
 3. Copy the API key into settings.h: `#define OWM_API_KEY "..."`. Empty = Open-Meteo only.
 
-**Which place**: the phone while it is away (more than 1 km from home) and OwnTracks has reported in the last 30 min; home otherwise. The other place keeps Open-Meteo alone. A move switches on the next poll.
+**Which place**: the phone while it is away (section 6) with a fix under 12 h old; home otherwise. The other place keeps Open-Meteo alone. A move switches right away (one call).
 
-**Cadence and budget**: one call every 2 min; every 90 s while rain is expected or falling at that place, or a weather alert is in force. At most **960 calls per UTC day**, counted on the board (NVS `o_day`, `o_calls`, saved every 10 calls and with the Open-Meteo counters). At 960 it stops until 00:00 UTC. A rejected key (401) pauses it for 30 min, a rate limit (429) for 15. The key is in the URL, so URLs are never logged.
+**Cadence and budget**: one call every 2 min; every 90 s while rain is expected or falling at that place, or a weather alert is in force. At most **960 calls per UTC day**, counted on the board (NVS `o_day`, `o_calls`, saved every 10 calls and with the Open-Meteo counters). Paced: no more than the day's share so far plus 60, so a rainy stretch can't spend the rest of the day's calls (the UTC day ends at 07:00 local, right after an early-morning shower). At 960 it stops until 00:00 UTC.
+
+**Empty answers**: OpenWeather sometimes answers 200 with no minutes (`"data": []`) for a few minutes at a time. A failed answer is retried once after 30 s, and for up to 15 min the last good hour still counts while its minutes reach 30 min ahead, so a blank spell doesn't read as dry. A rejected key (401) pauses it for 30 min, a rate limit (429) for 15. The key is in the URL, so URLs are never logged.
 
 **Merging** (`owmRainSummary` in owm.cpp, `mergeRain` in weather.cpp): rain counts from 0.3 mm/h (`OWM_RAIN_MMH`), Open-Meteo's nowcast threshold. A source counts as *fresh and dry* when its last answer saw no rain: OpenWeather for 5 min after a fetch (its 60 minutes), Open-Meteo for 20 min after a nowcast (its next 60 minutes).
 
@@ -350,9 +364,33 @@ A second rain source next to Open-Meteo: `timeline/1min` gives precipitation (mm
 - The end: see 8b (OpenWeather's counts once two hours in a row agree on it).
 - During a watch OpenWeather polls at the rain cadence, to confirm or drop it sooner.
 
-Discord rain posts and the media screen's rain box say who saw it: Open-Meteo, OpenWeather or both.
+Discord rain posts and the media screen's rain box say who saw it: Open-Meteo, OpenWeather, both, or the radar (11c).
 
 **Weather alerts**: a new alert ID gets one `alert/{id}` call (one per poll at most) and a red post in #weather-announcement: the event, the issuer, start and end, and the first 200 characters of the text.
+
+## 11c. RainViewer radar
+
+Both forecasts are models: in Hanoi Open-Meteo's 15-min data is interpolated from hourly
+runs, and on 10-29 neither saw the drizzle at 05:00. The radar sees rain that is falling
+(`firmware/main/radar.cpp`; free, no key, `RADAR_ENABLED 0` turns it off).
+
+- **Place**: the same as OpenWeather's (the phone while away, else home).
+- **Fetch**: `api.rainviewer.com/public/weather-maps.json` for the newest frame (every
+  10 min, about 10 min late), then one 256 px tile centred on the place
+  (`/256/7/<lat>/<lon>/2/0_0.png`: zoom 7, ~1.1 km a pixel, ~140 km across, Universal Blue,
+  no smoothing). The PNG is decoded with LovyanGFX's pngle (~44 KB, PSRAM) and each pixel's
+  colour mapped back to dBZ through the scheme's table.
+- **Rain here**: 15 dBZ or more (`RADAR_RAIN_DBZ`, ~0.3 mm/h) on 3+ pixels
+  (`RADAR_HERE_MIN_PX`) within 2.5 km (`RADAR_HERE_KM`). Rain rate from Marshall-Palmer
+  (Z = 200 R^1.6).
+- **Cadence**: every 10 min (`RADAR_POLL_DRY_MS`), every 5 while an echo is within 30 km or
+  rain is near (`RADAR_POLL_MS`). A frame older than 25 min (`RADAR_MAX_AGE_S`) says nothing.
+- **Merging**: rain on the radar at the place makes it *raining* whatever the models say:
+  never a watch, the start at the frame's time, the intensity the higher one. The post says
+  `On the radar now (the forecasts missed it)` or `..., and in Open-Meteo`. A dry radar
+  doesn't cancel a model's warning (the models look ahead, the radar doesn't).
+- `weather show` prints the place, the frame, the strongest echo at the place and the
+  nearest echo's distance; the log notes when the place turns wet or dry on the radar.
 
 ---
 
@@ -362,7 +400,7 @@ Access commands via USB-UART or Discord `/actions` command:
 
 | Command | Description |
 |---|---|
-| `weather show` | Prints current weather, home engine status (tier, start and end), phone engine status, OpenWeather (place, last hour, alerts, calls today), which source sees the rain, tracked cyclones, and budget usage. |
+| `weather show` | Prints current weather, home engine status (tier, start and end), phone engine status, OpenWeather (place, last hour, alerts, calls today), the radar (frame, echo here, nearest echo), which source sees the rain, tracked cyclones, and budget usage. |
 | `weather refresh` | Fetches the forecast, AQI, nowcast and GDACS list again now. |
 | `weather home <lat>,<lon> [name]` | Sets home coordinates and location name. Persists to NVS and triggers immediate poll. |
 | `weather demo [rain\|typhoon]` | Loads sample weather onto the display for 5 min: dry, a heavy shower in 25 min, or a typhoon at home. Polls leave it alone and nothing is posted. |

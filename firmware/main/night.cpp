@@ -127,7 +127,13 @@ static void boardSide() {
 }
 
 // PC LEDs to 10 %, remembering the level once (a re-engage keeps the first one)
+static uint32_t rgbRestoreId, rgbRestoreSentMs;
 static void rgbLower() {
+  if (rgbLowered && rgbRestoreSentMs) {   // a restore in flight may land: 10 % again, the saved level kept
+    uint32_t id;
+    if (!hwSend("rgb brightness 10", &id)) rgbRestoreId = rgbRestoreSentMs = 0;
+    return;
+  }
   float b = pcStat("hw.rgb.bright");
   if (rgbLowered || isnan(b) || b <= RGB_PCT || !pcReachable()) return;
   uint32_t id;
@@ -137,22 +143,47 @@ static void rgbLower() {
   saveNvs();
 }
 
-// PC LEDs back to what they were, now if PcHwCtl is there, else when it is
+// PC LEDs back to what they were, done once PcHwCtl answers ok: again every
+// 30 s until then. Sent the moment the PC is reachable, the helper can be up
+// before PcHwCtl is ("err PcHwCtl not running"), and a sent-and-forgotten
+// command left the LEDs at 10 %
+static void rgbRestoreDone();
+static bool rgbRestorePost;
 static void rgbRestoreTry(bool post) {
   if (!rgbLowered || savedRgb < 0 || !pcReachable()) return;
+  if (post) rgbRestorePost = true;
+  uint32_t now = nowMs();
+  if (rgbRestoreId) {
+    char r[64];
+    if (!hwReplyFor(rgbRestoreId, r, sizeof r)) {
+      if (now - rgbRestoreSentMs < 30000) return;   // waiting for the answer
+    } else if (strncmp(r, "ok", 2)) {
+      rgbRestoreId = 0;
+      logMsg("night: PC LEDs back: %s, again in 30 s", r);
+    } else {
+      rgbRestoreId = 0;
+      rgbRestoreDone();
+      return;
+    }
+  }
+  if (rgbRestoreSentMs && now - rgbRestoreSentMs < 30000) return;
+  rgbRestoreSentMs = now;
   char cmd[32];
   snprintf(cmd, sizeof cmd, "rgb brightness %d", savedRgb);
-  uint32_t id;
-  const char *err = hwSend(cmd, &id);
-  if (err) return;   // next poll tries again
+  if (hwSend(cmd, &rgbRestoreId)) rgbRestoreId = 0;   // not sent: again in 30 s
+}
+
+static void rgbRestoreDone() {
   logMsg("night: PC LEDs back to %d %%", savedRgb);
-  if (post) {
+  if (rgbRestorePost) {
     char what[64];
     snprintf(what, sizeof what, "PC LEDs back to %d %%", savedRgb);
     announce(what, 0xF1C40F);
   }
   rgbLowered = false;
   savedRgb = -1;
+  rgbRestorePost = false;
+  rgbRestoreSentMs = 0;
   saveNvs();
 }
 
@@ -281,7 +312,7 @@ static void powerFollow(uint32_t now) {
       sleepReqMs = 0;
       sleptAtMs = now;
       offByNight = true;
-      const char *what = "PC asleep; hibernated when you leave home";
+      const char *what = powerHibernateOn() == 0 ? "PC asleep" : "PC asleep; hibernated when you leave home";
       logMsg("night: %s", what);
       announce(what, 0x2C3E50);
     } else if (now - sleepReqMs > POWER_WAIT_MS) {
@@ -347,6 +378,13 @@ static void leaveCheck(uint32_t now) {
     return;
   }
   if (wokeMs || hibReqMs) return;
+  // hibernation off on the PC: waking it to hibernate would leave it on. Asleep
+  // stays asleep; on and idle goes to sleep instead
+  bool noHib = powerHibernateOn() == 0;
+  if (noHib && pcState() != PC_ON) {
+    logMsg("night: left home, hibernation is off on the PC: PC left as it is");
+    return;
+  }
   if (sleptAtMs && pcState() != PC_ON) {
     sleptAtMs = 0;
     wokeMs = now;
@@ -365,13 +403,24 @@ static void leaveCheck(uint32_t now) {
   float idle = pcStat("pc.idle_s");
   if (!isnan(idle) && idle < NIGHT_LEAVE_IDLE_S) {
     char what[96];
-    snprintf(what, sizeof what, "You left home, but the PC was used %.0f s ago: not hibernated", idle);
+    snprintf(what, sizeof what, "You left home, but the PC was used %.0f s ago: not %s", idle, noHib ? "put to sleep" : "hibernated");
     logMsg("night: %s", what);
     announce(what, 0xF1C40F);
     return;
   }
   powerTryMs = now;
   quietFromMs = now | 1;
+  if (noHib) {
+    const char *err = powerRequest("sleep");
+    if (err) {
+      logMsg("night: left home, sleep not sent (%s)", err);
+      return;
+    }
+    sleepReqMs = now;
+    logMsg("night: left home, hibernation off: putting the PC to sleep");
+    announce("You left home: putting the PC to sleep (hibernation is off)", 0x2C3E50);
+    return;
+  }
   const char *err = powerRequest("hibernate");
   if (err) {
     logMsg("night: left home, hibernate not sent (%s)", err);
@@ -597,7 +646,9 @@ bool nightEngaged() { return engaged; }
 void nightStatus(char *buf, uint32_t size) {
   uint32_t now = nowMs();
   if (sleptAtMs || wokeMs)
-    snprintf(buf, size, wokeMs ? "PC woken to hibernate (you left home)" : "PC asleep, hibernated when you leave home");
+    snprintf(buf, size, wokeMs ? "PC woken to hibernate (you left home)"
+                        : powerHibernateOn() == 0 ? "PC asleep (hibernation off on the PC)"
+                                                  : "PC asleep, hibernated when you leave home");
   else if (guardUntilMs)
     snprintf(buf, size, "off for input on the PC, back on in %lu s unless it is used",
              (unsigned long)((int32_t)(guardUntilMs - now) > 0 ? (guardUntilMs - now) / 1000 + 1 : 0));

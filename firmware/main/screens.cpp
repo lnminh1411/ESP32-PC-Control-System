@@ -435,7 +435,7 @@ static void drawWarnBox(LGFX_Sprite &c, int y) {
   c.fillRoundRect(10, y + 2, 220, 40, 5, C_BG);
 
   char t1[72], t2[72], t3[48], sub1[64], sub2[64], sub3[48] = "";
-  const char *kind = cy.superTyphoon ? "SUPER TYPHOON" : "TYPHOON";
+  const char *kind = cy.superTyphoon ? "SUPER TYPHOON" : cy.tropicalStorm ? "TROPICAL STORM" : "TYPHOON";
   if (cy.active) {
     snprintf(t1, sizeof t1, "%s %s ACTIVE", kind, cy.name);
     snprintf(t2, sizeof t2, "%s %s", kind, cy.name);
@@ -446,8 +446,8 @@ static void drawWarnBox(LGFX_Sprite &c, int y) {
     long left = (long)cy.arriveUnix - (long)time(nullptr);
     char dur[24];
     fmtMinutes(dur, sizeof dur, left > 0 ? left / 60 : 0);
-    snprintf(t1, sizeof t1, "%s %s IN ~%s", kind, cy.name, dur);
-    snprintf(t2, sizeof t2, "%s %s ~%s", kind, cy.name, dur);
+    snprintf(t1, sizeof t1, "%s %.19s IN ~%.16s", kind, cy.name, dur);
+    snprintf(t2, sizeof t2, "%s %.19s ~%.16s", kind, cy.name, dur);
     snprintf(t3, sizeof t3, "%s ~%s", kind, dur);
     struct tm at;
     if (boardLocalTimeAt((time_t)cy.arriveUnix, &at))
@@ -968,7 +968,7 @@ static void drawWeather(LGFX_Sprite &c) {
   textImgDraw(c, "wx.place", w.place[0] ? w.place : WEATHER_HOME_NAME, 120, 6);
 
   char upBuf[32];
-  snprintf(upBuf, sizeof(upBuf), "updated %s", w.updated[0] ? w.updated : "--");
+  snprintf(upBuf, sizeof(upBuf), "updated %.16s", w.updated[0] ? w.updated : "--");
   c.setFont(fontSmall());
   c.setTextColor(C_WX_TEXT_DIM);
   c.setTextDatum(lgfx::textdatum_t::top_center);

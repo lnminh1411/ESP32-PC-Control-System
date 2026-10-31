@@ -55,7 +55,11 @@ bool owmBudgetLeft() {
   uint32_t now = (uint32_t)time(nullptr);
   if (!owmEnabled() || !rollDay(now)) return false;
   if (backoffUntil && now < backoffUntil) return false;
-  return callsToday < OWM_DAILY_CALLS;
+  // paced over the UTC day (07:00 local): no more than the day's share so far
+  // plus 60, so a rainy morning can't spend the night's calls (the day ends
+  // at 07:00 here, right when an early shower matters)
+  uint32_t share = (uint32_t)((uint64_t)OWM_DAILY_CALLS * (now % 86400) / 86400) + 60;
+  return callsToday < OWM_DAILY_CALLS && callsToday < share;
 }
 
 struct OwmBuf { char *buf; size_t cap, len; };

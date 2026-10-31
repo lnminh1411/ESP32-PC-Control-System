@@ -33,6 +33,7 @@
 #include "pc_state.h"
 #include "night.h"
 #include "pcstats.h"
+#include "power.h"
 #include "screens.h"
 #include "settings_or_example.h"
 #include "sys.h"
@@ -116,7 +117,7 @@ struct NotifyMsg {
   int8_t prio;           // Pushover priority
   uint32_t color;
   char text[NOTIFY_MSG_LEN];
-  char desc[320];
+  char desc[480];         // the 2-hourly summary is up to 480 bytes
 };
 
 static QueueHandle_t notifyQueue;
@@ -127,18 +128,25 @@ void discordNotify(const char *what) {
   msg.ch = DC_PC;
   msg.plain = true;
   snprintf(msg.text, sizeof msg.text, "%s", what);
-  xQueueSend(notifyQueue, &msg, 0);
+  if (xQueueSend(notifyQueue, &msg, 0) != pdTRUE) logMsg("discord: queue full, dropped \"%.60s\"", msg.text);
 }
 
 void discordPost(DiscordChannel ch, const char *title, const char *desc, uint32_t color, int prio) {
-  if (!DISCORD_TOKEN[0] || !notifyQueue || !title) return;
-  NotifyMsg msg = {};
-  msg.ch = ch;
-  msg.color = color;
-  msg.prio = (int8_t)prio;
-  snprintf(msg.text, sizeof msg.text, "%s", title);
-  snprintf(msg.desc, sizeof msg.desc, "%s", desc ? desc : "");
-  xQueueSend(notifyQueue, &msg, 0);
+  if (!title) return;
+  // #weather-announcement reaches the phone from here, not from the bot task:
+  // warnings ring while the gateway is down or reconnecting, and with no token
+  if (ch == DC_WEATHER) pushoverQueue(title, desc, prio);
+  if (!DISCORD_TOKEN[0] || !notifyQueue) return;
+  // on the heap, not the caller's stack (the weather task's is 9 KB)
+  NotifyMsg *msg = (NotifyMsg *)heap_caps_calloc(1, sizeof(NotifyMsg), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (!msg) return;
+  msg->ch = ch;
+  msg->color = color;
+  msg->prio = (int8_t)prio;
+  snprintf(msg->text, sizeof msg->text, "%s", title);
+  snprintf(msg->desc, sizeof msg->desc, "%s", desc ? desc : "");
+  if (xQueueSend(notifyQueue, msg, 0) != pdTRUE) logMsg("discord: queue full, dropped \"%.60s\"", msg->text);
+  heap_caps_free(msg);
 }
 
 static const char *channelId(DiscordChannel ch) {
@@ -308,8 +316,8 @@ static void addItem(cJSON *arr, cJSON *item) {
 }
 
 static void postChannelEmbed(DiscordChannel ch, const char *title, const char *desc, uint32_t color, int prio = 0) {
-  // #pc-announcement and #weather-announcement go to the phone too
-  if (ch == DC_PC || ch == DC_WEATHER) pushoverQueue(title, desc, prio);
+  // #pc-announcement goes to the phone too (#weather-announcement already did, in discordPost)
+  if (ch == DC_PC) pushoverQueue(title, desc, prio);
   const char *chId = channelId(ch);
   if (!chId[0]) return;
   cJSON *root = cJSON_CreateObject();
@@ -1070,7 +1078,7 @@ static void buildComponents(cJSON *data, PanelView view, bool standing) {
     addButton(r, "Wake PC", "wake", 3);
     addButton(r, "Lock", "lock", 1);
     addButton(r, "Sleep", "sleep", 2);
-    addButton(r, "Hibernate", "hibernate", 2);
+    if (powerHibernateOn() != 0) addButton(r, "Hibernate", "hibernate", 2);   // hidden while the PC has it off
     r = addRow(comps);
     addButton(r, "Restart", "restart", 4);
     addButton(r, "Shut down", "shutdown", 4);
@@ -2107,7 +2115,7 @@ static void botTask(void *) {
       else postChannelEmbed(DC_PC, "PC state unknown", nullptr, 0x99AAB5);
       lastCtlSyncMs = 0;   // the panel shows the PC state too
     }
-    NotifyMsg nmsg;
+    static NotifyMsg nmsg;   // 600+ B: off the bot task's stack
     while (ready && notifyQueue && xQueueReceive(notifyQueue, &nmsg, 0) == pdTRUE) {
       DiscordChannel ch = (DiscordChannel)nmsg.ch;
       if (!nmsg.plain) {

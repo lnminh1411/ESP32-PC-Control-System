@@ -56,6 +56,10 @@
 // most 960 calls a day; set the account's own daily cap to 1000 as well.
 #define OWM_API_KEY     ""
 
+// Tomorrow.io key (app.tomorrow.io, free tier: 500 calls a day, 25 an hour):
+// minute-by-minute rain for the next hour, a third rain source. Empty = off.
+#define TOMORROW_API_KEY ""
+
 
 // ==== settings: defaults and notes in settings_or_example.h ====
 
@@ -214,7 +218,7 @@
 #define WEATHER_SUMMARY_FIRST_HOUR 4              // two-hourly #weather summary from this hour...
 #define WEATHER_SUMMARY_LAST_HOUR 20              // ...to this one (even hours)
 #define WEATHER_MORNING_HOUR 4                    // the 3-day forecast post goes out at this hour
-#define WEATHER_FORECAST_POLL_MS (5 * 60 * 1000)  // Open-Meteo forecast poll
+#define WEATHER_FORECAST_POLL_MS (15 * 60 * 1000) // Open-Meteo forecast poll (its data changes hourly)
 #define WEATHER_AQI_POLL_MS (30 * 60 * 1000)      // air quality poll
 #define WEATHER_CYCLONE_POLL_MS (30 * 60 * 1000)  // GDACS cyclone list poll
 
@@ -226,13 +230,22 @@
 #define NOWCAST_ALERT_ETA_MIN 60                  // warn when rain arrives within this
 #define NOWCAST_POLL_RAIN_MS (5 * 60 * 1000)      // poll while warned or raining
 #define NOWCAST_POLL_NEAR_MS (10 * 60 * 1000)     // poll while rain is in the grid
-#define NOWCAST_POLL_DRY_MS (15 * 60 * 1000)      // poll while the grid is dry
+#define NOWCAST_POLL_DRY_MS (30 * 60 * 1000)      // poll while the grid is dry (hourly model data underneath)
 
 // ---- OpenWeather One Call 4.0 (owm.cpp; key: OWM_API_KEY) ----
 #define OWM_CALLS_PER_DAY 960                     // daily call budget (set the account's own cap to 1000)
 #define OWM_RAIN_MMH 0.3f                         // minutely precipitation over this counts as rain (drizzle too)
 #define OWM_POLL_RAIN_MS (90 * 1000)              // poll while warned, raining or under an alert
 #define OWM_POLL_MS (120 * 1000)                  // poll otherwise
+
+// ---- RainViewer radar (radar.cpp; free, no key) ----
+#define RADAR_ENABLED 1                           // 0 = off
+#define RADAR_RAIN_DBZ 15                         // echo this strong counts as rain (15 dBZ ~ 0.3 mm/h)
+#define RADAR_HERE_KM 2.5f                        // "at the place": within this radius...
+#define RADAR_HERE_MIN_PX 3                       // ...on this many pixels (~1.1 km each), not one stray
+#define RADAR_MAX_AGE_S (25 * 60)                 // a frame older than this says nothing (they come ~10 min late)
+#define RADAR_POLL_MS (5 * 60 * 1000)             // poll while an echo is within 30 km or rain is warned
+#define RADAR_POLL_DRY_MS (10 * 60 * 1000)        // poll otherwise (a new frame every 10 min)
 
 // ---- Tropical cyclones (GDACS, cyclone.cpp) ----
 #define CYCLONE_HOME_KM 300.0f                    // centre within this distance = "at home"
@@ -242,6 +255,8 @@
 #define OWNTRACKS_MAX_AGE_S (12 * 3600)           // a fix older than this is ignored (the phone reports on movement: silence = same place)
 #define OWNTRACKS_ASK_AFTER_S (2 * 60 * 60)       // no fix for this long: ask the phone (OwnTracks reportLocation), again as often
 #define OWNTRACKS_HOME_KM 1.0                     // phone within this of home = at home (one weather engine)
+#define OWNTRACKS_AWAY_KM 1.5                     // ...and away only past this (a margin: no flapping at the line)
+#define OWNTRACKS_SWITCH_ACC_M 500                // a fix vaguer than this (m) doesn't switch home / away
 
 // ---- PC helper (ESP32-Helper.exe; build.cmd turns HOST_* into C#, the sensor map stays in stats.ini) ----
 #define HOST_LASSO_INI "C:\\ProgramData\\ProcessLasso\\config\\prolasso.ini"  // Process Lasso config the night profile rewrites (original kept as .esp32-night)

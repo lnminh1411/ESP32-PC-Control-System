@@ -31,7 +31,7 @@ static void urlEncode(const char *src, char *dst, size_t dstSize) {
 
 struct PushMsg {
   char title[96];
-  char message[320];
+  char message[480];
   int8_t priority;
 };
 static QueueHandle_t pushQueue;   // storage in PSRAM: only the weather task reads it
@@ -44,15 +44,17 @@ void pushoverInit() {
 
 void pushoverQueue(const char *title, const char *message, int priority) {
   if (!pushQueue || !title) return;
-  PushMsg m = {};
-  snprintf(m.title, sizeof m.title, "%s", title);
-  snprintf(m.message, sizeof m.message, "%s", message && message[0] ? message : title);
-  m.priority = (int8_t)priority;
-  if (xQueueSend(pushQueue, &m, 0) != pdTRUE) logMsg("pushover: queue full, dropped \"%s\"", m.title);
+  PushMsg *m = (PushMsg *)heap_caps_calloc(1, sizeof(PushMsg), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);   // callers' stacks are small
+  if (!m) return;
+  snprintf(m->title, sizeof m->title, "%s", title);
+  snprintf(m->message, sizeof m->message, "%s", message && message[0] ? message : title);
+  m->priority = (int8_t)priority;
+  if (xQueueSend(pushQueue, m, 0) != pdTRUE) logMsg("pushover: queue full, dropped \"%s\"", m->title);
+  heap_caps_free(m);
 }
 
 void pushoverService() {
-  static PushMsg m;   // 416 B: off the weather task's stack
+  static PushMsg m;   // 576 B: off the weather task's stack
   if (pushQueue && xQueueReceive(pushQueue, &m, 0) == pdTRUE) pushoverSend(m.title, m.message, m.priority);
 }
 
@@ -61,16 +63,23 @@ bool pushoverSend(const char *title, const char *message, int priority) {
     return false;
   }
 
-  char encTitle[96];
-  char encMsg[384];
-  urlEncode(title ? title : "Rain soon", encTitle, sizeof(encTitle));
-  urlEncode(message, encMsg, sizeof(encMsg));
-
-  char body[768];
-  int bodyLen = snprintf(body, sizeof(body), "token=%s&user=%s&title=%s&message=%s&priority=%d",
-                         PUSHOVER_TOKEN, PUSHOVER_USER, encTitle, encMsg, priority);
+  // 3.4 KB, once, in PSRAM: too much for the weather task's stack or internal RAM.
+  // Only pushoverService (the weather task) sends, so one set does
+  struct Bufs {
+    char encTitle[192];
+    char encMsg[1440];   // 480 bytes, every one %XX at worst
+    char body[1800];
+  };
+  static Bufs *b = (Bufs *)heap_caps_malloc(sizeof(Bufs), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (!b) return false;
+  char *body = b->body;
+  urlEncode(title ? title : "Rain soon", b->encTitle, sizeof b->encTitle);
+  urlEncode(message, b->encMsg, sizeof b->encMsg);
+  const int bodyCap = sizeof b->body;
+  int bodyLen = snprintf(body, bodyCap, "token=%s&user=%s&title=%s&message=%s&priority=%d",
+                         PUSHOVER_TOKEN, PUSHOVER_USER, b->encTitle, b->encMsg, priority);
   if (bodyLen < 0) return false;
-  if (bodyLen >= (int)sizeof(body)) bodyLen = sizeof(body) - 1;   // cut, not read past body
+  if (bodyLen >= bodyCap) bodyLen = bodyCap - 1;   // cut, not read past body
 
   esp_http_client_config_t cfg = {};
   cfg.url = "https://api.pushover.net/1/messages.json";

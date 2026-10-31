@@ -71,6 +71,9 @@ partial class PcStats {
 
   static volatile int heavyCount = -1;   // -1 until PcHwCtl answered `proc top`
   static volatile string heavyBy = "";
+  // hibernation on (1) or off (0) from PcHwCtl `power caps`, once a minute
+  // (powercfg /h can change it any time); -1 until it answered. pc.hib
+  static volatile int hibOn = -1;
 
   class ExeLoad {
     public readonly List<KeyValuePair<DateTime, double>> Samples = new List<KeyValuePair<DateTime, double>>();
@@ -102,8 +105,12 @@ partial class PcStats {
   static void NightLoop() {
     try { NightLoad(); } catch (Exception ex) { Log("night: night.on unreadable: " + ex.Message); }
     nightWanted = nightOn;   // until the board says otherwise
-    DateTime nextSample = DateTime.MinValue;
+    DateTime nextSample = DateTime.MinValue, nextCaps = DateTime.MinValue;
     while (true) {
+      if (DateTime.UtcNow >= nextCaps) {
+        nextCaps = DateTime.UtcNow.AddMinutes(1);
+        try { SampleCaps(); } catch (Exception ex) { Log("night: power caps: " + ex.Message); }
+      }
       bool sampled = false;
       if (DateTime.UtcNow >= nextSample) {
         nextSample = DateTime.UtcNow.AddMilliseconds(HeavySampleMs);
@@ -125,6 +132,17 @@ partial class PcStats {
       }
       nightKick.WaitOne(HeavySampleMs);
     }
+  }
+
+  // PcHwCtl down: the last answer stands (the setting doesn't go with it)
+  static void SampleCaps() {
+    Dictionary<string, object> data;
+    string r = PipeRequest(HostSettings.HWCTL_PIPE, "power caps", HostSettings.HWCTL_TIMEOUT_MS, out data);
+    object v;
+    if (r != "ok" || data == null || !data.TryGetValue("hibernate", out v) || !(v is bool)) return;
+    int on = (bool)v ? 1 : 0;
+    if (on != hibOn) Log("power: hibernation " + (on == 1 ? "on" : "off"));
+    hibOn = on;
   }
 
   // ---- heavy exes ----
