@@ -9,6 +9,7 @@
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 #include <math.h>
+#include <new>
 #include <nvs.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -87,8 +88,8 @@ static char homeName[48] = WEATHER_HOME_NAME;
 static bool homeConfigured;
 
 // Nowcast engines
-static NowcastEngine homeNowcast;
-static NowcastEngine phoneNowcast;
+static NowcastEngine *homeNowcast;     // both in PSRAM (weatherInit), 750 B each
+static NowcastEngine *phoneNowcast;
 
 // Budget state (<= 10000 daily, hard cap 9500)
 static uint32_t currentUtcDay;
@@ -1024,7 +1025,7 @@ static void publishHome() {
 // Upwind probe: where the rain reaching home in the next 2 h is now
 static void runUpwindProbe(char *buf, size_t cap) {
   char url[640];
-  if (!homeNowcast.buildProbeUrl(url, sizeof url)) return;
+  if (!homeNowcast->buildProbeUrl(url, sizeof url)) return;
   int status = 0;
   if (!httpGet(url, buf, cap, &status)) {
     char err[64];
@@ -1035,7 +1036,7 @@ static void runUpwindProbe(char *buf, size_t cap) {
   budgetTotalCalls += NowcastEngine::N_PROBE;
   budgetHomeCalls += NowcastEngine::N_PROBE;
   uint32_t now = (uint32_t)time(nullptr), end = 0;
-  int r = homeNowcast.processProbe(buf, now, rainHome.raining, &end);
+  int r = homeNowcast->processProbe(buf, now, rainHome.raining, &end);
   if (r == NowcastEngine::PROBE_BAD) {
     logErrorOnce(ERR_HOME_PARSE, "weather: upwind probe answer unusable");
     return;
@@ -1048,8 +1049,8 @@ static void runUpwindProbe(char *buf, size_t cap) {
 
 static void runHomeNowcast(char *buf, size_t cap) {
   char url[1024];
-  homeNowcast.setLocation(homeLat, homeLon);
-  if (!homeNowcast.buildUrl(url, sizeof(url))) return;
+  homeNowcast->setLocation(homeLat, homeLon);
+  if (!homeNowcast->buildUrl(url, sizeof(url))) return;
 
   int status = 0;
   if (!httpGet(url, buf, cap, &status)) {
@@ -1064,7 +1065,7 @@ static void runHomeNowcast(char *buf, size_t cap) {
 
   RainAlert alert = {};
   uint32_t cadence = 0;
-  if (!homeNowcast.processResponse(buf, &alert, &cadence)) {
+  if (!homeNowcast->processResponse(buf, &alert, &cadence)) {
     logErrorOnce(ERR_HOME_PARSE, "weather: home nowcast process failed");
     return;
   }
@@ -1563,7 +1564,7 @@ static void publishPhone();
 
 static void runPhoneNowcast(char *buf, size_t cap) {
   char url[1024];
-  if (!phoneNowcast.buildUrl(url, sizeof(url))) return;
+  if (!phoneNowcast->buildUrl(url, sizeof(url))) return;
 
   int status = 0;
   if (!httpGet(url, buf, cap, &status)) {
@@ -1578,7 +1579,7 @@ static void runPhoneNowcast(char *buf, size_t cap) {
 
   RainAlert alert = {};
   uint32_t cadence = 0;
-  if (!phoneNowcast.processResponse(buf, &alert, &cadence)) {
+  if (!phoneNowcast->processResponse(buf, &alert, &cadence)) {
     logErrorOnce(ERR_PHONE_PARSE, "weather: phone nowcast process failed");
     return;
   }
@@ -1936,7 +1937,7 @@ static void weatherTask(void *) {
     }
 
     // 2. Home Nowcast engine
-    uint32_t homeCadence = homeNowcast.cadenceMs();
+    uint32_t homeCadence = homeNowcast->cadenceMs();
     if (forceImmediate || lastHomeNowcastMs == 0 || (curMs - lastHomeNowcastMs >= homeCadence)) {
       if (checkBudgetNowcast(false)) {
         runHomeNowcast(httpBuf, httpBufCap);
@@ -1946,7 +1947,7 @@ static void weatherTask(void *) {
 
     // 2b. Upwind probe while rain is coming to or falling at home, for its end
     const RainAlert &rh = rainHome;
-    if ((rh.active || rh.raining || rh.watch) && homeNowcast.canProbe() &&
+    if ((rh.active || rh.raining || rh.watch) && homeNowcast->canProbe() &&
         (lastUpwindMs == 0 || curMs - lastUpwindMs >= WEATHER_UPWIND_POLL_MS) &&
         budgetTotalCalls + NowcastEngine::N_PROBE <= 9500) {
       lastUpwindMs = curMs;
@@ -1957,9 +1958,9 @@ static void weatherTask(void *) {
     if (owntracksEnabled() && owntracksValid() && !owntracksIsMerged(homeLat, homeLon)) {
       double pLat = 0.0, pLon = 0.0;
       owntracksGetLocation(&pLat, &pLon, nullptr, nullptr);
-      phoneNowcast.setLocation(pLat, pLon);
+      phoneNowcast->setLocation(pLat, pLon);
 
-      uint32_t phoneCadence = phoneNowcast.cadenceMs();
+      uint32_t phoneCadence = phoneNowcast->cadenceMs();
       if (lastPhoneNowcastMs == 0 || (curMs - lastPhoneNowcastMs >= phoneCadence)) {
         if (checkBudgetNowcast(true)) {
           runPhoneNowcast(httpBuf, httpBufCap);
@@ -2037,6 +2038,8 @@ static void applyConfiguredHome() {
 }
 
 void weatherInit() {
+  homeNowcast = new (psramCalloc(sizeof(NowcastEngine))) NowcastEngine();
+  phoneNowcast = new (psramCalloc(sizeof(NowcastEngine))) NowcastEngine();
   wxMutex = xSemaphoreCreateMutex();
   loadNvsConfig();
   owmInit();
@@ -2185,19 +2188,19 @@ void weatherCommand(const char *a1, const char *a2) {
       fmtClock(e, sizeof e, rainHome.endUnix, false);
       logMsg("weather: home engine: %s %s (%s to %s, %.1f mm/h, from %s) | cadence %u min", wxTierName(rainHome.tier),
              rainHome.raining ? "now" : "soon", s, rainHome.endUnix ? e : "12 h+", rainHome.mmh,
-             rainHome.from[0] ? rainHome.from : "--", (unsigned)(homeNowcast.cadenceMs() / 60000));
+             rainHome.from[0] ? rainHome.from : "--", (unsigned)(homeNowcast->cadenceMs() / 60000));
     } else if (rainHome.watch) {
       char s[16], src[80];
       fmtClock(s, sizeof s, rainHome.startUnix, false);
       rainSrcLine(src, sizeof src, rainHome);
       logMsg("weather: home engine: watch, %s possible from %s (%.1f mm/h, not warned) | %s | cadence %u min",
-             wxTierName(rainHome.tier), s, rainHome.mmh, src, (unsigned)(homeNowcast.cadenceMs() / 60000));
+             wxTierName(rainHome.tier), s, rainHome.mmh, src, (unsigned)(homeNowcast->cadenceMs() / 60000));
     } else if (rainHome.dryKm > 0) {
       logMsg("weather: home engine: clear, radar dry within %u km | cadence %u min",
-             (unsigned)rainHome.dryKm, (unsigned)(homeNowcast.cadenceMs() / 60000));
+             (unsigned)rainHome.dryKm, (unsigned)(homeNowcast->cadenceMs() / 60000));
     } else {
       logMsg("weather: home engine: clear | cadence %u min",
-             (unsigned)(homeNowcast.cadenceMs() / 60000));
+             (unsigned)(homeNowcast->cadenceMs() / 60000));
     }
 
     // Phone engine
@@ -2219,12 +2222,12 @@ void weatherCommand(const char *a1, const char *a2) {
       if (rainPhone.active) {
         logMsg("weather: phone engine: away (dist %.2f km, age %u s) | rain in ~%u min (%.1f mm/h, from %s), cadence %u min",
                dist, (unsigned)owntracksAgeSec(), (unsigned)rainPhone.etaMin, rainPhone.mmh,
-               rainPhone.from[0] ? rainPhone.from : "--", (unsigned)(phoneNowcast.cadenceMs() / 60000));
+               rainPhone.from[0] ? rainPhone.from : "--", (unsigned)(phoneNowcast->cadenceMs() / 60000));
       } else {
         logMsg("weather: phone engine: away (dist %.2f km, age %u s) | clear%s, cadence %u min",
                dist, (unsigned)owntracksAgeSec(),
                (rainPhone.dryKm > 0) ? " (dry 25 km)" : "",
-               (unsigned)(phoneNowcast.cadenceMs() / 60000));
+               (unsigned)(phoneNowcast->cadenceMs() / 60000));
       }
     }
 

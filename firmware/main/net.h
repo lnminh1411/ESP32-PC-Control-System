@@ -1,17 +1,16 @@
-// Wi-Fi station + over-the-air updates.
+// Wi-Fi station and the small HTTP server.
 //
 // Joins WIFI_SSID (settings.h) in the background and keeps reconnecting; the
 // rest of the firmware runs whether or not the network is up. Once
 // connected: mDNS name NET_HOSTNAME.local and, when OTA_PASS is set, an
-// HTTP server endpoint for OTA updates on port 80 (POST /ota with header
-// X-OTA-Pass). OTA matters here: once the board is in the case there is
-// no physical access to BOOT/RESET (docs/recovery-and-physical-access.md).
+// HTTP server on port 80 (PUT /layout with header X-OTA-Pass, GET /bench).
+// Firmware updates go over USB only (scripts/idf_flash.py): there is no OTA.
 #pragma once
 #include <stdint.h>
 
 void netInit();
 void netPoll();
-void netScan();                 // console `wifi scan`: log the networks the board hears                 // call from loop(): OTA + connection logging
+void netScan();                 // console `wifi scan`: log the networks the board hears
 bool netUp();
 const char *netIp();            // "" while down
 int netRssi();                  // dBm, 0 while down

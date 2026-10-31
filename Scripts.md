@@ -45,9 +45,6 @@ Builds `firmware/main/gifs.bin`, the GIF pack embedded in the firmware, from `fi
 ### idf_flash.py
 Builds and flashes `firmware` over the native USB port hands-off: stops the ESP32PcStats service (no UAC prompt when it is already stopped), does a 1200-baud touch on COM12, waits for the ROM downloader port and runs `idf.py flash`. Run it with the ESP-IDF Python (`C:\Espressif\python_env\idf5.5_py3.12_env\Scripts\python.exe scripts\idf_flash.py [--no-build]`). Located at `scripts/idf_flash.py`.
 
-### ota_upload.py
-Uploads `firmware/build/carrier.bin` to the board over Wi-Fi (HTTP POST /ota, password from settings.h). Located at `scripts/ota_upload.py`.
-
 ### make_vlw.py
 Converts a TTF/OTF font into an anti-aliased LovyanGFX VLW font as a C array (`font_*.cpp` in firmware/main). Usage: `python scripts/make_vlw.py FONT.otf SIZE NAME OUT.cpp [--extra U+F2C9]`. Located at `scripts/make_vlw.py`.
 ### layout_upload.py

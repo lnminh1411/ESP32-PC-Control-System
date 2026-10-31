@@ -78,7 +78,7 @@ static void cmdSocks(const char *, const char *) {
 // perf: CPU per core + busiest tasks since the previous `perf` (run it twice).
 // Diffs FreeRTOS run-time counters, so it never blocks the main loop.
 static void cmdPerf(const char *, const char *) {
-  static TaskStatus_t prev[40];
+  static TaskStatus_t *prev = (TaskStatus_t *)psramCalloc(40 * sizeof(TaskStatus_t));   // 1.6 KB
   static UBaseType_t nPrev;
   static uint32_t prevUs, prevSpin, prevDec, prevDecN;
   extern uint32_t displaySpinUs;

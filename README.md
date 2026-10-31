@@ -91,7 +91,7 @@ layout is real. What each panel shows and when: [docs/screens.md](docs/screens.m
 | [weather.md](docs/weather.md) | Weather sources, nowcast, warnings, OwnTracks, Pushover, call budgets |
 | [helper.md](docs/helper.md) | The PC helper; full reference in [host/pc_stats/README.md](host/pc_stats/README.md) |
 | [settings.md](docs/settings.md) | `settings.h`, the secrets, and [every other key](docs/settings-reference.md) |
-| [build-and-flash.md](docs/build-and-flash.md) | Building, flashing, OTA, uploads, screenshots, CI |
+| [build-and-flash.md](docs/build-and-flash.md) | Building, flashing, uploads, screenshots, CI |
 | [layouts.md](docs/layouts.md) | JSON dashboard layouts |
 | [benchmark.md](docs/benchmark.md) | Memory and speed measurements |
 | [pc-power-detection.md](docs/pc-power-detection.md), [recovery-and-physical-access.md](docs/recovery-and-physical-access.md) | Design notes |
@@ -112,5 +112,5 @@ layout is real. What each panel shows and when: [docs/screens.md](docs/screens.m
 Rev 3.1 is fabricated and assembled, and the firmware runs on it: all three
 panels, PC power detection, the stats link, Wi-Fi, Wake PC, the Discord bot,
 live weather with OwnTracks and Pushover, and night mode are in daily use.
-Still to do: test the door buttons B1-B4 on the real keyfob and OTA, and
+Still to do: test the door buttons B1-B4 on the real keyfob, and
 build the firmware in CI.

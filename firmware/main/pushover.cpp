@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "log.h"
+#include "sys.h"
 #include "settings_or_example.h"
 
 static bool errLogged;
@@ -54,7 +55,7 @@ void pushoverQueue(const char *title, const char *message, int priority) {
 }
 
 void pushoverService() {
-  static PushMsg m;   // 576 B: off the weather task's stack
+  static PushMsg &m = *(PushMsg *)psramCalloc(sizeof(PushMsg));   // 576 B: off the stack and internal RAM
   if (pushQueue && xQueueReceive(pushQueue, &m, 0) == pdTRUE) pushoverSend(m.title, m.message, m.priority);
 }
 

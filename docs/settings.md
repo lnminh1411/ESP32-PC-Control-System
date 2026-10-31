@@ -2,7 +2,7 @@
 
 Everything that describes this setup lives in one file,
 `firmware/main/settings.h` (gitignored; copy `settings_example.h` to start).
-The secrets come first (Wi-Fi, Discord, OTA, MQTT, Pushover, Wake-on-LAN,
+The secrets come first (Wi-Fi, Discord, HTTP password, MQTT, Pushover, Wake-on-LAN,
 OpenWeather, home place), then the rest of its 195 keys grouped by topic:
 board pins and panels, Wi-Fi TX power (`NET_WIFI_TX_DBM`, 8 dBm), status LED,
 night mode hours and levels, PC warning thresholds, GPU and drive labels,
@@ -38,7 +38,7 @@ feature is off.
 | `DISCORD_TOKEN`, `DISCORD_APP_ID`, `DISCORD_GUILD_ID`, `DISCORD_OWNER_ID` | The Discord bot ([discord.md](discord.md)); setup steps are in `firmware/main/discord.h` |
 | `DISCORD_CHANNEL_ID`, `DISCORD_CH_PC`, `DISCORD_CH_WEATHER`, `DISCORD_CH_LOG`, `DISCORD_CH_CONTROL` | Channel ids |
 | `DISCORD_SHOT_WEBHOOK` | The Screenshot button's webhook |
-| `OTA_PASS` | `POST /ota` and `PUT /layout` |
+| `OTA_PASS` | `PUT /layout` (the name is left from OTA, now removed) |
 | `MQTT_URI`, `MQTT_USER`, `MQTT_PASS`, `OWNTRACKS_TOPIC` | OwnTracks over MQTT ([weather.md](weather.md)) |
 | `PUSHOVER_TOKEN`, `PUSHOVER_USER` | Pushover |
 | `WOL_MAC`, `WOL_TARGET` | Wake-on-LAN before the helper has reported the PC's MAC; an extra address to send to |

@@ -68,8 +68,8 @@ CONFIG_HTTPD_WS_SUPPORT=n
 
 # app_main runs setup() then the main loop, on core 1 like Arduino's loopTask
 CONFIG_ESP_MAIN_TASK_AFFINITY_CPU1=y
-# OTA safety: a new image that never marks itself valid is rolled back
-CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+# One factory app slot, no OTA: firmware goes over USB (scripts/idf_flash.py)
+# CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE is not set
 # TLS: plain malloc, so small allocations (Wi-Fi WPA3 bignums) stay internal and the
 # 16 KB record buffers go to PSRAM (SPIRAM_MALLOC_ALWAYSINTERNAL=4096)
 CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC=y
@@ -89,19 +89,26 @@ CONFIG_VFS_SELECT_IN_RAM=y
 # single-bit errors (2026-10-28); the MSPI ECC corrects them. Costs 1/16 of
 # PSRAM (512 KB of 8 MB).
 CONFIG_SPIRAM_ECC_ENABLE=y
+# Less code in internal RAM (2026-11-01): heap and ringbuf functions run from
+# flash, and the SPI master ISR with them (heap in flash needs it off). None of
+# our ISRs are IRAM ones, so nothing calls these while the cache is off.
+CONFIG_HEAP_PLACE_FUNCTION_INTO_FLASH=y
+# CONFIG_SPI_MASTER_ISR_IN_IRAM is not set
+CONFIG_RINGBUF_PLACE_FUNCTIONS_INTO_FLASH=y
+# CONFIG_ESP_EVENT_POST_FROM_IRAM_ISR is not set
 # Software AES: hardware AES needs DMA bounce buffers in internal RAM for PSRAM data
 CONFIG_MBEDTLS_HARDWARE_AES=n
 # Internal RAM for TLS/sockets: Wi-Fi hot paths stay in flash, fewer fixed RX buffers
 CONFIG_ESP_WIFI_IRAM_OPT=n
 CONFIG_ESP_WIFI_RX_IRAM_OPT=n
-CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=8
-# static TX buffers sit in internal RAM for good: 8, not 16. Static was the default only
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
+# static TX buffers sit in internal RAM for good: 6 (was 16, then 8). Static was the default only
 # while SPIRAM_TRY_ALLOCATE_WIFI_LWIP was on, so it is spelled out (a fresh build got dynamic)
 CONFIG_ESP_WIFI_STATIC_TX_BUFFER=y
-CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=8
+CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=6
 # the running board's value, also left over from SPIRAM_TRY_ALLOCATE_WIFI_LWIP (a fresh build got 4)
 CONFIG_LWIP_TCP_OOSEQ_MAX_PBUFS=0
-CONFIG_ESP_WIFI_RX_BA_WIN=8
+CONFIG_ESP_WIFI_RX_BA_WIN=6
 # mDNS packets in PSRAM: at boot the TLS handshakes left no internal RAM and mDNS sends failed
 CONFIG_MDNS_MEMORY_ALLOC_SPIRAM=y
 # stacks trimmed to measured use + margin (bench usage, 2026-10-26)

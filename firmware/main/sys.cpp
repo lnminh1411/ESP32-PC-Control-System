@@ -48,6 +48,11 @@ uint32_t freePsram() { return heap_caps_get_free_size(MALLOC_CAP_SPIRAM); }
 uint32_t freeHeap() { return heap_caps_get_free_size(MALLOC_CAP_DEFAULT); }
 uint32_t freeInternal() { return heap_caps_get_free_size(MALLOC_CAP_INTERNAL); }
 
+void *psramCalloc(size_t size) {
+  void *p = heap_caps_calloc(1, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  return p ? p : calloc(1, size);
+}
+
 float chipTempC() {
   static temperature_sensor_handle_t ts;
   static bool tried;

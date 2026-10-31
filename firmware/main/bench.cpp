@@ -89,7 +89,7 @@ static void benchUsage() {
     esp_partition_pos_t pos = {run->address, run->size};
     esp_image_metadata_t meta = {};
     if (esp_image_verify(ESP_IMAGE_VERIFY_SILENT, &pos, &meta) == ESP_OK) {
-      snprintf(extra, sizeof extra, " | running from %s (OTA slot, the other is the same size)", run->label);
+      snprintf(extra, sizeof extra, " | running from %s (the only app slot)", run->label);
       kbLine("app image", meta.image_len, run->size, extra);
     }
   }
@@ -332,7 +332,8 @@ static void benchSpi() {
 
 static void benchUsb(uint32_t kb) {
   if (!kb || kb > 4096) kb = 256;
-  static char line[1025];
+  static char *line = (char *)psramCalloc(1025);
+  if (!line) return;
   memset(line, 'U', 1023);
   line[1023] = '\n';
   line[1024] = 0;

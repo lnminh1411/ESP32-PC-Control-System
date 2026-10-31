@@ -7,12 +7,13 @@
 #include "config.h"
 #include "host_uart.h"
 #include "pcstats.h"
+#include "sys.h"
 #include "usb.h"
 
 struct LineBuf { char buf[400]; uint16_t n; };   // PC stats dictionary lines run long
 
-// Line assembly per port
-static LineBuf uartLine, usbLine, hidLine, vendorLine;
+// Line assembly per port: UART, CDC, vendor, HID (1.6 KB, in PSRAM)
+static LineBuf *lines;
 
 static bool feed(LineBuf &lb, int c) {        // true = a full line is in lb.buf
   if (c == '\r' || c == '\n') {
@@ -31,6 +32,8 @@ static void dispatch(char *line) {      // '@' = PC stats service, else a comman
 }
 
 void consolePoll() {
+  if (!lines && !(lines = (LineBuf *)psramCalloc(4 * sizeof(LineBuf)))) return;
+  LineBuf &uartLine = lines[0], &usbLine = lines[1], &vendorLine = lines[2], &hidLine = lines[3];
   while (hostUartAvailable()) {
     if (feed(uartLine, hostUartRead())) dispatch(uartLine.buf);
   }

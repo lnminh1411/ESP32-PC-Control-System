@@ -54,7 +54,8 @@ static bool wsMsgDropped;
 
 // ---- hand-over to the main loop: one command at a time ----
 static char reqLine[64];
-static char reqReply[1500];
+static const size_t REQ_REPLY_MAX = 1500;
+static char *reqReply;                      // REQ_REPLY_MAX bytes in PSRAM (discordInit)
 static volatile uint32_t reqSeq, doneSeq;   // last request posted / last one the main loop finished
 static SemaphoreHandle_t reqDone;           // wakes the waiter; doneSeq says whose command finished
 static SemaphoreHandle_t restMutex[2];
@@ -82,7 +83,7 @@ static bool runOnMainLoop(const char *line, uint32_t timeoutMs = 2500) {
 void discordPoll() {
   uint32_t seq = reqSeq;
   if (seq == doneSeq) return;
-  logCapture(reqReply, sizeof reqReply);
+  logCapture(reqReply, REQ_REPLY_MAX);
   commandRun(reqLine);
   logCapture(nullptr, 0);
   doneSeq = seq;
@@ -2115,7 +2116,7 @@ static void botTask(void *) {
       else postChannelEmbed(DC_PC, "PC state unknown", nullptr, 0x99AAB5);
       lastCtlSyncMs = 0;   // the panel shows the PC state too
     }
-    static NotifyMsg nmsg;   // 600+ B: off the bot task's stack
+    static NotifyMsg &nmsg = *(NotifyMsg *)psramCalloc(sizeof(NotifyMsg));   // 600+ B: off the stack and internal RAM
     while (ready && notifyQueue && xQueueReceive(notifyQueue, &nmsg, 0) == pdTRUE) {
       DiscordChannel ch = (DiscordChannel)nmsg.ch;
       if (!nmsg.plain) {
@@ -2162,10 +2163,11 @@ void discordInit() {
   // does, any task's log line reads the local time (sys_evt has 2.3 KB of stack)
   boardTimeInit();
   if (!DISCORD_TOKEN[0]) { logMsg("discord: off (no DISCORD_TOKEN in settings.h)"); return; }
+  reqReply = (char *)psramCalloc(REQ_REPLY_MAX);
   reqDone = xSemaphoreCreateBinary();
   restMutex[0] = xSemaphoreCreateMutex();
   restMutex[1] = xSemaphoreCreateMutex();
-  if (!reqDone || !restMutex[0] || !restMutex[1]) { logMsg("discord: off (no memory)"); return; }
+  if (!reqReply || !reqDone || !restMutex[0] || !restMutex[1]) { logMsg("discord: off (no memory)"); return; }
   ixQueue = xQueueCreate(IX_QUEUE_DEPTH, sizeof(char *));
   notifyQueue = xQueueCreateWithCaps(NOTIFY_QUEUE_DEPTH, sizeof(NotifyMsg), MALLOC_CAP_SPIRAM);
   if (!notifyQueue) notifyQueue = xQueueCreate(NOTIFY_QUEUE_DEPTH, sizeof(NotifyMsg));

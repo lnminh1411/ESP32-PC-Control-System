@@ -20,14 +20,6 @@ flashes over the ROM's USB-Serial-JTAG port and starts the service again.
 It needs pyserial: run it with ESP-IDF's own Python
 (`C:\Espressif\python_env\idf5.5_py3.12_env\Scripts\python.exe`).
 
-## Over the air
-
-Once Wi-Fi is up, `python scripts/ota_upload.py` flashes over the network
-instead: it POSTs `firmware/build/carrier.bin` to `/ota` on
-`<NET_HOSTNAME>.local` with `OTA_PASS` from `settings.h`. The board writes the
-other app slot, reboots, and marks the image valid once Wi-Fi is up (or after
-2 min); an image that resets before that rolls back on the next boot.
-
 ## Build details
 
 The build compiles only the ESP-IDF components `main` needs (`MINIMAL_BUILD`).
@@ -52,7 +44,7 @@ cover art, in place of the made-up one.
 
 The GIFs are part of the firmware. Their sources are in `firmware/gifs/`, and
 `firmware/gifs/gifs.json` lists them in play order (`every` keeps every Nth
-frame, up to 8 GIFs and 512 frames in all; the 5 MB app slot is the real
+frame, up to 8 GIFs and 512 frames in all; the 10 MB app slot is the real
 limit, about 19 KB a frame). After changing either, regenerate the pack and
 flash:
 

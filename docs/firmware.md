@@ -23,10 +23,10 @@ Building and flashing: [build-and-flash.md](build-and-flash.md). Settings:
 | `hwctl`, `aictl`, `monctl` | `!hw`, `!ai` and `!mon` relays through the PC helper: case RGB and fans (PcHwCtl), the local AI stack (LocalAIHost), monitors (PcHwCtl) |
 | `weather`, `nowcast`, `owm`, `cyclone`, `owntracks`, `pushover` | Open-Meteo forecast and AQI, rain nowcast and warnings, OpenWeather One Call 4.0 minute-by-minute rain and alerts, GDACS typhoon tracking, phone location over MQTT, Pushover copies of the PC and weather announcements ([weather.md](weather.md)) |
 | `board_time` | Wall clock: SNTP over Wi-Fi, else the time the PC sends |
-| `net`, `discord` | Wi-Fi (TX power capped, self-healing rejoin), mDNS, HTTP server (`/ota`, `/layout`, `/bench`); Discord bot with an `/actions` panel and a standing #control panel ([discord.md](discord.md)) |
+| `net`, `discord` | Wi-Fi (TX power capped, self-healing rejoin), mDNS, HTTP server (`/layout`, `/bench`); Discord bot with an `/actions` panel and a standing #control panel ([discord.md](discord.md)) |
 | `gif_store` | GIFs built into the firmware (`gifs.bin`, from `scripts/gif_pack.py`): palette frames, each storing only its dirty rects, kept compressed in flash and inflated as they play |
 | `commands`, `console`, `usb`, `host_uart`, `log` | The text command set ([console.md](console.md)); USB CDC, CH343 UART (3 Mbaud), WinUSB bulk and vendor-HID transports; the log fan-out (UART, CDC, Discord #logging) |
-| `sys`, `heapguard`, `bench` | Reset reason and core dump summary at boot, brownout settle, PSRAM ECC log; debug heap guard (internal heap check every 20 ms, ROM printf ring kept across resets, socket-VFS watchpoints); `bench` tests |
+| `sys`, `bench` | Reset reason and core dump summary at boot, brownout settle, PSRAM ECC log; `bench` tests |
 
 ## Display pipeline
 
@@ -78,19 +78,17 @@ Building and flashing: [build-and-flash.md](build-and-flash.md). Settings:
 | `led` | 0 | 2 KB | Status LED patterns |
 | `discord` | 0 | 10 KB | Discord gateway and REST |
 | `weather` | 0 | 9 KB | Open-Meteo, OpenWeather, GDACS; the Pushover queue |
-| `heapguard` | any | 3 KB | Debug: internal heap check every 20 ms, socket-VFS pointer check |
 
 ## ESP-IDF configuration
 
 `firmware/sdkconfig.defaults` holds the board's ESP-IDF choices: 240 MHz,
 16 MB QIO flash, octal PSRAM at 40 MHz with ECC (below), Wi-Fi, lwIP and the
 VFS select tables kept in internal RAM, a 20 s task watchdog that panics, ELF
-core dumps to flash, app rollback, and the console on the CH343 UART at
-3 Mbaud. The partition table (`firmware/partitions.csv`) has two 5 MB app
-slots (the GIF pack is in the app image), a 5.9 MB FAT partition (`/ffat`:
-layout, pinned text) and a 64 KB core dump partition. A partition table
-change only reaches the board over USB (`idf_flash.py`), not OTA; moving
-`/ffat` reformats it.
+core dumps to flash, and the console on the CH343 UART at 3 Mbaud. The
+partition table (`firmware/partitions.csv`) has one 10 MB factory app slot
+(the GIF pack is in the app image), a 5.9 MB FAT partition (`/ffat`: layout,
+pinned text) and a 64 KB core dump partition. There is no OTA: firmware goes
+over USB (`idf_flash.py`). Moving `/ffat` reformats it.
 
 ## PSRAM hardening
 
@@ -110,7 +108,7 @@ out and restarted. The new run's first message, "Board restarted after
 brownout (supply voltage dropped)", reached Discord as "Boird resuasted agter
 browno}t ({upply)vom|age!droypee)". Each wrong letter is the right one with a
 single bit turned from 0 to 1. The string is correct in flash, so its copy in
-PSRAM had gone bad. Seconds later heapguard found three PSRAM canaries
+PSRAM had gone bad. Seconds later a debug heap guard (since removed) found three PSRAM canaries
 overwritten, one with the start of a Discord gateway message, and the board
 crashed. The cause is electrical: the board runs from the motherboard's 5 V,
 which sags as the PC powers on ([power-and-night.md](power-and-night.md#power-on-brownout))

@@ -21,7 +21,7 @@ flash, and it happened once.
 - Many motherboards keep +5V standby on internal USB headers when the PC is
   shut down (that is what wake-on-USB uses), so shutting the PC down may not
   power-cycle the ESP32 at all.
-- An app-level watchdog or OTA rollback only covers an app that boots and
+- An app-level watchdog only covers an app that boots and
   runs badly. It does nothing for a chip stuck in the ROM bootloader or a
   corrupt bootloader partition.
 

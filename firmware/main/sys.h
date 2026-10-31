@@ -14,6 +14,9 @@ static inline void sleepMs(uint32_t ms) { vTaskDelay(ms ? pdMS_TO_TICKS(ms) : 1)
 uint32_t freePsram();
 uint32_t freeHeap();       // all heaps (internal + PSRAM)
 uint32_t freeInternal();
+// Zeroed memory kept for good (a buffer that would otherwise sit in internal
+// RAM's .bss): PSRAM first, internal RAM only if PSRAM is full
+void *psramCalloc(size_t size);
 float chipTempC();         // internal temperature sensor, NAN if unavailable
 void psramEccPoll();       // main loop: log PSRAM ECC corrections (see sys.cpp)
 extern uint32_t psramEccTotal;   // corrections since boot

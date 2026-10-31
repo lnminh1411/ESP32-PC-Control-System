@@ -23,7 +23,6 @@
 #include "aictl.h"
 #include "monctl.h"
 #include "night.h"
-#include "heapguard.h"
 #include "hwctl.h"
 #include "weather.h"
 #include "wol.h"
@@ -99,8 +98,7 @@ extern "C" void app_main() {
   // 1. opto rows first: LOW before anything else can glitch them
   optosInit();
   statusLedInit();
-  settleAfterBrownout();   // a brownout boot: wait 3 s, restart (PSRAM tuned again on a steady supply)
-  heapGuardEarly();   // debug: heap corruption hunt
+  settleAfterBrownout();   // a brownout boot: wait 3 s, restart (PSRAM starts again on a steady supply)
 
   // 2. serial ports + USB power-state events
   hostUartBegin();
@@ -154,7 +152,6 @@ extern "C" void app_main() {
   discordInit();
   weatherInit();
   logResetReason();
-  heapGuardStart();   // debug: heap corruption hunt
   statusLedReady();
 
   esp_task_wdt_add(nullptr);           // a stalled main loop panics after 20 s (core dump + reboot)

@@ -164,7 +164,7 @@
 
 // ---- Network ----
 #ifndef NET_HOSTNAME
-#define NET_HOSTNAME "esp32-pc-control"           // Wi-Fi hostname, mDNS name (<name>.local), OTA name, Discord device name
+#define NET_HOSTNAME "esp32-pc-control"           // Wi-Fi hostname, mDNS name (<name>.local), Discord device name
 #endif
 #ifndef NET_NTP_SERVER
 #define NET_NTP_SERVER "pool.ntp.org"             // SNTP server
@@ -174,9 +174,6 @@
 #endif
 #ifndef NET_WIFI_TX_DBM
 #define NET_WIFI_TX_DBM 8                         // Wi-Fi transmit power cap, dBm (2-20); the router sits ~30 cm away, less TX current on the board's supply
-#endif
-#ifndef NET_OTA_VALIDATE_MS
-#define NET_OTA_VALIDATE_MS 120000                // a new OTA image is marked good after this much uptime
 #endif
 
 // ---- Wake-on-LAN ----

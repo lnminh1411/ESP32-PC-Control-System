@@ -25,8 +25,8 @@
 // Edit Channel -> Integrations -> Webhooks. Empty = the button is disabled.
 #define DISCORD_SHOT_WEBHOOK ""
 
-// Password for over-the-air firmware updates (arduino-cli / Arduino IDE
-// network port). Empty = OTA disabled.
+// Password for the board's HTTP server (PUT /layout, header X-OTA-Pass; the
+// name is left from when it also took OTA updates). Empty = server off.
 #define OTA_PASS ""
 
 // OwnTracks over MQTT (TLS, EMQX Cloud Serverless: mqtts://<address>:8883, or the bare address = TLS on 8883). Empty MQTT_URI = phone engine off.
@@ -105,11 +105,10 @@
 #define POWER_WAKE_DIM_MS 200                     // backlights off this long while the PC powers on (its inrush browns out the board)
 
 // ---- Network ----
-#define NET_HOSTNAME "esp32-pc-control"           // Wi-Fi hostname, mDNS name (<name>.local), OTA name, Discord device name
+#define NET_HOSTNAME "esp32-pc-control"           // Wi-Fi hostname, mDNS name (<name>.local), Discord device name
 #define NET_NTP_SERVER "pool.ntp.org"             // SNTP server
 #define NET_WIFI_PS WIFI_PS_NONE                  // Wi-Fi modem power save (esp_wifi_set_ps)
 #define NET_WIFI_TX_DBM 8                         // Wi-Fi transmit power cap, dBm (2-20); the router sits ~30 cm away, less TX current on the board's supply
-#define NET_OTA_VALIDATE_MS 120000                // a new OTA image is marked good after this much uptime
 
 // ---- Wake-on-LAN ----
 #define WOL_PORT 9                                // magic packet UDP port

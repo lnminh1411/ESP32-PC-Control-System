@@ -18,17 +18,17 @@ of PSRAM.
 
 | Memory | Used | Notes |
 |---|---|---|
-| SRAM (512 KB) | 446 KB (87%) | 173 KB static (code in IRAM, data/bss, ROM, cache); heap 338 KB; lowest free ever: 25 KB, largest block 30 KB |
+| SRAM (512 KB) | 393 KB (77%) | 145 KB static (code in IRAM, data/bss, ROM, cache); heap 366 KB, 121 KB free; lowest free ever: 56 KB, largest block 37 KB |
 | PSRAM (7680 KB) | 1585 KB (21%) | lowest free ever 5017 KB, largest free block 6015 KB |
-| Flash (16 MB) | fully partitioned | app slots 2 x 5 MB (OTA), FAT 5.9 MB, NVS 20 KB, core dump 64 KB |
-| App image | 2848 KB of 5120 KB (56%) | 1201 KB of it is the GIF pack |
+| Flash (16 MB) | fully partitioned | one 10 MB app slot (no OTA), FAT 5.9 MB, NVS 20 KB, core dump 64 KB |
+| App image | 2837 KB of 10240 KB (28%) | 1201 KB of it is the GIF pack |
 | FAT /ffat | 4 KB of 5932 KB (0%) | layout.json, saved text images |
 | NVS | 229 of 630 entries | 12 namespaces |
 
-Task stacks, least ever free (bytes): main 6572, discord 5488, httpd 4904,
-websocket 4608, weather 3444, TinyUSB 2872, flush 2816, wifi 2528, esp_timer 2056,
-mdns 1396, Tmr Svc 1332, tiT 1312, mqtt 1232, led 1204, heapguard 796, sys_evt 784,
-IDLE 692-700, ipc 496-504.
+Task stacks, least ever free (bytes): main 6616, discord 5528, httpd 4896,
+websocket 4648, weather 3472, TinyUSB 2876, flush 2852, wifi 2564, gifdec 2240,
+esp_timer 2052, mdns 1788, tiT 1368, Tmr Svc 1328, mqtt 1236, led 1200, sys_evt 792,
+IDLE 688-696, ipc 500-508.
 
 ## Internal RAM, before and after 2026-10-26
 
@@ -156,8 +156,8 @@ Notes:
   frame rates. SPI runs at 40 MHz because 80 MHz gave blank panels.
 - `bench spi` reads the canvas from PSRAM. PSRAM went from 80 to 40 MHz on
   2026-10-28, the likely cause of the slower frame (not measured on its own).
-- Wi-Fi throughput is low on purpose: 8 static RX and 8 static TX buffers and
-  a BA window of 8 free internal RAM for TLS (see `sdkconfig.defaults`).
+- Wi-Fi throughput is low on purpose: 6 static RX and 6 static TX buffers and
+  a BA window of 6 free internal RAM for TLS (see `sdkconfig.defaults`).
   Nothing on the board needs more than ~100 KB/s.
 
 ## Build changes and TLS dynamic buffers off, 2026-10-27
@@ -254,3 +254,34 @@ on panel 1:
 - **March 7th** then joined as a third GIF: 1 s of its 30 fps source (frames
   120-149, a loop that closes), RIFE-interpolated to 20 frames at 20 fps. The
   pack is 1201 KB for 62 frames, and the app image fills 56% of its slot.
+
+## Internal RAM pass, 2026-11-01
+
+OTA went first (one 10 MB factory app slot, no rollback). Then:
+
+- The heap-corruption hunt's debug code came out: the `heapguard` task, its
+  buffers and comprehensive heap poisoning (local `sdkconfig` only).
+- Heap and ringbuf functions and the SPI master ISR run from flash
+  (`CONFIG_HEAP_PLACE_FUNCTION_INTO_FLASH`, `CONFIG_RINGBUF_PLACE_FUNCTIONS_INTO_FLASH`,
+  SPI master ISR out of IRAM). FreeRTOS stays in IRAM: ESP-IDF 5.5 has no
+  option to move it.
+- Wi-Fi static RX and TX buffers and the BA window went from 8 to 6.
+- About 8 KB of our own static buffers moved to PSRAM (`psramCalloc`): the
+  `perf` history, the Discord command reply, the console line buffers, the
+  two nowcast engines, the Discord and Pushover queue slots, the `bench usb`
+  line.
+
+Both columns are `bench usage` a few minutes after boot, PC on.
+
+| | Before | After |
+|---|---|---|
+| SRAM static (IRAM code, data, bss) | 173 KB | 145 KB (IRAM code 75 -> 59 KB, .bss 47 -> 37 KB) |
+| Internal heap free | 69 KB | 121 KB |
+| Internal lowest free since boot | 25 KB | 56 KB |
+| Largest internal block | 31 KB | 37 KB |
+| GIF on panel 1 (`perf`) | 21.0 fps, 19.2 ms to inflate a frame | 19.9 fps, 18.8 ms |
+| Core 1 / core 0 | 66% / 25% (heapguard 5.8%) | 68% / 23% |
+| SPI full frame | 33.6-34.8 ms | 33.6-33.9 ms |
+| Wi-Fi HTTP download | 0.84-0.89 MB/s | 0.83-0.85 MB/s |
+
+The GIF runs at its 20 fps either way; the 21.0 before was a short window.
