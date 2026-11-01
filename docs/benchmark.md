@@ -12,17 +12,17 @@ and time Wi-Fi from the PC with
 
 ## Usage
 
-From `bench usage` (part of `bench all`), PC on, 140-frame GIF pack decoded as
-it plays, two panels having shown a GIF. Each panel that shows one holds
-150 KB of PSRAM (its frame and its decoded rects).
+From `bench usage` (part of `bench all`), PC on, 220-frame GIF pack decoded as
+it plays, after GIFs had run on all three panels. Each panel that shows one
+holds 150 KB of PSRAM (its frame and its decoded rects).
 
 | Memory | Used | Notes |
 |---|---|---|
-| SRAM (512 KB) | 394 KB (77%) | heap 366 KB, 118 KB free; lowest free ever: 50 KB, largest block 31 KB |
-| PSRAM (7680 KB) | 1880 KB (24%) | lowest free ever 5026 KB, largest free block 4992 KB |
-| Flash (16 MB) | fully partitioned | one 9.9 MB app slot (no OTA), GIF pack 5 MB, FAT 1 MB, NVS 20 KB, core dump 64 KB |
-| App image | 1638 KB of 10112 KB (16%) | |
-| GIF pack | 3722 KB of 5120 KB (73%) | its own `gifs` partition: 6 GIFs, 140 frames |
+| SRAM (512 KB) | 397 KB (78%) | heap 366 KB, 117 KB free; lowest free ever: 52 KB, largest block 36 KB |
+| PSRAM (7680 KB) | 1880 KB (24%) | lowest free ever 4722 KB, largest free block 4992 KB |
+| Flash (16 MB) | fully partitioned | one 8.9 MB app slot (no OTA), GIF pack 6 MB, FAT 1 MB, NVS 20 KB, core dump 64 KB |
+| App image | 1638 KB of 9088 KB (18%) | |
+| GIF pack | 5645 KB of 6144 KB (92%) | its own `gifs` partition: 9 GIFs, 220 frames |
 | FAT /ffat | 4 KB of 972 KB (0%) | layout.json, saved text images |
 | NVS | 232 of 630 entries | 12 namespaces |
 
@@ -379,3 +379,25 @@ turns in shuffled rounds: every GIF once a round, none twice in a row across rou
 
 A frame takes 21-22 ms of push time. All 42 panel screenshots across the six GIFs
 matched the packed frames exactly, and 15 turns in a row kept to the round rule.
+
+## Nine GIFs, 2026-11-01
+
+Kita, Teto and Herta bring the pack to 220 frames and 5645 KB, too much for 5 MB,
+so the partition table is now app 8.9 MB, FAT 1 MB, GIFs 6 MB. Up to 12 GIFs.
+
+| GIF | Frames | Pack | Rects, share of the screen | Palette, worst error |
+|---|---|---|---|---|
+| Kita | 16 | 741 KB | 99%: the paper grain changes every frame | 241, exact |
+| Teto | 50 | 1044 KB | 93% | 256, 4.90 of 15 (2.9% of pixels) |
+| Herta | 14 | 138 KB | 44% | 119, exact |
+
+| GIF playback at 20 fps | Frame rate | Frame times | Bus |
+|---|---|---|---|
+| One panel | 20.0 fps | 1.0x nominal | 39%, 1.5-2.1 MB/s |
+| Two panels | 19.1 fps median, 17-18 on Kita, Miku and Teto | 1.01x nominal | 65% |
+| Three panels | 15.75 fps median, 12-13 on Kita, Miku and Teto | 1.25x nominal | 77% |
+
+Herta counts 17.5 fps on any panel count: two frames repeat, so the packer holds
+the one before for 100 ms, and the loop stays 800 ms. All 38 panel screenshots
+matched the packed frames exactly, and 19 turns kept to the round rule. Lowest SRAM
+free 52 KB, no crashes in the log channel.

@@ -29,9 +29,9 @@ OUT = os.path.join(ROOT, "firmware", "main", "gifs.bin")
 PANEL_W, PANEL_H = 240, 320
 BAND = 8                # rows, as computeFrameRects did on the board
 MAX_DIRTY_RECTS = 8     # gif_store.h
-MAX_GIF_SEGS = 8        # gif_store.h
+MAX_GIF_SEGS = 12       # gif_store.h
 MAX_FRAMES = 512        # config.h
-PARTITION = 5 << 20     # gifs in firmware/partitions.csv
+PARTITION = 6 << 20     # gifs in firmware/partitions.csv
 RECT_COST = 200         # pixels: a rect's CASET/RASET/RAMWR and DMA restart take about as long on the bus
 PACK_VERSION = 2        # 1 was zlib frames
 
@@ -191,7 +191,7 @@ def main():
     with open(OUT, "wb") as f:
         f.write(data)
     print(f"{OUT}: {len(gifs)} GIFs, {total} frames, pack {len(data)} bytes ({len(data) / 1024:.1f} KB) "
-          f"of the 5 MB gifs partition, {psram / 1024:.1f} KB decoded, frame by frame as they play")
+          f"of the {PARTITION >> 20} MB gifs partition, {psram / 1024:.1f} KB decoded, frame by frame as they play")
 
 
 if __name__ == "__main__":

@@ -22,7 +22,7 @@
 #include "config.h"
 
 #define MAX_DIRTY_RECTS 8
-#define MAX_GIF_SEGS 8
+#define MAX_GIF_SEGS 12
 
 struct GifRect {
   uint16_t x, y, w, h;

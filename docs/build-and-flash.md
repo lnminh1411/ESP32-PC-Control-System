@@ -44,10 +44,10 @@ cover art, in place of the made-up one.
 
 ## Changing the GIFs
 
-The GIFs have their own 5 MB `gifs` partition. Their sources are in
+The GIFs have their own 6 MB `gifs` partition. Their sources are in
 `firmware/gifs/`, and `firmware/gifs/gifs.json` lists them (`every` keeps
-every Nth frame, up to 8 GIFs and 512 frames in all; the partition is the
-real limit, about 27 KB a frame). The board plays them in shuffled rounds:
+every Nth frame, up to 12 GIFs and 512 frames in all; the partition is the
+real limit, about 26 KB a frame). The board plays them in shuffled rounds:
 every GIF once, none twice in a row. After changing either, regenerate the
 pack and flash with `idf_flash.py` (`idf.py flash` writes the partition,
 `app-flash` does not):
@@ -79,6 +79,16 @@ RIFE models from FluidFrames, which only give the midpoint of two frames:
   her top kept, so her legs run off the bottom.
 - `filian_20fps.gif` is 8 frames at quarter steps through the 6-frame original,
   at 1.44 scale, cut so about a third of her pointing arm stays on screen.
+- `kita_20fps.gif` is the first 12 frames of `kita.gif` (the rest repeats them)
+  brought to 16 at 20 fps with RIFE, sized to 320x320 with the left 240 columns
+  kept, so her arm runs off the right edge.
+- `teto_20fps.gif` is frames 179-241 of `teto.gif`, a closing loop, brought from
+  63 frames to 50 with RIFE. The side bars are cut and she fills the width with
+  her top kept.
+- `herta_20fps.gif` is `herta.gif` at half speed, 0.8 s, 16 frames with RIFE
+  in-betweens. The midpoints of frames 1-2 and 4-5 melt under every model, so
+  real frames stand in for those two. The backdrop is flattened; she fills the
+  width and sits on the bottom edge.
 
 ## Other uploads
 
