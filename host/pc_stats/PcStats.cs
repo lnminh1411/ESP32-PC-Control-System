@@ -936,17 +936,43 @@ partial class PcStats : ServiceBase {
       return;
     }
     ThreadPool.QueueUserWorkItem(delegate(object o) {
-      lock (monPipeLock) {
-        string reply = "ok";
-        foreach (string c in commands) {
-          Dictionary<string, object> data;
-          string r = PipeRequest(HostSettings.HWCTL_PIPE, c, DisplayTimeoutMs, out data);
-          if (r != "ok") { reply = r; break; }
-        }
-        SetMonReply(id, reply);
-        Log("mon: #" + id + " " + string.Join(" + ", commands) + " -> " + reply);
-      }
+      string reply = RunDisplayCommands(commands);
+      SetMonReply(id, reply);
+      Log("mon: #" + id + " " + string.Join(" + ", commands) + " -> " + reply);
     });
+  }
+
+  // "ok", or the first command's error (the rest are skipped)
+  static string RunDisplayCommands(List<string> commands) {
+    lock (monPipeLock) {
+      foreach (string c in commands) {
+        Dictionary<string, object> data;
+        string r = PipeRequest(HostSettings.HWCTL_PIPE, c, DisplayTimeoutMs, out data);
+        if (r != "ok") return r;
+      }
+      return "ok";
+    }
+  }
+
+  // A monitor night mode powered off (DDC/CI) stays off after the wake until
+  // PcHwCtl's user-session agent is back, 20-30 s into the sign-in screen. So
+  // a sleep or hibernate with one off starts MonWakeDelayMs later, and the
+  // monitors go on in the meantime: they then come back with the signal.
+  const int MonWakeDelayMs = 8000;
+
+  static bool AnyMonitorOff() {
+    Dictionary<string, object> data;
+    if (PipeRequest(HostSettings.HWCTL_PIPE, "display list", DisplayTimeoutMs, out data) != "ok" || data == null) return false;
+    object mons;
+    var list = data.TryGetValue("monitors", out mons) ? mons as List<object> : null;
+    if (list == null) return false;
+    foreach (object m in list) {
+      var d = m as Dictionary<string, object>;
+      object p;
+      // VCP 0xD6: 1 on, 4 standby, 5 off; 0 = not read
+      if (d != null && d.TryGetValue("power", out p) && p != null && Convert.ToInt32(p, CultureInfo.InvariantCulture) > 1) return true;
+    }
+    return false;
   }
 
   static void SetMonReply(string id, string reply) {
@@ -1199,7 +1225,8 @@ partial class PcStats : ServiceBase {
 
     Log("power: " + action + " requested by the board");
     ThreadPool.QueueUserWorkItem(delegate(object o) {
-      string r = SendToPcHwCtl("power do " + action + " 1500");
+      bool monsFirst = (action == "sleep" || action == "hibernate") && AnyMonitorOff();
+      string r = SendToPcHwCtl("power do " + action + " " + (monsFirst ? MonWakeDelayMs : 1500));
       string ack;
       if (r == "ok") {
         ack = action + " " + nonce;
@@ -1216,6 +1243,11 @@ partial class PcStats : ServiceBase {
         ackExpiresUtc = DateTime.UtcNow.AddSeconds(10);
       }
       sendNow.Set();
+      if (r == "ok" && monsFirst) {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        string mr = RunDisplayCommands(new List<string> { "display wake", "display power all on" });
+        Log("power: monitors on before " + action + " -> " + mr + " in " + sw.ElapsedMilliseconds + " ms");
+      }
     });
   }
 

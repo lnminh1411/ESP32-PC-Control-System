@@ -109,6 +109,14 @@ holds one) or the network averages more than 1 MB/s either way. Real work
 still holds sleep through its power request, which the board checks on its
 own.
 
+Monitors go back on before the PC sleeps or hibernates. A monitor powered off
+over DDC/CI stays off after the wake until PcHwCtl's user-session agent is
+back, 20-30 s into the sign-in screen. So when any monitor is off, the helper
+asks PcHwCtl to sleep 8 s later instead of 1.5 s, turns the monitors on in the
+meantime (`display wake`, `display power all on`), and they come back with the
+signal on the wake. The helper log shows `power: monitors on before sleep ->
+ok in <n> ms`.
+
 Hibernate happens when you leave home: the phone (OwnTracks, the weather
 phone engine's location) goes from within 1 km of home to beyond it
 (`NIGHT_LEAVE_KM`), at any hour, with Night auto on. A PC night mode put to
