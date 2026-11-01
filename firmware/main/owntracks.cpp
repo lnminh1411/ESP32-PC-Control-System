@@ -48,6 +48,20 @@ static double haversineKm(double lat1, double lon1, double lat2, double lon2) {
   return R * c;
 }
 
+// cJSON recurses once per level and this runs on the MQTT task's 4 KB stack.
+// A location is 2 levels deep; a bracket inside a string only counts against it
+static bool jsonShallow(const char *s, int len) {
+  int depth = 0;
+  for (int i = 0; i < len; i++) {
+    if (s[i] == '{' || s[i] == '[') {
+      if (++depth > 8) return false;
+    } else if (s[i] == '}' || s[i] == ']') {
+      depth--;
+    }
+  }
+  return true;
+}
+
 static void mqttEventHandler(void *, esp_event_base_t, int32_t event_id, void *event_data) {
   esp_mqtt_event_handle_t event = (esp_mqtt_event_handle_t)event_data;
   switch (event_id) {
@@ -79,7 +93,7 @@ static void mqttEventHandler(void *, esp_event_base_t, int32_t event_id, void *e
         msg = bigMsg;
         msgLen = event->total_data_len;
       }
-      cJSON *root = cJSON_ParseWithLength(msg, msgLen);
+      cJSON *root = jsonShallow(msg, msgLen) ? cJSON_ParseWithLength(msg, msgLen) : nullptr;
       if (bigMsg) {
         free(bigMsg);
         bigMsg = nullptr;
@@ -144,6 +158,9 @@ void owntracksInit() {
 
 void owntracksStart() {
   if (!MQTT_URI[0] || clientStarted || !netUp()) return;
+  static uint32_t lastTryMs;   // called every main loop pass: a client that fails tries again in 30 s
+  if (lastTryMs && nowMs() - lastTryMs < 30000) return;
+  lastTryMs = nowMs() | 1;
   if (!locMutex) locMutex = xSemaphoreCreateMutex();
 
   esp_mqtt_client_config_t cfg = {};
@@ -171,7 +188,12 @@ void owntracksStart() {
   }
 
   esp_mqtt_client_register_event(mqttClient, (esp_mqtt_event_id_t)ESP_EVENT_ANY_ID, mqttEventHandler, nullptr);
-  esp_mqtt_client_start(mqttClient);
+  if (esp_mqtt_client_start(mqttClient) != ESP_OK) {   // no task (low RAM)
+    logMsg("owntracks: MQTT client did not start, retrying in 30 s");
+    esp_mqtt_client_destroy(mqttClient);
+    mqttClient = nullptr;
+    return;
+  }
   clientStarted = true;
   logMsg("owntracks: MQTT client started");
 }
@@ -260,7 +282,9 @@ void owntracksAskIfStale() {
   lastAskMs = nowMs() | 1;
   char topic[96];
   snprintf(topic, sizeof topic, "%s/cmd", devTopic);
-  int id = esp_mqtt_client_publish(mqttClient, topic, "{\"_type\":\"cmd\",\"action\":\"reportLocation\"}", 0, 1, 1);
+  // queued for the MQTT task: publish writes to the socket here, on the main
+  // loop, for up to the network timeout
+  int id = esp_mqtt_client_enqueue(mqttClient, topic, "{\"_type\":\"cmd\",\"action\":\"reportLocation\"}", 0, 1, 1, true);
   if (id >= 0) askPending = true;
   logMsg("owntracks: fix %lu min old, asked the phone for its location%s", (unsigned long)(owntracksAgeSec() / 60),
          id < 0 ? " (publish failed)" : "");

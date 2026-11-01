@@ -195,23 +195,24 @@ void netNoteTraffic() { lastTrafficMs = nowMs(); }
 static void netWatchdog() {
   if (!wifiStarted || scanning) return;
   uint32_t now = nowMs();
+  // signed: the other tasks stamp these, maybe just after now was read
   if (!netUp()) {
-    if (now - downSinceMs >= NET_RESTART_MS) {
+    if ((int32_t)(now - downSinceMs) >= (int32_t)NET_RESTART_MS) {
       logMsg("wifi: down for %u min, restarting the Wi-Fi driver", (unsigned)((now - downSinceMs) / 60000));
       esp_wifi_stop();
       esp_wifi_start();
-      esp_wifi_set_ps(WIFI_PS_NONE);
+      esp_wifi_set_ps(NET_WIFI_PS);
       esp_wifi_set_max_tx_power((int8_t)(NET_WIFI_TX_DBM * 4));
       esp_wifi_connect();
       downSinceMs = now;
       lastWifiEventMs = now;
-    } else if (now - lastWifiEventMs >= NET_STUCK_MS) {
+    } else if ((int32_t)(now - lastWifiEventMs) >= (int32_t)NET_STUCK_MS) {
       lastWifiEventMs = now;
       esp_wifi_connect();
     }
     return;
   }
-  if (now - lastTrafficMs >= NET_SILENT_MS) {
+  if ((int32_t)(now - lastTrafficMs) >= (int32_t)NET_SILENT_MS) {
     logMsg("wifi: no answers from the network for %u min, rejoining", (unsigned)((now - lastTrafficMs) / 60000));
     lastTrafficMs = now;
     esp_wifi_disconnect();   // the disconnect event connects again

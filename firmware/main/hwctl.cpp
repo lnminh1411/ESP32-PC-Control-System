@@ -13,7 +13,7 @@
 #include "usb.h"
 
 static uint32_t s_nextId = 0;   // Discord task and console; a rare clash only reuses an id
-static char s_lastLogged[96] = "";
+static char s_lastLogged[121] = "";   // as long as a pc text: a cut copy never matches, and every poll logs it again
 
 const char *hwSend(const char *command, uint32_t *id) {
   if (!command || !*command) return "command required";

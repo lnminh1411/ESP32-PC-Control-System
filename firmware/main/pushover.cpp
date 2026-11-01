@@ -55,8 +55,8 @@ void pushoverQueue(const char *title, const char *message, int priority) {
 }
 
 void pushoverService() {
-  static PushMsg &m = *(PushMsg *)psramCalloc(sizeof(PushMsg));   // 576 B: off the stack and internal RAM
-  if (pushQueue && xQueueReceive(pushQueue, &m, 0) == pdTRUE) pushoverSend(m.title, m.message, m.priority);
+  static PushMsg *m = (PushMsg *)psramCalloc(sizeof(PushMsg));   // 576 B: off the stack and internal RAM
+  if (m && pushQueue && xQueueReceive(pushQueue, m, 0) == pdTRUE) pushoverSend(m->title, m->message, m->priority);
 }
 
 bool pushoverSend(const char *title, const char *message, int priority) {

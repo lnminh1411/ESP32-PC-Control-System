@@ -1438,17 +1438,21 @@ static void pollCyclones(char *buf, size_t cap) {
     if (slot >= 0 && tracks_[slot].episodeId == cand[k].episodeId) continue;   // have this advisory
     int dst = slot >= 0 ? slot : freeSlot;
     if (dst < 0) continue;
-    // ~350 KB of GeoJSON: a PSRAM buffer just for this fetch
+    // ~350 KB of GeoJSON: a PSRAM buffer just for this fetch, the parsed track after it
     const size_t bigCap = 1024 * 1024;
-    char *big = (char *)heap_caps_malloc(bigCap, MALLOC_CAP_SPIRAM);
+    char *big = (char *)heap_caps_malloc(bigCap + sizeof(CycloneTrack), MALLOC_CAP_SPIRAM);
     if (!big) continue;
+    CycloneTrack *fresh = (CycloneTrack *)(big + bigCap);
     cycloneTrackUrl(url, sizeof url, cand[k].eventId, cand[k].episodeId);
     bool got = httpGet(url, big, bigCap, &status, 30000);
     size_t len = strlen(big);
-    if (wxMutex) xSemaphoreTake(wxMutex, portMAX_DELAY);
-    bool parsed = got && cycloneParseTrack(big, len, cand[k], now, &tracks_[dst]);
-    if (wxMutex) xSemaphoreGive(wxMutex);
+    // outside wxMutex: the scan takes long enough to hold the main loop's frames up.
+    // A failed parse leaves the old track, and the next poll tries this advisory again
+    bool parsed = got && cycloneParseTrack(big, len, cand[k], now, fresh);
     if (parsed) {
+      if (wxMutex) xSemaphoreTake(wxMutex, portMAX_DELAY);
+      tracks_[dst] = *fresh;
+      if (wxMutex) xSemaphoreGive(wxMutex);
       clearError(ERR_TC_TRACK);
       logMsg("weather: cyclone %s: %d track points from %u KB, advisory %u, %.0f km away", tracks_[dst].name,
              tracks_[dst].n, (unsigned)(len / 1024), (unsigned)cand[k].episodeId,
@@ -1905,6 +1909,8 @@ static void weatherTask(void *) {
       logMsg("weather: test-alert sent");
     }
     if (currentNet) pushoverService();
+    // before the check below: the first `weather home` is what sets homeConfigured
+    weatherTaskHousekeeping();
 
     if (!currentNet || !homeConfigured || !httpBuf) {
       continue;
@@ -1927,7 +1933,11 @@ static void weatherTask(void *) {
 
     // 1b. Cyclones near home: GDACS list every 30 min (5 after a failure)
     if (forceImmediate || cycloneRefresh || lastCycloneMs == 0 || (curMs - lastCycloneMs >= WEATHER_CYCLONE_POLL_MS)) {
-      if (cycloneRefresh && tracks_) memset(tracks_, 0, MAX_TRACKS * sizeof(CycloneTrack));   // refetch the tracks too
+      if (cycloneRefresh && tracks_) {   // refetch the tracks too
+        if (wxMutex) xSemaphoreTake(wxMutex, portMAX_DELAY);
+        memset(tracks_, 0, MAX_TRACKS * sizeof(CycloneTrack));
+        if (wxMutex) xSemaphoreGive(wxMutex);
+      }
       cycloneRefresh = false;
       clearError(ERR_TC_HTTP | ERR_TC_TRACK);   // log this round's errors again
       pollCyclones(httpBuf, httpBufCap);
@@ -1987,7 +1997,6 @@ static void weatherTask(void *) {
       cycloneTick();
       lastJudgeMs = curMs;
     }
-    weatherTaskHousekeeping();
     rainWarnTick();
     postWeatherUpdate(httpBuf, httpBufCap);
 
@@ -2038,8 +2047,13 @@ static void applyConfiguredHome() {
 }
 
 void weatherInit() {
-  homeNowcast = new (psramCalloc(sizeof(NowcastEngine))) NowcastEngine();
-  phoneNowcast = new (psramCalloc(sizeof(NowcastEngine))) NowcastEngine();
+  void *homeMem = psramCalloc(sizeof(NowcastEngine)), *phoneMem = psramCalloc(sizeof(NowcastEngine));
+  if (!homeMem || !phoneMem) {   // no task then: nothing below runs without the engines
+    logMsg("weather: off (no memory)");
+    return;
+  }
+  homeNowcast = new (homeMem) NowcastEngine();
+  phoneNowcast = new (phoneMem) NowcastEngine();
   wxMutex = xSemaphoreCreateMutex();
   loadNvsConfig();
   owmInit();
@@ -2077,6 +2091,10 @@ void weatherPoll() {
 }
 
 void weatherCommand(const char *a1, const char *a2) {
+  if (!homeNowcast) {
+    logMsg("weather: off (no memory)");
+    return;
+  }
   if (a1 && !strcmp(a1, "demo")) {
     int mode = !a2 ? 0 : !strcmp(a2, "rain") ? 1 : !strcmp(a2, "typhoon") ? 2 : 0;
     loadDemo(mode);

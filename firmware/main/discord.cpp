@@ -1804,12 +1804,28 @@ static void heartbeat() {
 
 static void heartbeatService() {
   if (!heartbeatMs || nowMs() - lastBeat < heartbeatMs) return;
-  if (!gotAck) {
+  static bool closeSent;   // bot task only
+  if (gotAck) {
+    closeSent = false;
+    heartbeat();
+    return;
+  }
+  lastBeat = nowMs();   // one try per interval: every 20 ms the close frames fill the TCP buffer and the next one blocks for good
+  if (!closeSent) {
+    closeSent = true;
     logMsg("discord: no heartbeat ACK, reconnecting");
     if (ws) esp_websocket_client_close(ws, pdMS_TO_TICKS(1000));
-  } else {
-    heartbeat();
+    return;
   }
+  // a close frame ends the client's own pings, so a server that stays silent
+  // leaves it "connected" for good: drop it, the bot loop starts a new one
+  closeSent = false;
+  logMsg("discord: no answer to the close, new gateway client");
+  if (ws) esp_websocket_client_destroy(ws);
+  ws = nullptr;
+  ready = false;
+  heartbeatMs = 0;
+  gotAck = true;
 }
 
 // ---- interaction queue ----
@@ -1950,10 +1966,10 @@ static void handleGatewayMessage(const char *jsonStr, size_t len) {
   switch (op) {
     case 10: { // HELLO
       cJSON *jInterval = data ? cJSON_GetObjectItem(data, "heartbeat_interval") : nullptr;
-      heartbeatMs = (jInterval && jInterval->valueint > 0) ? (uint32_t)jInterval->valueint : 41250;
-      uint32_t jitter = heartbeatMs > 0 ? (esp_random() % heartbeatMs) : 0;
-      lastBeat = nowMs() - jitter; // first beat after a jittered wait
+      uint32_t interval = (jInterval && jInterval->valueint > 0) ? (uint32_t)jInterval->valueint : 41250;
+      lastBeat = nowMs() - esp_random() % interval; // first beat after a jittered wait
       gotAck = true;
+      heartbeatMs = interval;   // last: the bot task acts on it, and must not see the old session's state
       identify();
       break;
     }
@@ -2116,19 +2132,19 @@ static void botTask(void *) {
       else postChannelEmbed(DC_PC, "PC state unknown", nullptr, 0x99AAB5);
       lastCtlSyncMs = 0;   // the panel shows the PC state too
     }
-    static NotifyMsg &nmsg = *(NotifyMsg *)psramCalloc(sizeof(NotifyMsg));   // 600+ B: off the stack and internal RAM
-    while (ready && notifyQueue && xQueueReceive(notifyQueue, &nmsg, 0) == pdTRUE) {
-      DiscordChannel ch = (DiscordChannel)nmsg.ch;
-      if (!nmsg.plain) {
-        postChannelEmbed(ch, nmsg.text, nmsg.desc, nmsg.color, nmsg.prio);
-      } else if (!strcmp(nmsg.text, "PC reset")) {
+    static NotifyMsg *nmsg = (NotifyMsg *)psramCalloc(sizeof(NotifyMsg));   // 600+ B: off the stack and internal RAM
+    while (ready && nmsg && notifyQueue && xQueueReceive(notifyQueue, nmsg, 0) == pdTRUE) {
+      DiscordChannel ch = (DiscordChannel)nmsg->ch;
+      if (!nmsg->plain) {
+        postChannelEmbed(ch, nmsg->text, nmsg->desc, nmsg->color, nmsg->prio);
+      } else if (!strcmp(nmsg->text, "PC reset")) {
         postChannelEmbed(ch, "PC reset", nullptr, 0xED4245);
-      } else if (!strncmp(nmsg.text, "door B", 6)) { // from cmdDoor: "door Bn"
+      } else if (!strncmp(nmsg->text, "door B", 6)) { // from cmdDoor: "door Bn"
         char title[32];
-        snprintf(title, sizeof title, "Door button %.4s pressed", nmsg.text + 6);
+        snprintf(title, sizeof title, "Door button %.4s pressed", nmsg->text + 6);
         postChannelEmbed(ch, title, nullptr, 0x5865F2);
       } else {
-        postChannelEmbed(ch, nmsg.text, nullptr, 0x5865F2);
+        postChannelEmbed(ch, nmsg->text, nullptr, 0x5865F2);
       }
     }
     // #logging: every 10 s, sooner while a backlog is waiting
