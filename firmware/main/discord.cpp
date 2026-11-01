@@ -290,7 +290,7 @@ static int rest(const char *method, const char *path, const char *body, char *ou
   int code = esp_http_client_get_status_code(client);
   // the path without interaction tokens (long, and not for #logging)
   char shown[64];
-  snprintf(shown, sizeof shown, "%s", path);
+  strlcpy(shown, path, sizeof shown);   // cut short on purpose
   if (!strncmp(path, "/interactions/", 14) || !strncmp(path, "/webhooks/", 10)) {
     char *tok = strchr(shown + 1, '/');
     tok = tok ? strchr(tok + 1, '/') : nullptr;

@@ -25,7 +25,9 @@ It needs pyserial: run it with ESP-IDF's own Python
 The build compiles only the ESP-IDF components `main` needs (`MINIMAL_BUILD`).
 `idf.cmd` caches what ESP-IDF's `export.bat` sets in
 `%LOCALAPPDATA%\esp-idf-env\` (it saves about 3.5 s per call); delete that folder
-after reinstalling or moving ESP-IDF.
+after reinstalling or moving ESP-IDF. ESP-IDF itself carries local patches,
+listed in [firmware/idf_patches](../firmware/idf_patches/README.md); apply
+them again after a reinstall.
 
 ## Screenshots
 
@@ -64,9 +66,10 @@ the RIFE models from FluidFrames, which only give the midpoint of two frames:
 - `evil_neuro_20fps.gif` is all 10 frames of `evil_neuro.gif` plus a RIFE Lite
   midpoint after each, last-to-first pair included.
 - `neuro_20fps.gif` is every third frame of `neuro.gif` (33 frames at 30 fps)
-  plus the RIFE midpoint of the two real frames between them. In the source
-  the tail jumps sides from one frame to the next, and RIFE cuts it there, so
-  output frames 5, 9, 13 and 15 use the later real frame instead.
+  plus a RIFE midpoint after each, last-to-first pair included. In the source
+  the tail jumps sides from one frame to the next, so RIFE cuts it in a few
+  frames (9 and 15 show it most); the motion is smoother this way than with
+  real frames in their place.
 
 ## Other uploads
 

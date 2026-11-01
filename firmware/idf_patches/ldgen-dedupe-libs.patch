@@ -1,0 +1,17 @@
+diff --git a/tools/ldgen/ldgen.py b/tools/ldgen/ldgen.py
+index 369de57c..b236ad93 100755
+--- a/tools/ldgen/ldgen.py
++++ b/tools/ldgen/ldgen.py
+@@ -141,9 +141,11 @@ def main():
+ 
+     try:
+         sections_infos = EntityDB()
++        seen_libraries = set()  # local patch: the libraries file repeats archives; objdump each once
+         for library in libraries_file:
+             library = library.strip()
+-            if library:
++            if library and library not in seen_libraries:
++                seen_libraries.add(library)
+                 dump = StringIO(_run_objdump(objdump, library))
+                 dump.name = library
+                 try:

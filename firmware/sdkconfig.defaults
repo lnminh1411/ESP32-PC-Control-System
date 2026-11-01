@@ -92,6 +92,10 @@ CONFIG_SPIRAM_ECC_ENABLE=y
 # Less code in internal RAM (2026-11-01): heap and ringbuf functions run from
 # flash, and the SPI master ISR with them (heap in flash needs it off). None of
 # our ISRs are IRAM ones, so nothing calls these while the cache is off.
+# The ISR crashed once from flash (spi_bus_lock_bg_exit, null acquiring_dev,
+# 2026-11-01 08:50): ESP-IDF issue 18527, a race that flash timing made
+# likelier. ESP-IDF is patched (firmware/idf_patches) and the ISR is pinned
+# to the flush task's core (display.cpp).
 CONFIG_HEAP_PLACE_FUNCTION_INTO_FLASH=y
 # CONFIG_SPI_MASTER_ISR_IN_IRAM is not set
 CONFIG_RINGBUF_PLACE_FUNCTIONS_INTO_FLASH=y

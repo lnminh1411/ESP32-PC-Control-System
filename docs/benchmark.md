@@ -18,10 +18,10 @@ of PSRAM.
 
 | Memory | Used | Notes |
 |---|---|---|
-| SRAM (512 KB) | 393 KB (77%) | 145 KB static (code in IRAM, data/bss, ROM, cache); heap 366 KB, 121 KB free; lowest free ever: 56 KB, largest block 37 KB |
+| SRAM (512 KB) | 393 KB (77%) | 145 KB static (code in IRAM, data/bss, ROM, cache); heap 366 KB, 121 KB free; lowest free ever: 47 KB, largest block 31 KB |
 | PSRAM (7680 KB) | 1585 KB (21%) | lowest free ever 5017 KB, largest free block 6015 KB |
 | Flash (16 MB) | fully partitioned | one 10 MB app slot (no OTA), FAT 5.9 MB, NVS 20 KB, core dump 64 KB |
-| App image | 2837 KB of 10240 KB (28%) | 1201 KB of it is the GIF pack |
+| App image | 2836 KB of 10240 KB (28%) | 1199 KB of it is the GIF pack |
 | FAT /ffat | 4 KB of 5932 KB (0%) | layout.json, saved text images |
 | NVS | 229 of 630 entries | 12 namespaces |
 
@@ -204,9 +204,8 @@ firmware with its single test GIF, and its ~3.8 MB is an estimate.
 | FAT /ffat | 4508 KB | 4 KB | 4 KB |
 | Decoding at boot | 4.5 MB read from FAT | 329 ms to inflate | 498 ms to inflate |
 
-Dirty rects cover most of the screen on most frames (86-95% before the Neuro
-rebuild), since most of each picture moves, which is why the frames take this
-much PSRAM.
+Dirty rects cover most of the screen on most frames (86-95%), since most of
+each picture moves, which is why the frames take this much PSRAM.
 
 | GIF playback at 20 fps | Frame rate | Frame times | Bus |
 |---|---|---|---|
@@ -264,7 +263,11 @@ OTA went first (one 10 MB factory app slot, no rollback). Then:
 - Heap and ringbuf functions and the SPI master ISR run from flash
   (`CONFIG_HEAP_PLACE_FUNCTION_INTO_FLASH`, `CONFIG_RINGBUF_PLACE_FUNCTIONS_INTO_FLASH`,
   SPI master ISR out of IRAM). FreeRTOS stays in IRAM: ESP-IDF 5.5 has no
-  option to move it.
+  option to move it. A few hours after the first flash the main task crashed
+  in the ISR's bus lock (`spi_bus_lock_bg_exit`, null `acquiring_dev`):
+  ESP-IDF issue 18527, a race the slower ISR made likelier. ESP-IDF is now
+  patched with the upstream fix (`firmware/idf_patches`) and the ISR is
+  pinned to core 0 with the flush task, so the ISR went back to flash.
 - Wi-Fi static RX and TX buffers and the BA window went from 8 to 6.
 - About 8 KB of our own static buffers moved to PSRAM (`psramCalloc`): the
   `perf` history, the Discord command reply, the console line buffers, the
@@ -285,3 +288,7 @@ Both columns are `bench usage` a few minutes after boot, PC on.
 | Wi-Fi HTTP download | 0.84-0.89 MB/s | 0.83-0.85 MB/s |
 
 The GIF runs at its 20 fps either way; the 21.0 before was a short window.
+With the SPI ISR and heap back in IRAM for a while: 161 KB static, 105 KB
+free. Back in flash with the patch and the core pin: 145 KB static, 121 KB
+free, and 3.6 minutes with GIFs on all three panels plus `bench spi` every
+25 s (bus 74%, 10.8-11.8 fps each) ran without a fault.
