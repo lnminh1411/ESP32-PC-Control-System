@@ -28,7 +28,10 @@ With `PUSHOVER_TOKEN` and `PUSHOVER_USER` set, every #pc-announcement and
 #weather-announcement post is copied to Pushover (queued, one a second).
 Weather warnings go out at high priority (`WEATHER_ALERT_PRIO`, 1: rings
 through quiet hours), "cleared" posts and PC posts at normal, the 2-hourly
-update and home's warnings while you are away at quiet (-1). See
+update and home's warnings while you are away at quiet (-1). Someone at the
+desk while you are away goes out as an emergency (2), which repeats every 60 s
+for an hour or until acknowledged (`PUSHOVER_EMERGENCY_RETRY_S`, `_EXPIRE_S`),
+and leaves the board without waiting for the Discord gateway. See
 [docs/weather.md](weather.md) for the sources, call budgets and
 thresholds.
 
@@ -40,7 +43,7 @@ category dropdown; picking one swaps the controls below it:
 | Tab | Shows | Controls |
 |---|---|---|
 | Door | Door remote state | Door 1-4 |
-| PC Control | PC state, board Wi-Fi, night and low power mode, power plan, CPU, RAM, both GPUs, drive, fans, network | Wake PC, Lock; Sleep, Hibernate, Restart, Shut down, PC reset (these ask first); Screenshot; Night auto on/off; Start / End night now; Low power on/off |
+| PC Control | PC state, board Wi-Fi, night and low power mode, power plan, CPU, RAM, both GPUs, drive, fans, network, presence at the desk | Wake PC, Lock; Sleep, Hibernate, Restart, Shut down, PC reset (these ask first); Screenshot; Night auto on/off; Start / End night now; Low power on/off |
 | PC Case RGB LEDs | PcHwCtl's RGB rules and brightness | Mode, color and brightness dropdowns; target group (All, Motherboard, RAM) |
 | PC Fan Control | Each fan's speed, rpm and temperature, the RX 6600 and RTX 3050 included (with Zero RPM) | Target (All fans, Case fans, one case fan, RX 6600, RTX 3050), speed (held 5/15/60 min) and curve dropdowns; a Zero RPM dropdown in place of the curve for a GPU; Auto releases the override |
 | PC Monitor Control | Each monitor's power and brightness, numbered from the left | Target (one monitor or all), brightness in 10 % steps (DDC/CI); All screens on / off (each monitor's power method in PcHwCtl, plus Windows' display off) |

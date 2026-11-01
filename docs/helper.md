@@ -21,9 +21,9 @@ processes:
 - **The user-session half** (`--user`, started and restarted by the service
   in the signed-in user's session, as that user): media info from Windows'
   media session (Spotify, browsers), Antigravity quota, the Claude Code login
-  refresh, and board-requested screenshots. Session 0 can't see the desktop
-  or media sessions, hence the second process. The two talk over anonymous
-  pipes.
+  refresh. Session 0 can't see media sessions or quota processes, hence the
+  second process. The two talk over anonymous pipes. Screenshots and the
+  camera check are PcHwCtl's, in its own agent in that session.
 
 ## Details worth knowing
 

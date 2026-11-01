@@ -11,7 +11,14 @@
 // Start/End (by hand) engages it now, at any hour, until input or End.
 // Input ends it at once (everything back, PC displays on); if the next 10 s
 // show no real return (> 50 px of mouse travel or 3 presses, pc.in_px /
-// pc.in_press), a bumped mouse, it comes straight back. No automatic start while a process keeps the display on
+// pc.in_press, or someone at the desk), a bumped mouse, it comes straight back.
+// The camera seeing nobody overrules the input too, once per NIGHT_GUARD_VETO_MS.
+// Past the 5 idle minutes the desk decides (presence.cpp, a check every 10 s):
+// someone there holds the night off for NIGHT_DESK_HOLD_S (30 min), then it
+// engages if the PC is still idle and nothing blocks sleep; nobody (two checks)
+// engages and sleeps at once, or only turns the displays off while something
+// blocks sleep. The camera unable to tell (dark, busy): engages, sleep on the
+// timer. No automatic start while a process keeps the display on
 // (pc.disp_req: a video playing). Engaged/ended also goes to the PC service as
 // `!night 1|0` (every 30 s too, and at once when the PC comes back): Process
 // Lasso's E-core night config with efficiency mode, heavy exes left alone.
@@ -43,6 +50,10 @@ bool nightEnabled();
 // off", "PC is on") would repeat night mode's own, so Discord and Pushover skip them
 bool nightPowerQuiet();
 bool nightEngaged();
+bool nightCovers();                // night mode on and in its window: the desk rule is the night's
+bool pcReachable();                // PC on, service feeding, PcHwCtl answering
+const char *nightDisplaysOff();    // PC displays off (`!mon`), on again owed; error or nullptr
+void nightDisplaysOnNow();         // owed displays on now, if nothing wants them off
 void nightStatus(char *buf, uint32_t size);   // one line for the panel and the console
 void nightWindowText(char *buf, uint32_t size);   // "22:00-06:00 after 5 min" (from settings.h)
 void nightConsole(const char *args);          // `night [on|off|start|end|low on|low off|status]`

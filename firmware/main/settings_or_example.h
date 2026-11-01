@@ -388,6 +388,50 @@
 #define NIGHT_REQ_IGNORE "claude.exe"             // power request holders that don't hold sleep (comma list; claude.exe always holds EXECUTION)
 #endif
 
+// ---- Presence at the desk (presence.cpp; camera check in PcHwCtl) ----
+#ifndef PRESENCE_FAST_S
+#define PRESENCE_FAST_S 10                        // s between checks while you are away and around the night's start
+#endif
+#ifndef PRESENCE_DAY_S
+#define PRESENCE_DAY_S (5 * 60)                   // s between checks otherwise
+#endif
+#ifndef PRESENCE_AWAY_KM
+#define PRESENCE_AWAY_KM 0.20                     // phone beyond this from home = you are away
+#endif
+#ifndef PRESENCE_HOME_KM
+#define PRESENCE_HOME_KM 0.18                     // ...and back only under this (a margin: no flapping at the line)
+#endif
+#ifndef PRESENCE_ACC_M
+#define PRESENCE_ACC_M 150                        // a fix vaguer than this (m) doesn't switch away / back
+#endif
+#ifndef PRESENCE_FIX_FRESH_S
+#define PRESENCE_FIX_FRESH_S 120                  // someone at the desk with a fix older than this: ask the phone before alerting
+#endif
+#ifndef PRESENCE_ASK_WAIT_S
+#define PRESENCE_ASK_WAIT_S 30                    // ...and alert anyway after this long without an answer
+#endif
+#ifndef PRESENCE_ALERT_REPEAT_S
+#define PRESENCE_ALERT_REPEAT_S (10 * 60)         // alert again this often while someone stays at the desk
+#endif
+#ifndef PRESENCE_DAY_IDLE_S
+#define PRESENCE_DAY_IDLE_S 60                    // nobody at the desk only turns the displays off after this long without input
+#endif
+#ifndef PRESENCE_AWAY_IDLE_S
+#define PRESENCE_AWAY_IDLE_S (5 * 60)             // input while away gives the displays back until this long without input
+#endif
+#ifndef NIGHT_DESK_HOLD_S
+#define NIGHT_DESK_HOLD_S (30 * 60)               // someone at the desk past the idle timer holds the night off this long
+#endif
+#ifndef NIGHT_GUARD_VETO_MS
+#define NIGHT_GUARD_VETO_MS 120000                // the camera can overrule real input once this often (a dim room can miss you)
+#endif
+#ifndef PUSHOVER_EMERGENCY_RETRY_S
+#define PUSHOVER_EMERGENCY_RETRY_S 60             // emergency priority: Pushover repeats the alert this often (minimum 30)
+#endif
+#ifndef PUSHOVER_EMERGENCY_EXPIRE_S
+#define PUSHOVER_EMERGENCY_EXPIRE_S 3600          // ...for this long, or until acknowledged
+#endif
+
 // ---- Weather (board) ----
 #ifndef WEATHER_HOME_NAME
 #define WEATHER_HOME_NAME "Home"                  // place name until WEATHER_HOME or `weather home` gives one

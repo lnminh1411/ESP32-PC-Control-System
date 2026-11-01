@@ -17,6 +17,7 @@
 #include "pc_state.h"
 #include "pcstats.h"
 #include "power.h"
+#include "presence.h"
 #include "screens.h"
 #include "settings_or_example.h"
 #include "sys.h"
@@ -40,17 +41,31 @@ static bool manual;                      // started by hand: no window, no idle 
 static uint32_t engagedAtMin;            // minutes since midnight, for the status line
 static uint32_t engagedMs;               // input newer than this ends it
 // Wake guard: input during the night only ends it if the next 10 s show a
-// real return (mouse moved > 50 px, or 3 key / button presses); otherwise
-// the displays go off again and the night carries on
+// real return (mouse moved > 50 px, or 3 key / button presses, or the camera
+// sees someone); otherwise the displays go off again and the night carries
+// on. The camera seeing nobody overrules the input, once per
+// NIGHT_GUARD_VETO_MS: a dim room can miss you, and you would be locked out
 static const uint32_t GUARD_MS = NIGHT_GUARD_MS;
 static const double GUARD_PX = NIGHT_GUARD_PX, GUARD_PRESSES = NIGHT_GUARD_PRESSES;
 static uint32_t guardUntilMs;            // 0 = no wake being checked (night is off meanwhile)
 static bool guardManual;                 // the night being checked was started by hand
 static double guardPx0, guardPress0;     // pc.in_px / pc.in_press when the wake was seen
+static uint32_t guardChecks;             // presenceChecks() when the wake was seen
+static uint32_t vetoMs;                  // the camera last overruled input
 static uint32_t falseWakes;              // this night, for the status line
+// Past the idle timer the desk decides (presence.cpp): someone there holds the
+// night off for NIGHT_DESK_HOLD_S, then it engages unless something blocks
+// sleep; nobody (two checks) engages and sleeps at once (sleepCheck). The
+// camera unable to tell (dark, busy) engages as before, sleep on the timer.
+static const uint32_t DESK_HOLD_MS = NIGHT_DESK_HOLD_S * 1000UL;
+static const uint32_t FIRST_CHECK_MS = 20000;   // a first check after the agent starts can take this long
+static uint32_t dueMs;                   // idle timer ran out, night waiting for the desk
+static uint32_t dueChecks;               // presenceChecks() then
+static uint32_t deskSinceMs;             // someone seen since dueMs
 
 // Sleep (in the night window, while engaged): NIGHT_SLEEP_S after the last
-// real input on the PC. False wakes don't move the clock. Held while an exe is heavy (pc.heavy),
+// real input on the PC, at once when nobody is at the desk (not in a night
+// started by hand). False wakes don't move the clock. Held while an exe is heavy (pc.heavy),
 // a power request keeps the PC up (pc.disp_req / sys_req / exec_req, minus
 // NIGHT_REQ_IGNORE), or the network is busy (net_down / net_up over
 // NIGHT_NET_HOLD_BPS, ~1 min average); the displays stay off meanwhile.
@@ -83,7 +98,10 @@ static int8_t savedRgb = -1;             // PC LED brightness to put back, -1 = 
 static bool rgbLowered;                  // our 10 % is on the LEDs right now (NVS with savedRgb)
 
 // #pc-announcement
-static void announce(const char *what, uint32_t color) { discordPost(DC_PC, "Night mode", what, color); }
+static void announce(const char *what, uint32_t color) {
+  if (presenceDry()) logMsg("night: dry, would post: %s", what);
+  else discordPost(DC_PC, "Night mode", what, color);
+}
 
 static void saveNvs() {
   nvs_handle_t h;
@@ -115,7 +133,7 @@ void nightWindowText(char *buf, uint32_t size) {
   snprintf(buf, size, "%02d:00-%02d:00 after %d min", START_HOUR, END_HOUR, IDLE_ENGAGE_S / 60);
 }
 
-static bool pcReachable() { return pcState() == PC_ON && pcStatsFresh() && pcStat("hw.ok") >= 1; }
+bool pcReachable() { return pcState() == PC_ON && pcStatsFresh() && pcStat("hw.ok") >= 1; }
 
 // PC-off faces while engaged; panels and status LED dimmed while engaged or in low power mode
 static void boardSide() {
@@ -189,8 +207,8 @@ static void rgbRestoreDone() {
 
 static void disengage(const char *why, bool post = true);
 
-// PC displays off for the night; turning them on is owed from now on
-static const char *displaysOff() {
+// PC displays off; turning them on is owed from now on
+const char *nightDisplaysOff() {
   monOnOwed = true;
   monOnId = 0;
   saveNvs();
@@ -201,7 +219,7 @@ static const char *displaysOff() {
 // Owed displays on: sent while the night is off and the PC service is there,
 // again every 30 s until it answers ok
 static void monOnTry(uint32_t now) {
-  if (!monOnOwed || engaged || !pcReachable()) return;
+  if (!monOnOwed || engaged || presenceDisplaysOff() || !pcReachable()) return;
   if (monOnId) {
     char r[64];
     if (monReplyFor(monOnId, r, sizeof r)) {
@@ -224,6 +242,11 @@ static void monOnTry(uint32_t now) {
     monOnId = 0;
     logMsg("night: displays on: %s, again in 30 s", err);
   }
+}
+
+void nightDisplaysOnNow() {
+  monOnSentMs = 0;
+  monOnTry(nowMs());
 }
 
 // "claude.exe" in NIGHT_REQ_IGNORE
@@ -286,7 +309,8 @@ static void sleepCheck(uint32_t now) {
   if (sleepReqMs || hibReqMs || sleptAtMs || offByNight) return;
   if (pcState() != PC_ON || !pcStatsFresh()) return;
   uint32_t inactive = now - inputAtMs;
-  if (inactive < SLEEP_MS) { lastHold[0] = 0; return; }
+  bool nobody = !manual && presenceNobody();
+  if (inactive < SLEEP_MS && !nobody) { lastHold[0] = 0; return; }
   char why[64];
   sleepHold(why, sizeof why);
   if (strcmp(why, lastHold)) {
@@ -296,11 +320,12 @@ static void sleepCheck(uint32_t now) {
   }
   if (*why || now - powerTryMs < 60000) return;
   powerTryMs = now;
+  if (presenceDry()) { logMsg("night: dry, would sleep the PC"); return; }
   quietFromMs = now | 1;
   const char *err = powerRequest("sleep");
   if (err) { logMsg("night: sleep not sent (%s)", err); return; }
   sleepReqMs = now;
-  logMsg("night: %lu min without input, putting the PC to sleep", (unsigned long)(inactive / 60000));
+  logMsg("night: %lu min without input%s, putting the PC to sleep", (unsigned long)(inactive / 60000), nobody ? ", nobody at the desk" : "");
 }
 
 // Every second, engaged or not: did the PC go down, did a woken PC come up
@@ -439,13 +464,14 @@ static void engage(bool byHand) {
   engagedMs = nowMs();
   guardUntilMs = 0;
   falseWakes = 0;
+  dueMs = deskSinceMs = 0;
   float idle = pcStat("pc.idle_s");
   inputAtMs = engagedMs - (!isnan(idle) && idle > 0 && idle < 86400 ? (uint32_t)(idle * 1000) : 0);
   struct tm t;
   engagedAtMin = boardLocalTime(&t) ? t.tm_hour * 60 + t.tm_min : 0;
   boardSide();
   rgbLower();
-  const char *err = displaysOff();
+  const char *err = nightDisplaysOff();
   char rgbPct[8];
   snprintf(rgbPct, sizeof rgbPct, "%d %%", RGB_PCT);
   logMsg("night: engaged%s (PC LEDs %s, displays %s)", byHand ? " by hand" : "",
@@ -493,7 +519,7 @@ static void reengage() {
   engagedMs = nowMs();   // the next input is a new wake
   boardSide();
   rgbLower();
-  const char *err = displaysOff();
+  const char *err = nightDisplaysOff();
   lassoSend();
   logMsg("night: back on after a false wake (displays %s)", err ? err : "off");
 }
@@ -523,24 +549,34 @@ void nightPoll() {
   }
   if (!engaged && !lowPower) rgbRestoreTry(true);   // owed from a morning or a restart
   monOnTry(now);
+  presenceWatch(engaged || guardUntilMs || dueMs);
 
   // Wake check: the night went off at the first input; a real return
-  // (> GUARD_PX of mouse travel or GUARD_PRESSES presses in GUARD_MS) keeps it
-  // off, anything less brings it back
+  // (> GUARD_PX of mouse travel or GUARD_PRESSES presses in GUARD_MS, or
+  // someone at the desk) keeps it off, anything less brings it back. Real
+  // input waits for the camera, which can overrule it (vetoMs); no answer
+  // in time, or one that can't tell, leaves it to the input
   if (guardUntilMs) {
     double px = counted("pc.in_px", guardPx0), presses = counted("pc.in_press", guardPress0);
-    if (px > GUARD_PX || presses >= GUARD_PRESSES) {
+    bool moved = px > GUARD_PX || presses >= GUARD_PRESSES;
+    bool up = (int32_t)(now - guardUntilMs) >= 0;
+    bool checked = presenceChecks() != guardChecks;
+    bool someone = checked && presenceSeen() == PRES_SOMEONE;
+    bool veto = checked && presenceSeen() == PRES_NOBODY && moved && (!vetoMs || now - vetoMs >= NIGHT_GUARD_VETO_MS);
+    if (someone || (moved && !veto && (checked || up))) {
       guardUntilMs = 0;
-      backToNormal("input on the PC");
-    } else if ((int32_t)(now - guardUntilMs) >= 0) {
+      backToNormal(someone ? "someone at the desk" : "input on the PC");
+    } else if (veto || up) {
       guardUntilMs = 0;
       falseWakes++;
-      logMsg("night: false wake (%.0f px, %.0f presses in %lu s)", px, presses, (unsigned long)(GUARD_MS / 1000));
+      if (veto) vetoMs = now | 1;
+      logMsg("night: false wake (%.0f px, %.0f presses in %lu s%s)", px, presses, (unsigned long)(GUARD_MS / 1000),
+             checked && presenceSeen() == PRES_NOBODY ? ", nobody at the desk" : "");
       reengage();
     }
     return;
   }
-  if (!enabled && !engaged) return;
+  if (!enabled && !engaged) { dueMs = deskSinceMs = 0; return; }
   struct tm t;
   bool haveTime = boardLocalTime(&t);
   bool inWindow = haveTime && (t.tm_hour >= START_HOUR || t.tm_hour < END_HOUR);
@@ -556,6 +592,8 @@ void nightPoll() {
     else if (idleKnown && idle + 3 < since && !wokeMs && !hibReqMs) {
       guardPx0 = pcStat("pc.in_px");
       guardPress0 = pcStat("pc.in_press");
+      guardChecks = presenceChecks();
+      presenceCheckNow();
       if (isnan(guardPx0) || isnan(guardPress0)) {
         disengage("input on the PC");   // a helper without the counters: no guard
       } else {
@@ -571,7 +609,27 @@ void nightPoll() {
   }
   // video guard: no automatic start while something keeps the display on
   bool videoHold = pcStat("pc.disp_req") >= 1;
-  if (inWindow && pcState() == PC_ON && idleKnown && idle >= IDLE_ENGAGE_S && !videoHold) engage(false);
+  if (!inWindow || pcState() != PC_ON || !idleKnown || idle < IDLE_ENGAGE_S || videoHold) {
+    dueMs = deskSinceMs = 0;
+    return;
+  }
+  if (!dueMs) {
+    dueMs = now ? now : 1;
+    dueChecks = presenceChecks();
+  }
+  bool checked = presenceChecks() != dueChecks;
+  if (!checked && now - dueMs < FIRST_CHECK_MS) return;
+  int seen = checked ? presenceSeen() : PRES_UNKNOWN;
+  if (seen == PRES_SOMEONE && !deskSinceMs) {
+    deskSinceMs = now ? now : 1;
+    logMsg("night: idle, but someone at the desk: held for %d min", NIGHT_DESK_HOLD_S / 60);
+  }
+  if (seen == PRES_NOBODY && !presenceNobody()) return;   // one more check first
+  if (deskSinceMs && seen != PRES_NOBODY) {
+    char why[64];
+    if (now - deskSinceMs < DESK_HOLD_MS || *sleepHold(why, sizeof why)) return;
+  }
+  engage(false);
 }
 
 void nightSetEnabled(bool on) {
@@ -641,6 +699,11 @@ void nightLowPowerStatus(char *buf, uint32_t size) {
 }
 
 bool nightEnabled() { return enabled; }
+
+bool nightCovers() {
+  struct tm t;
+  return enabled && boardLocalTime(&t) && (t.tm_hour >= START_HOUR || t.tm_hour < END_HOUR);
+}
 bool nightEngaged() { return engaged; }
 
 void nightStatus(char *buf, uint32_t size) {
@@ -655,11 +718,18 @@ void nightStatus(char *buf, uint32_t size) {
   else if (engaged) {
     char sleep[48] = "", why[64];
     uint32_t inactive = now - inputAtMs;
-    if (*sleepHold(why, sizeof why) && inactive >= SLEEP_MS) snprintf(sleep, sizeof sleep, ", sleep held: %.28s", why);
+    bool nobody = !manual && presenceNobody();
+    if (*sleepHold(why, sizeof why) && (inactive >= SLEEP_MS || nobody)) snprintf(sleep, sizeof sleep, ", sleep held: %.28s", why);
+    else if (nobody) snprintf(sleep, sizeof sleep, ", nobody at the desk: sleeping");
     else if (inactive < SLEEP_MS) snprintf(sleep, sizeof sleep, ", sleep in %lu min", (unsigned long)((SLEEP_MS - inactive) / 60000 + 1));
     snprintf(buf, size, "engaged since %02lu:%02lu%s%s%s", (unsigned long)(engagedAtMin / 60),
              (unsigned long)(engagedAtMin % 60), manual ? ", by hand" : "",
              falseWakes ? ", false wakes ignored" : "", sleep);
+  }
+  else if (enabled && deskSinceMs) {
+    uint32_t held = now - deskSinceMs;
+    if (held < DESK_HOLD_MS) snprintf(buf, size, "on, held off: someone at the desk (%lu min left)", (unsigned long)((DESK_HOLD_MS - held) / 60000 + 1));
+    else snprintf(buf, size, "on, held off: someone at the desk, sleep blocked");
   }
   else if (enabled && pcStat("pc.disp_req") >= 1) {
     char by[48];

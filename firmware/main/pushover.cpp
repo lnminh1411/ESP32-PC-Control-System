@@ -81,6 +81,9 @@ bool pushoverSend(const char *title, const char *message, int priority) {
                          PUSHOVER_TOKEN, PUSHOVER_USER, b->encTitle, b->encMsg, priority);
   if (bodyLen < 0) return false;
   if (bodyLen >= bodyCap) bodyLen = bodyCap - 1;   // cut, not read past body
+  // emergency: refused without these; repeats until acknowledged or expired
+  if (priority == 2) bodyLen += snprintf(body + bodyLen, bodyCap - bodyLen, "&retry=%d&expire=%d", PUSHOVER_EMERGENCY_RETRY_S, PUSHOVER_EMERGENCY_EXPIRE_S);
+  if (bodyLen >= bodyCap) bodyLen = bodyCap - 1;
 
   esp_http_client_config_t cfg = {};
   cfg.url = "https://api.pushover.net/1/messages.json";

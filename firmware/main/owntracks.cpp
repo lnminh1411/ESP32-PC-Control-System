@@ -275,10 +275,8 @@ bool owntracksIsMerged(double homeLat, double homeLon) {
 // that is not connected right then gets it when it next connects; the next
 // fix clears it. The app answers when remote commands are on (reliable on
 // Android, best effort on iOS); a fix stays valid OWNTRACKS_MAX_AGE_S either way.
-void owntracksAskIfStale() {
+void owntracksAskNow() {
   if (!clientStarted || !connected || !devTopic[0] || !hasLocation) return;
-  if (owntracksAgeSec() < OWNTRACKS_ASK_AFTER_S) return;
-  if (lastAskMs && nowMs() - lastAskMs < OWNTRACKS_ASK_AFTER_S * 1000UL) return;
   lastAskMs = nowMs() | 1;
   char topic[96];
   snprintf(topic, sizeof topic, "%s/cmd", devTopic);
@@ -288,4 +286,10 @@ void owntracksAskIfStale() {
   if (id >= 0) askPending = true;
   logMsg("owntracks: fix %lu min old, asked the phone for its location%s", (unsigned long)(owntracksAgeSec() / 60),
          id < 0 ? " (publish failed)" : "");
+}
+
+void owntracksAskIfStale() {
+  if (owntracksAgeSec() < OWNTRACKS_ASK_AFTER_S) return;
+  if (lastAskMs && nowMs() - lastAskMs < OWNTRACKS_ASK_AFTER_S * 1000UL) return;
+  owntracksAskNow();
 }

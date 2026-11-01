@@ -11,3 +11,4 @@ uint32_t owntracksAgeSec();
 double owntracksDistanceTo(double homeLat, double homeLon);
 bool owntracksIsMerged(double homeLat, double homeLon);
 void owntracksAskIfStale();   // weather loop: reportLocation to a phone that has not reported for a while
+void owntracksAskNow();       // reportLocation now (any task)

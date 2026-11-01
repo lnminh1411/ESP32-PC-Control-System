@@ -19,6 +19,7 @@
 #include "usb.h"
 #include "views.h"
 #include "power.h"
+#include "presence.h"
 #include "screens.h"
 #include "pcwarn.h"
 #include "aictl.h"
@@ -169,6 +170,7 @@ extern "C" void app_main() {
     aiPoll();
     monPoll();
     nightPoll();
+    presencePoll();
     pcGoingPoll();
     netPoll();
     discordPoll();

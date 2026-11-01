@@ -192,6 +192,20 @@
 #define NIGHT_LEAVE_KM 1.0                        // the phone (OwnTracks) going beyond this from home hibernates the PC (woken first if night mode put it to sleep)
 #define NIGHT_LEAVE_IDLE_S (5 * 60)               // ...but a PC that is on only if nobody used it for this long
 #define NIGHT_NET_HOLD_BPS 1000000                // sleep / hibernate wait while net_down or net_up averages more than this (bytes/s, ~1 min)
+#define NIGHT_DESK_HOLD_S (30 * 60)               // someone at the desk past the idle timer holds the night off this long
+#define NIGHT_GUARD_VETO_MS 120000                // the camera can overrule real input once this often (a dim room can miss you)
+#define PRESENCE_FAST_S 10                        // s between checks while you are away and around the night's start
+#define PRESENCE_DAY_S (5 * 60)                   // s between checks otherwise
+#define PRESENCE_AWAY_KM 0.20                     // phone beyond this from home = you are away
+#define PRESENCE_HOME_KM 0.18                     // ...and back only under this (a margin: no flapping at the line)
+#define PRESENCE_ACC_M 150                        // a fix vaguer than this (m) doesn't switch away / back
+#define PRESENCE_FIX_FRESH_S 120                  // someone at the desk with a fix older than this: ask the phone before alerting
+#define PRESENCE_ASK_WAIT_S 30                    // ...and alert anyway after this long without an answer
+#define PRESENCE_ALERT_REPEAT_S (10 * 60)         // alert again this often while someone stays at the desk
+#define PRESENCE_DAY_IDLE_S 60                    // nobody at the desk only turns the displays off after this long without input
+#define PRESENCE_AWAY_IDLE_S (5 * 60)             // input while away gives the displays back until this long without input
+#define PUSHOVER_EMERGENCY_RETRY_S 60             // emergency priority: Pushover repeats the alert this often (minimum 30)
+#define PUSHOVER_EMERGENCY_EXPIRE_S 3600          // ...for this long, or until acknowledged
 #define NIGHT_REQ_IGNORE "claude.exe"             // power request holders that don't hold sleep (comma list; claude.exe always holds EXECUTION)
 
 // ---- Weather (board) ----

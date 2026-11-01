@@ -6,6 +6,7 @@ extern "C" {
 
 void powerPoll();
 const char *powerRequest(const char *action);
+const char *powerLockQuiet();   // lock, no "PC accepted lock" post (presence repeats it every check)
 const char *powerWake();
 const char *screenshotRequest();   // fire-and-forget: ask the PC service to post a screenshot to #logging
 // Hibernation on the PC as last reported (pc.hib, kept over restarts): 1 on,

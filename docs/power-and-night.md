@@ -39,7 +39,8 @@ too: the board has no keyboard to send Win+L.
 once the PC has had no keyboard or mouse input for 5 minutes (the service's
 user-session half reads Windows' idle counter, stat `pc.idle_s`). It sets the
 PC's RGB LEDs to 10 %, the board's panels to 10 % on their PC-off screens, and
-caps the status LED at 20 %. It also turns the PC's displays off, and back on when
+caps the status LED at 20 %. Past those 5 minutes the camera decides how it goes
+([Presence at the desk](#presence-at-the-desk)). It also turns the PC's displays off, and back on when
 it ends (or interrupted): a PC asleep or hibernated then gets them on as soon as
 it is back, retried every 30 s until the PC service says ok. Input on the
 PC puts everything back, and 5 more idle minutes engage it again. At 06:00 the
@@ -71,7 +72,11 @@ to #pc-announcement and Pushover; a night that ends while it is on leaves it on.
   `pc.in_px`, `pc.in_press` from the user-session half, gamepad buttons and
   sticks count too), a bumped mouse, the night comes straight back, with no
   post, and its sleep clock carries on. A real return keeps it off and posts
-  "Back to normal".
+  "Back to normal". The wake asks for a camera check at once: someone at the
+  desk is a real return whatever the input, and nobody there overrules real
+  input (a cat on the keyboard). The camera can only do that once per 2 min
+  (`NIGHT_GUARD_VETO_MS`), because a dim room can miss you and you would
+  never get the night off. A check that can't tell leaves it to the input.
 - **Video.** No automatic start while a process keeps the display on (a video
   playing, a presentation): PcHwCtl reads `powercfg /requests` every 10 s and
   the PC service passes it on (`pc.disp_req`, `pc.disp_req_by`). The PC
@@ -95,11 +100,57 @@ under 0.3 cores for 5 minutes. When the night ends, `lasso load day` puts the
 normal config back and `eco off all` lifts efficiency mode. If the board stops
 confirming the night for 5 minutes, the service does that by itself.
 
+## Presence at the desk
+
+PcHwCtl answers "is someone at the PC?" (`presence`, its `docs/ipc.md`): the
+user-session agent opens the camera for 1-2 s, runs YOLO11n on the NPU, and
+answers in about 3.5 s. The frame stays in its memory and is zeroed after
+inference. The board sets the pace with `!pres <seconds>`, the helper runs the
+checks one at a time and reports `pc.present` ("<n> <yes|no|unknown> <why>
+<conf %>"), and `presence.cpp` holds the rules. A check can answer `unknown`:
+`dark` (luma under 10, nobody seen), `camera` (in use, unplugged, privacy off),
+`agent` (nobody signed in), `pipe` (PcHwCtl down). Unknown never triggers
+anything, and never counts as nobody. The PC Control tab shows the last answer
+in its Presence field.
+
+| When | Check | Rule |
+|---|---|---|
+| Night window, Night auto on, 5 idle minutes over | every 10 s | Someone there: the night holds off, displays on. After 30 min (`NIGHT_DESK_HOLD_S`), still idle and nothing blocking sleep: night engages, displays off. Nobody (two checks in a row): night engages and the PC sleeps at once, or only the displays go off while something blocks sleep, and it sleeps when that clears. Can't tell: the night engages as it always did, sleep 1 h after the last input |
+| Phone beyond 200 m (`PRESENCE_AWAY_KM`) | every 10 s | Someone there: see below |
+| At home, Night auto off or outside its window | every 5 min | Nobody, no input for 60 s (`PRESENCE_DAY_IDLE_S`), nothing keeping the display on: displays off. Someone seen, or input: on again |
+
+The phone going beyond 200 m turns the displays off, at any hour; back within
+180 m (`PRESENCE_HOME_KM`, a margin so a fix on the line doesn't flap) turns
+them on, unless night mode wants them off. A fix vaguer than 150 m
+(`PRESENCE_ACC_M`) switches neither way, and no valid fix counts as home. Input
+on the PC while away gives the displays back until 5 min pass without input
+(`PRESENCE_AWAY_IDLE_S`): a dead phone must not leave you at a dark screen.
+
+Someone at the desk while the phone is away: a second check runs at once, and
+two `yes` in a row lock the PC (again at every further `yes`, so unlocking it
+doesn't last) and send a red "Someone at your PC" post to #pc-announcement and
+a Pushover emergency alert, which repeats every 60 s for an hour or until
+acknowledged. The alert repeats every 10 min while someone stays
+(`PRESENCE_ALERT_REPEAT_S`). A phone fix older than 2 min could be you, home
+already, so the board first asks the phone for its location
+(`reportLocation`) and waits up to 30 s; a fix inside the line cancels the
+alert, the lock has already happened.
+
+`presence dry on` (console, not saved) logs the lock, the alert, night posts,
+display changes and sleep instead of doing them; `presence away on|off|auto`
+fakes the phone and `presence seen yes|no|unknown` fakes a check.
+
+Limits: the camera sees nothing in a dark room with the monitors off, so at
+night with the lights out rule one is the old timer and an intruder in the dark
+is not detected. The check at the desk can't tell you from anyone else. No
+screenshot goes with the alert.
+
 ## Sleep and hibernate
 
 Sleep (Windows' own timers off; the board keeps it, in the night window only):
 1 hour after the last real input on the PC (false wakes don't count) the board
-sleeps the PC. There is no timed hibernate. It waits, with the displays off,
+sleeps the PC, or at once with nobody at the desk (not in a night started by
+hand). There is no timed hibernate. It waits, with the displays off,
 while an exe is heavy (`pc.heavy`, kept ones included except
 `HOST_NIGHT_HEAVY_IGNORE`: `svchost` and `msmpeng` by default, since a service
 host summed over dozens of instances never calms down; they are still left

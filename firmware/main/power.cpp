@@ -29,6 +29,7 @@ static const char *powerWakeSend();
 static const uint32_t WAKE_DIM_MS = POWER_WAKE_DIM_MS;
 
 static bool s_pending = false;
+static bool s_quiet;                     // this request posts nothing when accepted
 static char s_action[16] = "";
 static char s_nonce[16] = "";
 static uint32_t s_reqTimeMs = 0;
@@ -61,6 +62,12 @@ static void hibFollow() {
 }
 
 int powerHibernateOn() { return s_hib < 0 ? -1 : s_hib; }   // read by other tasks: hibFollow stays in powerPoll's
+
+const char *powerLockQuiet() {
+  const char *err = powerRequest("lock");
+  if (!err) s_quiet = true;
+  return err;
+}
 
 const char *powerRequest(const char *action) {
   if (!action || !*action) return "action required";
@@ -99,6 +106,7 @@ const char *powerRequest(const char *action) {
     }
 
     s_pending = true;
+    s_quiet = false;
     s_reqTimeMs = nowMs();
     logMsg("power: requesting %s (nonce %s)", action, s_nonce);
     return nullptr;
@@ -139,7 +147,7 @@ void powerPoll() {
         char note[48];
         snprintf(note, sizeof(note), "PC accepted %s", s_action);
         viewsNoteAction(note);
-        if (!nightPowerQuiet()) discordNotify(note);   // night mode posts its own
+        if (!nightPowerQuiet() && !s_quiet) discordNotify(note);   // night mode and presence post their own
         s_pending = false;
         s_nonce[0] = '\0';
         return;

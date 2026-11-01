@@ -72,6 +72,7 @@ OwnTracks sends GPS updates from your smartphone to your private MQTT broker.
 4. **Payload format**:
    - Reads JSON location events with `"_type": "location"` containing `lat`, `lon`, `tst`, `acc`.
    - Location is considered valid while `tst` timestamp is `< 12 h` old (`OWNTRACKS_MAX_AGE_S`): the app reports on movement, so no report means the phone has not moved.
+   - The PC's displays and intruder alert use their own 200 m line, tighter accuracy and a fresh fix ([power-and-night.md](power-and-night.md#presence-at-the-desk)).
    - After 2 h without a report (`OWNTRACKS_ASK_AFTER_S`) the board publishes OwnTracks' remote command `{"_type":"cmd","action":"reportLocation"}` to `<device topic>/cmd` (retained, cleared by the next fix), again every 2 h until a fix arrives. It never asks while the last fix is within `OWNTRACKS_HOME_KM` (1 km) of home: the phone reports by itself once it moves away. Turn on remote commands in the app (Android: Preferences -> Advanced -> Remote commands). Android answers while connected; iOS only when the app is awake.
 
 ---

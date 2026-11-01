@@ -626,6 +626,8 @@ partial class PcStats : ServiceBase {
       HandlePowerLine(line);
     } else if (line.StartsWith("!shot", StringComparison.OrdinalIgnoreCase)) {
       HandleShotLine(line);
+    } else if (line.StartsWith("!pres", StringComparison.OrdinalIgnoreCase)) {
+      HandlePresLine(line);
     } else if (line.StartsWith("!hw", StringComparison.OrdinalIgnoreCase)) {
       HandleHwLine(line);
     } else if (line.StartsWith("!mon", StringComparison.OrdinalIgnoreCase)) {
@@ -3639,6 +3641,7 @@ partial class PcStats : ServiceBase {
           tokens.Add("pc.heavy=" + heavy);
           texts.Add(new KeyValuePair<string, string>("pc.heavy_by", heavyBy));
         }
+        PresText(texts);   // the last desk check (Presence.cs)
         // hibernation on or off (PcHwCtl `power caps`, Night.cs): the board hides Hibernate when off
         int hib = hibOn;
         if (hib >= 0) tokens.Add("pc.hib=" + hib);

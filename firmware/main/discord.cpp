@@ -28,6 +28,7 @@
 #include "log.h"
 #include "monctl.h"
 #include "net.h"
+#include "presence.h"
 #include "pushover.h"
 #include "optos.h"
 #include "pc_state.h"
@@ -134,9 +135,10 @@ void discordNotify(const char *what) {
 
 void discordPost(DiscordChannel ch, const char *title, const char *desc, uint32_t color, int prio) {
   if (!title) return;
-  // #weather-announcement reaches the phone from here, not from the bot task:
-  // warnings ring while the gateway is down or reconnecting, and with no token
-  if (ch == DC_WEATHER) pushoverQueue(title, desc, prio);
+  // #weather-announcement and emergencies reach the phone from here, not from
+  // the bot task: they ring while the gateway is down or reconnecting, and
+  // with no token
+  if (ch == DC_WEATHER || prio == 2) pushoverQueue(title, desc, prio);
   if (!DISCORD_TOKEN[0] || !notifyQueue) return;
   // on the heap, not the caller's stack (the weather task's is 9 KB)
   NotifyMsg *msg = (NotifyMsg *)heap_caps_calloc(1, sizeof(NotifyMsg), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -317,8 +319,8 @@ static void addItem(cJSON *arr, cJSON *item) {
 }
 
 static void postChannelEmbed(DiscordChannel ch, const char *title, const char *desc, uint32_t color, int prio = 0) {
-  // #pc-announcement goes to the phone too (#weather-announcement already did, in discordPost)
-  if (ch == DC_PC) pushoverQueue(title, desc, prio);
+  // #pc-announcement goes to the phone too (#weather-announcement and emergencies already did, in discordPost)
+  if (ch == DC_PC && prio != 2) pushoverQueue(title, desc, prio);
   const char *chId = channelId(ch);
   if (!chId[0]) return;
   cJSON *root = cJSON_CreateObject();
@@ -891,6 +893,8 @@ static void buildEmbed(cJSON *embed, const char *footerText, bool standing) {
     pcTextCopy("hw.plan", plan, sizeof plan);
     addField(fields, "Power plan", *plan ? plan : "--");
     addPcStatsFields(fields);
+    presenceStatus(v, sizeof v);
+    addField(fields, "Presence", v);
   } else if (cat == CAT_RGB) {
     char mainRule[64], ramRule[64];
     pcTextCopy("hw.rgb.main", mainRule, sizeof mainRule);
