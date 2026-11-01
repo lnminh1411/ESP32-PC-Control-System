@@ -100,7 +100,9 @@ CONFIG_HEAP_PLACE_FUNCTION_INTO_FLASH=y
 # CONFIG_SPI_MASTER_ISR_IN_IRAM is not set
 CONFIG_RINGBUF_PLACE_FUNCTIONS_INTO_FLASH=y
 # CONFIG_ESP_EVENT_POST_FROM_IRAM_ISR is not set
-# Software AES: hardware AES needs DMA bounce buffers in internal RAM for PSRAM data
+# Software AES: hardware AES needs DMA bounce buffers in internal RAM for PSRAM data.
+# Keep it off while PSRAM ECC is on: AES DMA + ECC + mbedTLS memory in PSRAM is
+# how Espressif reproduced TLS -0x7180 INVALID_MAC (esp-idf issue 17678)
 CONFIG_MBEDTLS_HARDWARE_AES=n
 # Internal RAM for TLS/sockets: Wi-Fi hot paths stay in flash, fewer fixed RX buffers
 CONFIG_ESP_WIFI_IRAM_OPT=n

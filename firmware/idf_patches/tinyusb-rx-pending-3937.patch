@@ -1,0 +1,172 @@
+diff -ruN a/class/midi/midi2_device.c b/class/midi/midi2_device.c
+--- a/class/midi/midi2_device.c	2026-11-01 10:47:34.739620100 +0700
++++ b/class/midi/midi2_device.c	2026-11-01 10:47:34.894048400 +0700
+@@ -748,6 +748,8 @@
+         _nego_process_rx(p_midi);
+       }
+       tud_midi2_rx_cb(idx);
++    } else {
++      tu_edpt_stream_read_xfer_complete(ep_rx, 0); // release ep_buf for the re-arm below
+     }
+     tu_edpt_stream_read_xfer(ep_rx);
+   } else if (ep_addr == ep_tx->ep_addr && result == XFER_RESULT_SUCCESS) {
+diff -ruN a/class/midi/midi_device.c b/class/midi/midi_device.c
+--- a/class/midi/midi_device.c	2026-11-01 10:47:34.740619500 +0700
++++ b/class/midi/midi_device.c	2026-11-01 10:47:34.894048400 +0700
+@@ -553,6 +553,8 @@
+     if (result == XFER_RESULT_SUCCESS) {
+       tu_edpt_stream_read_xfer_complete(ep_st_rx, xferred_bytes);
+       tud_midi_rx_cb(idx);                      // invoke callback
++    } else {
++      tu_edpt_stream_read_xfer_complete(ep_st_rx, 0); // release ep_buf for the re-arm below
+     }
+     tu_edpt_stream_read_xfer(ep_st_rx);         // prepare for next data
+   } else if (ep_addr == ep_st_tx->ep_addr && result == XFER_RESULT_SUCCESS) {
+diff -ruN a/class/vendor/vendor_device.c b/class/vendor/vendor_device.c
+--- a/class/vendor/vendor_device.c	2026-11-01 10:47:34.725485000 +0700
++++ b/class/vendor/vendor_device.c	2026-11-01 10:47:34.879136300 +0700
+@@ -141,6 +141,7 @@
+ 
+     #else
+   // Non-FIFO mode
++  usbd_edpt_rx_consume(p_itf->rhport, p_itf->ep_out); // arming a new receive relinquishes the previous data
+   TU_VERIFY(usbd_edpt_claim(p_itf->rhport, p_itf->ep_out));
+   return usbd_edpt_xfer(p_itf->rhport, p_itf->ep_out, _vendord_epbuf[idx].epout, p_itf->rx_xfer_len, false);
+     #endif
+diff -ruN a/common/tusb_private.h b/common/tusb_private.h
+--- a/common/tusb_private.h	2026-11-01 10:47:34.661449400 +0700
++++ b/common/tusb_private.h	2026-11-01 10:47:34.808261600 +0700
+@@ -50,6 +50,7 @@
+ #define TU_EDPT_STATE_BUSY    0x01u
+ #define TU_EDPT_STATE_STALLED 0x02u
+ #define TU_EDPT_STATE_CLAIMED 0x04u
++#define TU_EDPT_STATE_RX_PENDING 0x08u // OUT xfer completed, ep buffer not yet consumed by the class (#1292)
+ 
+ typedef struct {
+   uint8_t  hwid;    // device: rhport, host: daddr
+@@ -163,12 +164,22 @@
+ // Start an usb transfer if endpoint is not busy
+ uint32_t tu_edpt_stream_read_xfer(tu_edpt_stream_t *s);
+ 
++#if CFG_TUD_ENABLED
++// Release an OUT endpoint's RX_PENDING hold once its buffer is consumed, allowing it to be claimed
++void usbd_edpt_rx_consume(uint8_t rhport, uint8_t ep_addr);
++#else
++  #define usbd_edpt_rx_consume(_rhport, _ep_addr)
++#endif
++
+ // Complete read transfer by writing EP -> FIFO. Must be called in the transfer complete callback
+ TU_ATTR_ALWAYS_INLINE static inline
+ void tu_edpt_stream_read_xfer_complete(tu_edpt_stream_t* s, uint32_t xferred_bytes) {
+   if (s->ep_buf != NULL) {
+     tu_fifo_write_n(&s->ff, s->ep_buf, (uint16_t)xferred_bytes);
+   }
++  if (!s->is_host) {
++    usbd_edpt_rx_consume(s->hwid, s->ep_addr);
++  }
+ }
+ 
+ // Complete read transfer with provided buffer
+diff -ruN a/device/usbd.c b/device/usbd.c
+--- a/device/usbd.c	2026-11-01 10:47:34.663373500 +0700
++++ b/device/usbd.c	2026-11-01 10:47:34.815128800 +0700
+@@ -762,15 +762,21 @@
+ 
+         TU_LOG_USBD("on EP %02X with %u bytes\r\n", ep_addr, (unsigned int) event.xfer_complete.len);
+ 
+-        // Clear busy + claimed
+-        _usbd_dev.ep_status[epnum][ep_dir] &= (uint8_t) ~(TU_EDPT_STATE_BUSY | TU_EDPT_STATE_CLAIMED);
++        usbd_class_driver_t const* driver = NULL; // EP0 has no class driver
++        if (0 != epnum) {
++          driver = get_driver(_usbd_dev.ep2drv[epnum][ep_dir]);
++          TU_ASSERT(driver,);
++        }
+ 
+-        if (0 == epnum) {
++        // Clear busy + claimed. An OUT endpoint changed to RX_PENDING, so no other task can claim and re-arm it before
++        // its buffer is consumed
++        uint8_t const rx_pending = (0 != epnum && ep_dir == TUSB_DIR_OUT) ? TU_EDPT_STATE_RX_PENDING : 0u;
++        _usbd_dev.ep_status[epnum][ep_dir] = (uint8_t) (
++          (_usbd_dev.ep_status[epnum][ep_dir] & ~(TU_EDPT_STATE_BUSY | TU_EDPT_STATE_CLAIMED)) | rx_pending);
++
++        if (driver == NULL) {
+           usbd_control_xfer_cb(event.rhport, ep_addr, (xfer_result_t) event.xfer_complete.result, event.xfer_complete.len);
+         } else {
+-          usbd_class_driver_t const* driver = get_driver(_usbd_dev.ep2drv[epnum][ep_dir]);
+-          TU_ASSERT(driver,);
+-
+           TU_LOG_USBD("  %s xfer callback\r\n", driver->name);
+           driver->xfer_cb(event.rhport, ep_addr, (xfer_result_t) event.xfer_complete.result, event.xfer_complete.len);
+         }
+@@ -1567,6 +1573,21 @@
+   return tu_edpt_release(&_usbd_dev.ep_status[epnum][dir], _usbd_mutex);
+ }
+ 
++void usbd_edpt_rx_consume(uint8_t rhport, uint8_t ep_addr) {
++  (void) rhport;
++
++  uint8_t const epnum = tu_edpt_number(ep_addr);
++  uint8_t const dir = tu_edpt_dir(ep_addr);
++  volatile uint8_t *ep_state = &_usbd_dev.ep_status[epnum][dir];
++
++  TU_VERIFY((*ep_state & TU_EDPT_STATE_RX_PENDING) != 0,);
++  (void) osal_mutex_lock(_usbd_mutex, OSAL_TIMEOUT_WAIT_FOREVER);
++  if ((*ep_state & TU_EDPT_STATE_RX_PENDING) != 0) {
++    *ep_state &= (uint8_t) ~TU_EDPT_STATE_RX_PENDING;
++  }
++  (void) osal_mutex_unlock(_usbd_mutex);
++}
++
+ bool usbd_edpt_xfer(uint8_t rhport, uint8_t ep_addr, uint8_t* buffer, uint16_t total_bytes, bool is_isr) {
+   rhport = _usbd_rhport;
+ 
+@@ -1588,7 +1609,8 @@
+ 
+   // Set busy first since the actual transfer can be complete before dcd_edpt_xfer()
+   // could return and USBD task can preempt and clear the busy
+-  _usbd_dev.ep_status[epnum][dir] |= TU_EDPT_STATE_BUSY;
++  _usbd_dev.ep_status[epnum][dir] =
++    (uint8_t) ((_usbd_dev.ep_status[epnum][dir] & ~TU_EDPT_STATE_RX_PENDING) | TU_EDPT_STATE_BUSY);
+ 
+   if (dcd_edpt_xfer(rhport, ep_addr, buffer, total_bytes, is_isr)) {
+     return true;
+@@ -1619,7 +1641,8 @@
+ 
+   // Set busy first since the actual transfer can be complete before dcd_edpt_xfer() could return
+   // and usbd task can preempt and clear the busy
+-  _usbd_dev.ep_status[epnum][dir] |= TU_EDPT_STATE_BUSY;
++  _usbd_dev.ep_status[epnum][dir] =
++    (uint8_t) ((_usbd_dev.ep_status[epnum][dir] & ~TU_EDPT_STATE_RX_PENDING) | TU_EDPT_STATE_BUSY);
+ 
+   if (dcd_edpt_xfer_fifo(rhport, ep_addr, ff, total_bytes, is_isr)) {
+     TU_LOG_USBD("OK\r\n");
+diff -ruN a/device/usbd_pvt.h b/device/usbd_pvt.h
+--- a/device/usbd_pvt.h	2026-11-01 10:47:34.663373500 +0700
++++ b/device/usbd_pvt.h	2026-11-01 10:47:34.809262400 +0700
+@@ -93,6 +93,8 @@
+ 
+ // Claim an endpoint before submitting a transfer.
+ // If caller does not make any transfer, it must release endpoint for others.
++// From an OUT xfer_cb, call usbd_edpt_rx_consume() (common/tusb_private.h) before claiming, or re-arm with
++// usbd_edpt_xfer() directly: the claim is refused until the buffer is consumed.
+ bool usbd_edpt_claim(uint8_t rhport, uint8_t ep_addr);
+ 
+ // Release claimed endpoint without submitting a transfer
+diff -ruN a/tusb.c b/tusb.c
+--- a/tusb.c	2026-11-01 10:47:34.718486500 +0700
++++ b/tusb.c	2026-11-01 10:47:34.869119800 +0700
+@@ -228,11 +228,11 @@
+   (void) mutex;
+ 
+   // pre-check to help reducing mutex lock
+-  TU_VERIFY((*ep_state & (TU_EDPT_STATE_BUSY | TU_EDPT_STATE_CLAIMED)) == 0);
++  TU_VERIFY((*ep_state & (TU_EDPT_STATE_BUSY | TU_EDPT_STATE_CLAIMED | TU_EDPT_STATE_RX_PENDING)) == 0);
+   (void) osal_mutex_lock(mutex, OSAL_TIMEOUT_WAIT_FOREVER);
+ 
+-  // can only claim the endpoint if it is not busy and not claimed yet.
+-  bool const available = (*ep_state & (TU_EDPT_STATE_BUSY | TU_EDPT_STATE_CLAIMED)) == 0;
++  // can only claim the endpoint if it is not busy, not claimed yet and its received data is consumed.
++  bool const available = (*ep_state & (TU_EDPT_STATE_BUSY | TU_EDPT_STATE_CLAIMED | TU_EDPT_STATE_RX_PENDING)) == 0;
+   if (available) {
+     *ep_state |= TU_EDPT_STATE_CLAIMED;
+   }

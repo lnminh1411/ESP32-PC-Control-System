@@ -256,8 +256,9 @@ static volatile int rssiCached;
 
 void netPoll() {
   netWatchdog();
-  // RSSI read here, on the main loop, every 5 s: asking the Wi-Fi driver from
-  // other tasks (the Discord panel) collides with it ("failed to get wifi thread sem")
+  // RSSI read here, on the main loop, every 5 s, and cached for the other
+  // tasks (the Discord panel). "failed to get wifi thread sem" from the driver
+  // means it could not allocate the per-thread semaphore: internal RAM ran out
   static uint32_t lastRssiMs;
   if (netUp() && nowMs() - lastRssiMs >= 5000) {
     lastRssiMs = nowMs();

@@ -1,0 +1,15 @@
+diff --git a/components/xtensa/xtensa_context.S b/components/xtensa/xtensa_context.S
+index cde52ea4..d4d4615f 100644
+--- a/components/xtensa/xtensa_context.S
++++ b/components/xtensa/xtensa_context.S
+@@ -135,7 +135,9 @@ _xt_context_save:
+     s32i    a3,  sp, XT_STK_LBEG
+     rsr     a3,  LEND
+     s32i    a3,  sp, XT_STK_LEND
+-    rsr     a3,  LCOUNT
++    /* Save and disable active zero-overhead loop state while ISR/exception code runs. */
++    movi    a3,  0
++    xsr     a3,  LCOUNT   /* a3 = LCOUNT, LCOUNT = 0 */
+     s32i    a3,  sp, XT_STK_LCOUNT
+     #endif
+ 

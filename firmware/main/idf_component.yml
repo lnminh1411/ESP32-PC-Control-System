@@ -1,5 +1,9 @@
 dependencies:
   idf: ">=5.5,<5.6"
-  espressif/esp_tinyusb: "*"
+  # local copy of esp_tinyusb 3.0.0 with TinyUSB PR 3937 (OUT endpoint
+  # RX_PENDING, issue 1292): firmware/idf_patches/tinyusb-rx-pending-3937.patch
+  espressif/esp_tinyusb:
+    version: "3.0.0"
+    override_path: "../vendor/esp_tinyusb"
   espressif/mdns: "*"
   espressif/esp_websocket_client: "*"
