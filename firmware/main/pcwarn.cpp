@@ -9,6 +9,7 @@
 
 #include "log.h"
 #include "pcstats.h"
+#include "screens.h"
 #include "sys.h"
 #include "settings_or_example.h"
 
@@ -53,6 +54,16 @@ static uint32_t lastSeq;
 static uint32_t demoUntilMs;   // `pcwarn demo`: fixed values instead of the PC's
 static bool demoOne;
 
+// The local model runs on the RTX 3050 (gpu2_*): its load and heat are expected
+// while the model loads or works, and for a minute after, while the card cools
+#define AI_HOLD_MS 60000
+static uint32_t aiSeenMs;
+static bool aiSeen;
+
+static bool aiMuted(const Metric &m, uint32_t now) {
+  return aiSeen && now - aiSeenMs < AI_HOLD_MS && !strncmp(m.key, "gpu2_", 5);
+}
+
 static void loadConfig() {
   configLoaded = true;
   for (Metric &m : metrics) { m.high = m.defHigh; m.crit = m.defCrit; }
@@ -92,6 +103,7 @@ void pcWarnPoll() {
   if (!samples) samples = (Samples *)heap_caps_calloc(N_METRICS, sizeof(Samples), MALLOC_CAP_SPIRAM);
   if (!samples) return;
   uint32_t now = nowMs();
+  if (localAiBusy()) { aiSeen = true; aiSeenMs = now; }
   for (int i = 0; i < N_METRICS; i++) {
     const Metric &m = metrics[i];
     float v = pcStat(m.key);
@@ -131,8 +143,11 @@ PcWarnLevel pcWarnLevel(const char *key) {
   bool demo = demoOn(now);
   if (!demo && !pcStatsFresh()) return PCWARN_NONE;
   float limit;
-  for (int i = 0; i < N_METRICS; i++)
-    if (!strcmp(metrics[i].key, key)) return levelOf(metrics[i], demo ? demoValue(i) : average(i, now), &limit);
+  for (int i = 0; i < N_METRICS; i++) {
+    if (strcmp(metrics[i].key, key)) continue;
+    if (!demo && aiMuted(metrics[i], now)) return PCWARN_NONE;
+    return levelOf(metrics[i], demo ? demoValue(i) : average(i, now), &limit);
+  }
   return PCWARN_NONE;
 }
 
@@ -144,6 +159,7 @@ int pcWarnList(PcWarn *out) {
   for (int pass = 0; pass < 2; pass++) {    // critical first, then high
     for (int i = 0; i < N_METRICS && n < PCWARN_MAX; i++) {
       const Metric &m = metrics[i];
+      if (!demo && aiMuted(m, now)) continue;
       float avg = demo ? demoValue(i) : average(i, now), limit = NAN;
       PcWarnLevel level = levelOf(m, avg, &limit);
       if (level == PCWARN_NONE || (pass == 0) != (level == PCWARN_CRITICAL)) continue;
@@ -160,7 +176,9 @@ static void fmtLimit(char *out, size_t cap, float v) {
 
 static void show() {
   uint32_t now = nowMs();
-  logMsg("pcwarn: %lu ms average%s", (unsigned long)avgMs, demoOn(now) ? ", demo on" : "");
+  bool muted = aiSeen && now - aiSeenMs < AI_HOLD_MS;
+  logMsg("pcwarn: %lu ms average%s%s", (unsigned long)avgMs, demoOn(now) ? ", demo on" : "",
+         muted ? ", gpu2 muted (local AI)" : "");
   for (int i = 0; i < N_METRICS; i++) {
     const Metric &m = metrics[i];
     char hi[24], cr[24];

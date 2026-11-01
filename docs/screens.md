@@ -39,5 +39,7 @@ Notes on what is shown:
   is on: RAM above 80% (yellow) or 90% (red), CPU, GPU load or RX 6600 VRAM
   above 90% (yellow), and CPU, GPU, RAM or VRM temperature too high (red),
   each a 2 s average. The matching PC-face cards turn yellow or red too.
+  While the local model loads or works, and for a minute after, the RTX 3050
+  (GPU2) load and temperature warnings stay off: that card runs the model.
   Limits and the window are set with the `pcwarn` console command and kept in
   NVS.
