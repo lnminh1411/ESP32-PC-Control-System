@@ -109,9 +109,6 @@ static class Http {
     return Send(HttpMethod.Get, url, null, headers, timeoutMs, cancel);
   }
 
-  public static string Delete(string url, IDictionary<string, string> headers, int timeoutMs) {
-    return Send(HttpMethod.Delete, url, null, headers, timeoutMs, default(CancellationToken));
-  }
 
   // contentType goes out exactly as given (no "; charset=" added)
   public static string Post(string url, byte[] body, string contentType, IDictionary<string, string> headers, int timeoutMs) {

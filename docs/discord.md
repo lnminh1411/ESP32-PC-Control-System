@@ -64,15 +64,16 @@ without use.
 ## Screenshot
 
 **Screenshot** (PC Control) captures the whole desktop (every monitor in one
-image) and posts it to a Discord webhook for 5 minutes, then deletes the post;
-the local file in `%temp%` is removed as soon as it is uploaded. The board only
-asks (`!shot` over the USB link, with the webhook from settings.h); the capture, overlay
-and upload run in the signed-in session, because the SYSTEM service cannot see
-the desktop. Right after the capture, a red border and "Screenshot Captured" in
-red show on every monitor for 5 s - these are drawn *after* the capture, so they
-are never in the image. If nobody is logged in (locked / login screen) it just
-logs and does nothing; two presses close together are coalesced (the second is
-dropped while the first is in flight).
+image) and posts it to a Discord webhook for 5 minutes, then deletes the post.
+The image stays in memory only. The board only asks (`!shot` over the USB link,
+with the webhook from settings.h), the helper passes that to PcHwCtl
+(`screenshot <nonce> <webhook>`, its `docs/ipc.md`), and PcHwCtl's agent in the
+signed-in session does the capture, overlay, upload and delete. Right after the
+capture, a red border and "Screenshot Captured" in red show on every monitor for
+5 s - these are drawn *after* the capture, so they are never in the image. If
+the desktop is locked or nobody is signed in it logs the reason in the helper
+log and does nothing; a press while the last upload runs is declined as `busy`.
+PcHwCtl's config sets the times (`screenshot.deleteMin`, `borderS`).
 
 Set it up with one line in settings.h (keeps the config in one place):
 

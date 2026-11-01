@@ -640,13 +640,13 @@ partial class PcStats : ServiceBase {
   }
 
   static readonly Regex ShotCmdRegex = new Regex(@"^!shot\s+([0-9a-fA-F]{1,16})\s+(\S+)$");
+  const int ShotTimeoutMs = 15000;
 
   // The board asked for a screenshot and handed us the webhook from its
-  // settings.h. The service runs as SYSTEM in session 0 and cannot see the
-  // user's desktop, so we pass the request (nonce + webhook) to the user half
-  // over its pipe; it captures, posts to the webhook, and auto-deletes after
-  // 5 min. If nobody is signed in there is nothing to capture, so just log and
-  // move on (never throw).
+  // settings.h. PcHwCtl does the rest (docs/ipc.md#screenshot there): its
+  // user-session agent captures, shows the red border, posts to the webhook
+  // and deletes the post later. Its answer comes after the capture. The
+  // webhook stays out of the log.
   static void HandleShotLine(string line) {
     if (line == null) return;
     Match m = ShotCmdRegex.Match(line.Trim());
@@ -654,11 +654,14 @@ partial class PcStats : ServiceBase {
     string nonce = m.Groups[1].Value.ToLowerInvariant();
     string webhook = m.Groups[2].Value;
 
-    if (SendToUserHalf("S " + nonce + " " + webhook)) {
-      Log("shot: request from board handed to the user half, nonce " + nonce);
-    } else {
-      Log("shot: user half not running (nobody signed in?), screenshot skipped");
-    }
+    ThreadPool.QueueUserWorkItem(delegate(object o) {
+      Dictionary<string, object> data;
+      string r = PipeRequest(HostSettings.HWCTL_PIPE, "screenshot " + nonce + " " + webhook, ShotTimeoutMs, out data);
+      object accepted, why;
+      if (r != "ok") Log("shot: " + nonce + " " + r);
+      else if (data != null && data.TryGetValue("accepted", out accepted) && accepted is bool && (bool)accepted) Log("shot: " + nonce + " captured");
+      else Log("shot: " + nonce + " declined: " + (data != null && data.TryGetValue("why", out why) ? why : "?"));
+    });
   }
 
   // ---- PC hardware control (PcHwCtl) ----
@@ -992,9 +995,8 @@ partial class PcStats : ServiceBase {
   //   F <feed> <n>   then n key=value lines (feeds: agy, media, idle; @source helper:<feed>)
   //   A <base64>     cover art, 144x144 RGB565 big-endian (41,472 bytes)
   //   L <text>       log line, written to this log as "user: <text>"
-  // Service to user half:
-  //   S <nonce> <webhook>   take a screenshot
-  // The user half exits as soon as its pipes break, so it never outlives us.
+  // Nothing goes the other way: the user half exits as soon as its pipes
+  // break, so it never outlives us.
   class HelperFeed {
     public string[] Lines;
     public DateTime ReceivedUtc;
@@ -1007,14 +1009,6 @@ partial class PcStats : ServiceBase {
   static Thread helperThread;
   static volatile bool helperStop;
   static bool noUserHalf;            // --no-user
-
-  static bool SendToUserHalf(string line) {
-    lock (helperLock) {
-      if (helperOut == null) return false;
-      try { helperOut.Write(line + "\n"); return true; }
-      catch (Exception) { helperOut = null; return false; }
-    }
-  }
 
   // Feed lines for HttpSource ("helper:<feed>"); null while no user half is connected
   static string[] GetHelperFeed(string feed) {

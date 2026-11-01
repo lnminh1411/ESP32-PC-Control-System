@@ -309,8 +309,6 @@ The secrets are described in [settings.md](settings.md).
 | `HOST_FONT_REGULAR` | `"ComicShannsMonoNerdFontPropo-Regular.otf"` | font file for text the board can't draw (Windows or per-user Fonts folder) |
 | `HOST_FONT_BOLD` | `"ComicShannsMonoNerdFontPropo-Bold.otf"` | (as above) |
 | `HOST_FONT_FALLBACK` | `"Segoe UI"` | family when those files are missing |
-| `HOST_SHOT_DELETE_MIN` | `5.0` | screenshot posts are deleted after this |
-| `HOST_SHOT_BORDER_S` | `5` | red "Screenshot Captured" border shows this long |
 | `HOST_MON_POLL_MS` | `5000` | monitor DDC/CI state feed (mon.*) period |
 | `HOST_MON_DDC_POWER_MODELS` | `"DELL E1715S"` | monitor models (DDC name, comma list) that also get DDC/CI power on/off; the rest only get Windows' display off |
 | `HOST_MON_DDC_POWER_OFF` | `4` | VCP 0xD6 value for off on those (4 = DPM off: still answers DDC, wakes on input) |

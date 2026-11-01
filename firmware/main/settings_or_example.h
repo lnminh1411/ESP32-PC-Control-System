@@ -652,12 +652,6 @@
 #ifndef HOST_FONT_FALLBACK
 #define HOST_FONT_FALLBACK "Segoe UI"             // family when those files are missing
 #endif
-#ifndef HOST_SHOT_DELETE_MIN
-#define HOST_SHOT_DELETE_MIN 5.0                  // screenshot posts are deleted after this
-#endif
-#ifndef HOST_SHOT_BORDER_S
-#define HOST_SHOT_BORDER_S 5                      // red "Screenshot Captured" border shows this long
-#endif
 #ifndef HOST_MON_POLL_MS
 #define HOST_MON_POLL_MS 5000                     // monitor DDC/CI state feed (mon.*) period
 #endif

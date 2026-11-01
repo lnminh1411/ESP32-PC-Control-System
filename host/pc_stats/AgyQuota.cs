@@ -1,8 +1,8 @@
 // ESP32-Helper user-session half (ESP32-Helper.exe --user, started by the
 // service in the signed-in user's session; see PcStats.cs). Queries Google
 // Antigravity local language servers for model quota, reads the media session
-// and cover art, and takes board-requested screenshots. Results go to the
-// service over its pipe as the "agy" and "media" feeds (@source helper:<feed>).
+// and cover art. Results go to the service over its pipe as the "agy" and
+// "media" feeds (@source helper:<feed>).
 //
 // Also keeps the Claude Code OAuth token fresh: shortly before it expires it
 // does the same refresh Claude Code does and writes the new token back to
@@ -1550,199 +1550,6 @@ static partial class AgyQuota {
     }
   }
 
-  // ---- Secret screenshot: the SYSTEM service drops a trigger file here (it
-  // cannot reach the user's desktop); this user-session helper captures the
-  // screen, posts it to the #logging Discord webhook, and deletes the post
-  // after 5 minutes. Every step is caught so the media loop never dies. ----
-  static readonly string ShotPendingPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), @"ESP32PcStats\shot_pending.txt");
-  const double ShotDeleteMinutes = HostSettings.SHOT_DELETE_MIN;
-  const int ShotBorderSeconds = HostSettings.SHOT_BORDER_S;
-  static int shotBusy = 0;              // 0/1 guard so overlapping requests are coalesced (Interlocked)
-
-  // Called from the media loop; cheap when idle. Claims the request the
-  // service sent over the pipe and runs the slow work (capture, upload) on its
-  // own thread so the media loop never stalls, and so a second request that
-  // lands mid-capture is simply dropped.
-  static void CheckScreenshotRequest() {
-    string req;
-    lock (serviceLock) { req = pendingShot; pendingShot = null; }
-    if (req == null) return;
-    int sp = req.IndexOf(' ');
-    string nonce = sp > 0 ? req.Substring(0, sp) : req;
-    string webhook = sp > 0 ? req.Substring(sp + 1).Trim() : "";
-
-    if (webhook.Length == 0) { Log("shot: request carried no webhook, skipped"); return; }
-    if (Interlocked.CompareExchange(ref shotBusy, 1, 0) != 0) {
-      Log("shot: a capture is already in progress, dropping nonce " + nonce);
-      return;
-    }
-    string n = nonce, w = webhook;
-    Thread t = new Thread(delegate() { try { DoShot(n, w); } finally { Interlocked.Exchange(ref shotBusy, 0); } });
-    t.IsBackground = true;
-    t.Name = "esp32_shot";
-    t.Start();
-  }
-
-  static void DoShot(string nonce, string webhook) {
-    string tempPng = Path.Combine(Path.GetTempPath(), "esp32shot_" + nonce + ".png");
-    try { CaptureScreen(tempPng); }        // capture first, so the border is never in the image
-    catch (Exception ex) { Log("shot: capture failed: " + ex.Message); return; }
-
-    try { ShowCaptureBorder(); }           // red frame + "Screenshot Captured" on every monitor, 5 s
-    catch (Exception ex) { Log("shot: border overlay failed: " + ex.Message); }
-
-    string msgId = null;
-    try { msgId = UploadToWebhook(webhook, tempPng); }
-    catch (Exception ex) { Log("shot: upload failed: " + ex.Message); }
-
-    try { if (File.Exists(tempPng)) File.Delete(tempPng); } catch { }   // out of %temp% immediately
-
-    if (msgId != null) {
-      try { File.AppendAllText(ShotPendingPath, DateTime.UtcNow.AddMinutes(ShotDeleteMinutes).Ticks + "\t" + webhook + "\t" + msgId + "\n"); } catch { }
-      Log("shot: posted (msg " + msgId + "), will delete in " + ShotDeleteMinutes + " min");
-    }
-  }
-
-  // One combined image of the whole virtual desktop (every monitor).
-  static void CaptureScreen(string outPath) {
-    int x = GetSystemMetrics(SM_XVIRTUALSCREEN), y = GetSystemMetrics(SM_YVIRTUALSCREEN);
-    int w = GetSystemMetrics(SM_CXVIRTUALSCREEN), h = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-    if (w <= 0 || h <= 0) { x = 0; y = 0; w = GetSystemMetrics(SM_CXSCREEN); h = GetSystemMetrics(SM_CYSCREEN); }
-    if (w <= 0 || h <= 0) throw new Exception("no screen metrics");
-    using (var bmp = new Bitmap(w, h, PixelFormat.Format24bppRgb))
-    using (var g = Graphics.FromImage(bmp)) {
-      g.CopyFromScreen(x, y, 0, 0, new Size(w, h), CopyPixelOperation.SourceCopy);
-      bmp.Save(outPath, ImageFormat.Png);
-    }
-  }
-
-  // A click-through, topmost, borderless window per monitor: a thick red frame
-  // and centred red "Screenshot Captured", held for ShotBorderSeconds. Runs on
-  // its own dedicated STA thread with a short message loop (so it never blocks
-  // the upload) and returns at once. Never in the screenshot: it is only shown
-  // after CaptureScreen returns.
-  static void ShowCaptureBorder() {
-    Thread ui = new Thread(BorderThread);
-    ui.IsBackground = true;
-    ui.Name = "esp32_shot_border";
-    ui.SetApartmentState(ApartmentState.STA);
-    ui.Start();
-  }
-
-  static void BorderThread() {
-    try { BorderThreadCore(); }
-    catch (Exception ex) { Log("shot: border overlay error: " + ex.Message); }
-  }
-
-  static void BorderThreadCore() {
-    var forms = new List<System.Windows.Forms.Form>();
-    foreach (System.Windows.Forms.Screen sc in System.Windows.Forms.Screen.AllScreens) {
-      System.Drawing.Rectangle b = sc.Bounds;
-      var f = new System.Windows.Forms.Form();
-      f.FormBorderStyle = System.Windows.Forms.FormBorderStyle.None;
-      f.StartPosition = System.Windows.Forms.FormStartPosition.Manual;
-      f.Bounds = b;
-      f.ShowInTaskbar = false;
-      f.TopMost = true;
-      f.BackColor = Color.Black;
-      f.TransparencyKey = Color.Black;   // interior fully see-through; only painted pixels show
-      f.Paint += delegate(object s, System.Windows.Forms.PaintEventArgs e) {
-        var fm = (System.Windows.Forms.Form)s;
-        int t = Math.Max(8, fm.Width / 180);   // border thickness scales a little with width
-        using (var pen = new Pen(Color.Red, t)) {
-          pen.Alignment = PenAlignment.Inset;
-          e.Graphics.DrawRectangle(pen, t / 2, t / 2, fm.Width - t, fm.Height - t);
-        }
-        e.Graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
-        using (var font = new Font("Segoe UI", Math.Max(24, fm.Height / 16), FontStyle.Bold))
-        using (var br = new SolidBrush(Color.Red)) {
-          string msg = "Screenshot Captured";
-          SizeF sz = e.Graphics.MeasureString(msg, font);
-          e.Graphics.DrawString(msg, font, br, (fm.Width - sz.Width) / 2, (fm.Height - sz.Height) / 2);
-        }
-      };
-      forms.Add(f);
-    }
-    if (forms.Count == 0) return;
-
-    foreach (var f in forms) {
-      f.Load += delegate(object s, EventArgs e) {
-        IntPtr h = ((System.Windows.Forms.Form)s).Handle;
-        int ex = GetWindowLong(h, GWL_EXSTYLE);
-        SetWindowLong(h, GWL_EXSTYLE, ex | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE);
-      };
-      f.Show();
-    }
-    var timer = new System.Windows.Forms.Timer();
-    timer.Interval = ShotBorderSeconds * 1000;
-    timer.Tick += delegate(object s, EventArgs e) {
-      timer.Stop();
-      foreach (var f in forms) { try { f.Close(); } catch { } }
-      System.Windows.Forms.Application.ExitThread();
-    };
-    timer.Start();
-    System.Windows.Forms.Application.Run();   // short-lived message loop, ends on ExitThread
-    timer.Dispose();
-    foreach (var f in forms) { try { f.Dispose(); } catch { } }
-  }
-
-  // multipart POST to the webhook with ?wait=true so Discord returns the
-  // created message, whose id we need to delete it later
-  static string UploadToWebhook(string webhook, string pngPath) {
-    string url = webhook + (webhook.Contains("?") ? "&" : "?") + "wait=true";
-    byte[] png = File.ReadAllBytes(pngPath);
-    string boundary = "----esp32shot" + Guid.NewGuid().ToString("N");
-    var head = new StringBuilder();
-    head.Append("--").Append(boundary).Append("\r\n");
-    head.Append("Content-Disposition: form-data; name=\"payload_json\"\r\n\r\n");
-    head.Append("{\"content\":\"Screenshot (auto-deletes in " + ShotDeleteMinutes + " min)\"}\r\n");
-    head.Append("--").Append(boundary).Append("\r\n");
-    head.Append("Content-Disposition: form-data; name=\"files[0]\"; filename=\"screenshot.png\"\r\n");
-    head.Append("Content-Type: image/png\r\n\r\n");
-    byte[] headBytes = Encoding.UTF8.GetBytes(head.ToString());
-    byte[] tailBytes = Encoding.UTF8.GetBytes("\r\n--" + boundary + "--\r\n");
-
-    byte[] all = new byte[headBytes.Length + png.Length + tailBytes.Length];
-    System.Buffer.BlockCopy(headBytes, 0, all, 0, headBytes.Length);
-    System.Buffer.BlockCopy(png, 0, all, headBytes.Length, png.Length);
-    System.Buffer.BlockCopy(tailBytes, 0, all, headBytes.Length + png.Length, tailBytes.Length);
-
-    string resp = Http.Post(url, all, "multipart/form-data; boundary=" + boundary, null, 30000);
-    var o = Json.ParseObject(resp);
-    object id;
-    if (o != null && o.TryGetValue("id", out id) && id != null) return id.ToString();
-    return null;
-  }
-
-  static void ProcessPendingDeletes() {
-    string[] lines;
-    try {
-      if (!File.Exists(ShotPendingPath)) return;
-      lines = File.ReadAllLines(ShotPendingPath);
-    } catch { return; }
-    var keep = new List<string>();
-    bool changed = false;
-    foreach (string ln in lines) {
-      if (ln.Trim().Length == 0) continue;
-      string[] p = ln.Split('\t');
-      long t;
-      if (p.Length < 3 || !long.TryParse(p[0], out t)) { changed = true; continue; }   // malformed: drop
-      if (DateTime.UtcNow.Ticks < t) { keep.Add(ln); continue; }   // not due yet
-      changed = true;
-      try {
-        Http.Delete(p[1] + "/messages/" + p[2], null, 15000);
-        Log("shot: deleted #logging message " + p[2]);
-      } catch (Exception ex) {
-        Log("shot: delete failed for " + p[2] + ": " + ex.Message);   // drop anyway, don't retry forever
-      }
-    }
-    if (!changed) return;
-    try {
-      if (keep.Count > 0) File.WriteAllLines(ShotPendingPath, keep.ToArray());
-      else File.Delete(ShotPendingPath);
-    } catch { }
-  }
-
   static void MediaLoop() {
     GlobalSystemMediaTransportControlsSessionManager mgr = null;
     while (true) {
@@ -1756,8 +1563,6 @@ static partial class AgyQuota {
         Log("media error: " + ex.Message);
         mgr = null;
       }
-      try { CheckScreenshotRequest(); } catch (Exception ex) { Log("shot: " + ex.Message); }
-      try { ProcessPendingDeletes(); } catch (Exception ex) { Log("shot: pending: " + ex.Message); }
       int elapsed = (int)(DateTime.UtcNow - t0).TotalMilliseconds;
       int wait = 250 - elapsed;   // track changes show up within a quarter second
       if (wait < 50) wait = 50;
@@ -1768,7 +1573,6 @@ static partial class AgyQuota {
   // ---- Pipe to the service (protocol: "User-session half" in PcStats.cs) ----
   static StreamWriter serviceOut;      // null in the standalone test modes
   static readonly object serviceLock = new object();
-  static string pendingShot;           // "<nonce> <webhook>", claimed by CheckScreenshotRequest
 
   static void ConnectService(string inHandle, string outHandle) {
     var fromService = new AnonymousPipeClientStream(PipeDirection.In, inHandle);
@@ -1778,9 +1582,7 @@ static partial class AgyQuota {
       try {
         using (var r = new StreamReader(fromService, new UTF8Encoding(false))) {
           string line;
-          while ((line = r.ReadLine()) != null) {
-            if (line.StartsWith("S ")) lock (serviceLock) { pendingShot = line.Substring(2); }
-          }
+          while ((line = r.ReadLine()) != null) { }   // nothing comes this way: it only tells the service is there
         }
       } catch { }
       Environment.Exit(0);   // the service is gone: never outlive it
