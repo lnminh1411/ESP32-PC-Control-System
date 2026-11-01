@@ -46,7 +46,7 @@ category dropdown; picking one swaps the controls below it:
 | PC Monitor Control | Each monitor's power and brightness, numbered from the left | Target (one monitor or all), brightness in 10 % steps (DDC/CI); All screens on / off (each monitor's power method in PcHwCtl, plus Windows' display off) |
 | Local Agent Control | Local model, phase, context, auto-unload, keep awake, services, VRAM | Load, unload, force unload and reload (both ask first), warm cache; context 128K / 256K, auto-unload, keep awake; restart the gateway (asks first), Web UI or proxy; guard check |
 | ESP32 Board Control | Uptime, Wi-Fi, internal RAM, PSRAM, last restart reason, status LED | Status LED max brightness (10 % steps) and on/off (both saved); Restart board (asks first), Refresh weather, Reconnect Discord |
-| ESP32 Display Control | Each panel's screen and backlight | A screen dropdown per panel (each with an Auto option; not saved, like `face`); a brightness dropdown for all panels (5 % steps + Off, saved) |
+| ESP32 Display Control | Each panel's screen and backlight | A screen dropdown per panel (each with an Auto option; saved like `face`, so a pinned screen stays across restarts); a brightness dropdown for all panels (5 % steps + Off, saved) |
 
 Every tab has a Refresh and, on an `/actions` panel, a Close. The Display tab
 fills all five of Discord's action rows with dropdowns, so Refresh there is an

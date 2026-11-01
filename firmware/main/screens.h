@@ -32,7 +32,9 @@ constexpr int OVERLAY_Y1 = 304;
 constexpr uint16_t C_GIF_KEY = 0xF81F;
 
 Face screensFace(View v);                       // face to show now for an auto view
-extern Face screensForce[N_PANELS];             // `face` command: pin a face (docs, screenshots)
+extern Face screensForce[N_PANELS];             // `face` command / Discord Display tab: pin a face
+void screensForceLoad();                        // boot: the pins saved before the restart
+void screensForceSave();                        // after a change: kept in NVS
 extern bool screensNight;                       // night mode: the PC-off faces everywhere, pins ignored
 bool screensIsGif(Face f);                      // FACE_GIF*
 void screensDraw(Face f, LGFX_Sprite &c);       // full canvas redraw (GIF faces: the band only)

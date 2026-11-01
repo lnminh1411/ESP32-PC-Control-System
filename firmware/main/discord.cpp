@@ -1607,7 +1607,7 @@ static void onInteraction(cJSON *d) {
       return;
     }
     if (jVal && cJSON_IsString(jVal) && !strncmp(cid, "face_", 5)) {
-      // Display tab: a screen picked for one panel (not saved, `face` command)
+      // Display tab: a screen picked for one panel (`face` command, kept across restarts)
       char cmd[32];
       snprintf(cmd, sizeof cmd, "face %s %s", cid + 5, jVal->valuestring);
       runAndGetFirstLine(cmd, lastPanelResult, sizeof lastPanelResult);

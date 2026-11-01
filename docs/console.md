@@ -7,7 +7,7 @@ One per line on the USB CDC console or the CH343 UART (`help` lists them):
 | `status`, `perf`, `pcstats [text]` | Board state; per-core CPU and bus load (run twice); stats received from the PC |
 | `wifi scan` | The networks the board hears (channel, signal, security) and its allowed channels, then rejoins. A failed join logs its reason |
 | `view <1\|2\|3> <pc\|media\|ai\|gif\|dash\|status\|stats\|metrics>` | What a panel shows (saved) |
-| `face <1\|2\|3> <auto\|pc\|gif\|restart\|update\|media\|weather\|ai\|localai\|clock>` | Force one face, for testing and screenshots (not saved) |
+| `face <1\|2\|3> <auto\|pc\|gif\|restart\|update\|media\|weather\|ai\|localai\|clock>` | Pin one face on a panel (saved: it stays across restarts until `auto`) |
 | `shot <1\|2\|3>` | Screenshot of a panel, streamed as base64 on the CDC port |
 | `pcsim <on\|off\|auto>` | Pretend the PC is on or off (LED, faces, backlights), for testing |
 | `door <1-4> [ms]`, `reset`, `reboot` | Press a door button; pulse the motherboard reset (**resets the PC**); restart the board itself (the PC is not touched) |

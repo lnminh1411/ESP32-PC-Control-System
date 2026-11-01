@@ -1534,6 +1534,27 @@ static void drawClock(LGFX_Sprite &c) {
 Face screensForce[N_PANELS];
 bool screensNight;
 
+// Pinned faces survive a restart: NVS "screens"/"force", one byte per panel
+void screensForceLoad() {
+  nvs_handle_t h;
+  if (nvs_open("screens", NVS_READONLY, &h) != ESP_OK) return;
+  uint8_t f[N_PANELS];
+  size_t len = sizeof f;
+  if (nvs_get_blob(h, "force", f, &len) == ESP_OK && len == sizeof f)
+    for (int i = 0; i < N_PANELS; i++) screensForce[i] = f[i] <= FACE_CLOCK ? (Face)f[i] : FACE_NONE;
+  nvs_close(h);
+}
+
+void screensForceSave() {
+  nvs_handle_t h;
+  if (nvs_open("screens", NVS_READWRITE, &h) != ESP_OK) return;
+  uint8_t f[N_PANELS];
+  for (int i = 0; i < N_PANELS; i++) f[i] = screensForce[i];
+  nvs_set_blob(h, "force", f, sizeof f);
+  nvs_commit(h);
+  nvs_close(h);
+}
+
 Face screensFace(View v) {
   GoingKind going = pcGoing();
   bool restartish = (going == GO_RESTART || going == GO_UPDATE_RESTART || going == GO_UPDATE_SHUTDOWN);

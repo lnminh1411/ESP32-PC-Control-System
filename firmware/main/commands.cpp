@@ -393,7 +393,7 @@ static void cmdShot(const char *a1, const char *) {
   free(copy);
 }
 
-// Pin a face on a panel for screenshots; `face <n> auto` returns to the PC state
+// Pin a face on a panel (kept across restarts); `face <n> auto` returns to the PC state
 static void cmdFace(const char *a1, const char *a2) {
   static const struct { const char *name; Face f; } names[] = {
     {"auto", FACE_NONE}, {"pc", FACE_PC_STATS}, {"gif", FACE_GIF}, {"restart", FACE_GIF_RESTART},
@@ -403,6 +403,7 @@ static void cmdFace(const char *a1, const char *a2) {
   for (auto &e : names) {
     if (n >= 1 && n <= N_PANELS && a2 && !strcmp(a2, e.name)) {
       screensForce[n - 1] = e.f;
+      screensForceSave();
       viewsMarkDirty(n - 1);
       logMsg("face: panel %d -> %s", n, e.name);
       return;
