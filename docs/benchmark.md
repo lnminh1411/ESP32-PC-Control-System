@@ -192,36 +192,44 @@ end. `CONFIG_MBEDTLS_DYNAMIC_BUFFER` is now off.
 The GIFs moved from an upload in FAT, decoded at boot into whole RGB444 frames,
 to `gifs.bin` in the app image: per-GIF palettes, frame 0 whole and the other
 frames as their dirty rects, zlib-compressed in flash and inflated into PSRAM
-at boot. Both GIFs now play at 20 fps (Neuro 22 frames, Evil Neuro 20, 50 ms
+at boot. Both GIFs then played at 20 fps (Neuro 22 frames, Evil Neuro 20, 50 ms
 each); the first pack had 27 frames at 15 and 10 fps. "Before" is the previous
-firmware with its single test GIF, and its ~3.8 MB is an estimate.
+firmware with its single test GIF, and its ~3.8 MB is an estimate. "Now" is
+today's nine GIFs: LZ4 in their own `gifs` partition, decoded as they play (the
+later sections cover each step).
 
-| | Before | First pack, 27 frames | Now, 42 frames |
-|---|---|---|---|
-| GIF pack | none | 532 KB | 793 KB |
-| Frames in PSRAM | ~3.8 MB with tables and buffers | 1780 KB | 2722 KB |
-| PSRAM used, `bench usage`, three panel buffers (75 KB each) | 5179 KB | 3428 KB | 4374 KB |
-| PSRAM free, lowest ever without bench buffers | 1438 KB | 3426 KB | 2456 KB |
-| App image | 1650 KB | 2178 KB | 2439 KB |
-| FAT /ffat | 4508 KB | 4 KB | 4 KB |
-| Decoding at boot | 4.5 MB read from FAT | 329 ms to inflate | 498 ms to inflate |
+| | Before | First pack, 27 frames | 42 frames | Now, 220 frames |
+|---|---|---|---|---|
+| GIF pack | none | 532 KB | 793 KB | 5645 KB |
+| Frames in PSRAM | ~3.8 MB with tables and buffers | 1780 KB | 2722 KB | none: 38 KB of tables, 150 KB a panel showing a GIF |
+| PSRAM used, `bench usage`, three 75 KB panel buffers in the older columns | 5179 KB | 3428 KB | 4374 KB | 1880 KB |
+| PSRAM free, lowest ever without bench buffers | 1438 KB | 3426 KB | 2456 KB | 4722 KB |
+| App image | 1650 KB | 2178 KB | 2439 KB | 1638 KB |
+| FAT /ffat | 4508 KB | 4 KB | 4 KB | 4 KB |
+| Decoding at boot | 4.5 MB read from FAT | 329 ms to inflate | 498 ms to inflate | none, about 6 ms a frame as it plays |
 
-Dirty rects cover most of the screen on most frames (86-95%), since most of
-each picture moves, which is why the frames take this much PSRAM.
+Dirty rects covered most of the screen on most frames (86-95%), since most of
+each picture moves, which is why the frames took this much PSRAM. Today's
+optimal rects cover 44-99% depending on the GIF, and only the frame on screen
+is decoded.
 
 | GIF playback at 20 fps | Frame rate | Frame times | Bus |
 |---|---|---|---|
 | One panel | 19.5 fps (17.7-20.5) | 1.04x nominal | 1.9 MB/s, 41% |
 | Two panels | 17.8 fps | 1.12x nominal | 70% |
 | Three panels | 12.7 fps | 1.67x nominal | 73% |
+| Now, one panel | 20.0 fps | 1.0x nominal | 1.5-2.1 MB/s, 39% |
+| Now, two panels | 19.1 fps, 17-18 on Kita, Miku and Teto | 1.01x nominal | 65% |
+| Now, three panels | 15.75 fps, 12-13 on Kita, Miku and Teto | 1.25x nominal | 77% |
 
-A frame takes 26-28 ms to push. The GIF slows down rather than drop frames, so
-on three panels it plays at about 60% speed; three panels at 20 fps need about
-5.7 MB/s, more than the 40 MHz wire carries.
+A frame took 26-28 ms to push, now 21-25 ms. The GIF slows down rather than drop
+frames, so on three panels it played at about 60% speed, now about 80%; three
+panels at 20 fps need about 5.7 MB/s, more than the 40 MHz wire carries.
 
 The app slots then grew from 3 MB to 5 MB each and FAT shrank from 9.9 MB
-to 5.9 MB (`partitions.csv`, flashed over USB). The same image now fills 48%
-of its slot instead of 79%, leaving about 2.6 MB for more GIFs.
+to 5.9 MB (`partitions.csv`, flashed over USB). The same image filled 48%
+of its slot instead of 79%, leaving about 2.6 MB for more GIFs. The table is
+now one 8.9 MB app slot, FAT 1 MB and a 6 MB `gifs` partition with 499 KB free.
 
 ### Frames inflated as they play
 
@@ -237,7 +245,7 @@ on panel 1:
 | Frames in PSRAM | 2722 KB | none: 113 KB of tables and one 75 KB inflate buffer |
 | SRAM lowest free | 29 KB | 25 KB |
 | Boot | 498 ms to inflate | none |
-| Frame cap | 64 | 512, and 8 GIFs |
+| Frame cap | 64 | 512, and 8 GIFs (12 now) |
 
 | Inflating | Core 1 | Panel 1 fps |
 |---|---|---|
