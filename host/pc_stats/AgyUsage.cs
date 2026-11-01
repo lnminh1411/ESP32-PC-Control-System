@@ -153,6 +153,9 @@ static class AgyUsage {
     try {
       if (!InitializeProcThreadAttributeList(attrs, 1, 0, ref attrSize)) return null;
       if (!UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, hpc, (IntPtr)IntPtr.Size, IntPtr.Zero, IntPtr.Zero)) return null;
+      // agy's background updater runs `agy --version` with no console, and Windows gives it
+      // a Terminal window that steals focus for half a second; the helper's runs skip it.
+      Environment.SetEnvironmentVariable("AGY_CLI_DISABLE_AUTO_UPDATE", "1");
       STARTUPINFOEX si = new STARTUPINFOEX();
       si.StartupInfo.cb = Marshal.SizeOf(typeof(STARTUPINFOEX));
       si.lpAttributeList = attrs;
