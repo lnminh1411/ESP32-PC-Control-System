@@ -108,7 +108,7 @@ static bool readGifs(const uint8_t *&p, uint8_t nGif, uint16_t total) {
   for (uint8_t s = 0; s < nGif; s++) {
     if (!have(p, 4)) return false;
     uint16_t nColors = rd16(p), nFrames = rd16(p);
-    if (nColors == 0 || nColors > 256 || nFrames == 0 || f + nFrames > total || !have(p, nColors * 2u)) return false;
+    if (nColors == 0 || nColors > GIF_SKIP || nFrames == 0 || f + nFrames > total || !have(p, nColors * 2u)) return false;
     gif.pal[s] = (uint16_t *)heap_caps_calloc(256, 2, MALLOC_CAP_INTERNAL);
     if (!gif.pal[s]) return false;
     memcpy(gif.pal[s], p, nColors * 2u);
@@ -148,15 +148,15 @@ bool gifLoad() {
   if (!part || esp_partition_mmap(part, 0, part->size, ESP_PARTITION_MMAP_DATA, &map, &mapH) != ESP_OK) return false;
   const uint8_t *start = (const uint8_t *)map, *p = start;
   s_packEnd = start + part->size;
-  if (!have(p, 16) || memcmp(p, "GIFP", 4) || p[4] != 2) { esp_partition_munmap(mapH); return false; }
+  if (!have(p, 16) || memcmp(p, "GIFP", 4) || p[4] != 3) { esp_partition_munmap(mapH); return false; }
   uint8_t nGif = p[5];
   p += 6;
   gif.w = rd16(p);
   gif.h = rd16(p);
   uint16_t total = rd16(p);
   p += 4;   // decoded size: unused, frames decode as they play
-  if (nGif == 0 || nGif > MAX_GIF_SEGS || gif.w == 0 || gif.w > TFT_W || (gif.w & 1) || gif.h == 0 || gif.h > TFT_H ||
-      ((gif.w * gif.h) & 7) || total == 0 || total > MAX_FRAMES) { esp_partition_munmap(mapH); return false; }
+  if (nGif == 0 || nGif > MAX_GIF_SEGS || gif.w == 0 || gif.w > TFT_W || gif.h == 0 || gif.h > TFT_H ||
+      ((gif.w | gif.h) & (GIF_BLOCK - 1)) || total == 0 || total > MAX_FRAMES) { esp_partition_munmap(mapH); return false; }
   GifTables *t = (GifTables *)heap_caps_calloc(1, sizeof(GifTables), MALLOC_CAP_SPIRAM);
   bool ok = t;
   if (ok) {
@@ -182,17 +182,66 @@ bool gifLoad() {
   return true;
 }
 
-bool gifApplyFrame(uint8_t *cur, uint8_t *raw, uint16_t f, int keep0, int keep1) {
+size_t gifRawBytes() {
+  return (size_t)gif.w * gif.h + (size_t)(gif.w / GIF_BLOCK) * (gif.h / GIF_BLOCK) * 2;
+}
+
+// Every block's shift stays on the frame: false = corrupt
+static bool shiftsFit(const int8_t *mv) {
+  for (int y = 0; y < gif.h; y += GIF_BLOCK) {
+    for (int x = 0; x < gif.w; x += GIF_BLOCK, mv += 2) {
+      int sy = y + mv[0], sx = x + mv[1];
+      if (sy < 0 || sy + GIF_BLOCK > gif.h || sx < 0 || sx + GIF_BLOCK > gif.w) return false;
+    }
+  }
+  return true;
+}
+
+// raw's GIF_SKIP pixels in shifted blocks from cur, the frame before, rect by
+// rect, a block's run of a row at a time. They read pixels the next step
+// overwrites, and most blocks have no shift: done first, and only those.
+static void fillShifted(const uint8_t *cur, uint8_t *s, const int8_t *mv, uint16_t f) {
+  int cols = gif.w / GIF_BLOCK;
+  for (uint8_t i = 0; i < gif.nRects[f]; i++) {
+    const GifRect &r = gif.rects[f][i];
+    for (int y = r.y; y < r.y + r.h; y++) {
+      const int8_t *row = mv + (size_t)(y / GIF_BLOCK) * cols * 2;
+      for (int x = r.x, end = r.x + r.w; x < end;) {
+        int n = GIF_BLOCK - x % GIF_BLOCK;
+        if (n > end - x) n = end - x;
+        const int8_t *m = row + (x / GIF_BLOCK) * 2;
+        if (m[0] | m[1]) {
+          const uint8_t *q = cur + (ptrdiff_t)(y + m[0]) * gif.w + x + m[1];
+          for (int k = 0; k < n; k++)
+            if (s[k] == GIF_SKIP) s[k] = q[k];
+        }
+        s += n;
+        x += n;
+      }
+    }
+  }
+}
+
+bool gifApplyFrame(uint8_t *cur, uint8_t *raw, uint16_t f) {
   if (gif.key[f]) return lz4Block(gif.z[f], gif.zLen[f], cur, (size_t)gif.w * gif.h);
   size_t rawLen = 0;
   for (uint8_t i = 0; i < gif.nRects[f]; i++) rawLen += (size_t)gif.rects[f][i].w * gif.rects[f][i].h;
-  if (!lz4Block(gif.z[f], gif.zLen[f], raw, rawLen)) return false;
-  const uint8_t *s = raw;
+  if (!lz4Block(gif.z[f], gif.zLen[f], raw, rawLen + gifRawBytes() - (size_t)gif.w * gif.h)) return false;
+  const int8_t *mv = (const int8_t *)raw + rawLen;
+  if (!shiftsFit(mv)) return false;
+  fillShifted(cur, raw, mv, f);
+  // what is left of GIF_SKIP has no shift: cur has it, raw needs it for flush.
+  // One pass both ways, PSRAM bandwidth being what limits a frame
+  uint8_t *s = raw;
   for (uint8_t i = 0; i < gif.nRects[f]; i++) {
     const GifRect &r = gif.rects[f][i];
-    int y0 = r.y > keep0 ? r.y : keep0, y1 = r.y + r.h < keep1 ? r.y + r.h : keep1;
-    for (int y = y0; y < y1; y++) memcpy(cur + (size_t)y * gif.w + r.x, s + (size_t)(y - r.y) * r.w, r.w);
-    s += (size_t)r.w * r.h;
+    for (int y = 0; y < r.h; y++, s += r.w) {
+      uint8_t *d = cur + (size_t)(r.y + y) * gif.w + r.x;
+      for (int k = 0; k < r.w; k++) {
+        if (s[k] == GIF_SKIP) s[k] = d[k];
+        else d[k] = s[k];
+      }
+    }
   }
   return true;
 }
@@ -201,7 +250,7 @@ bool gifBuildFrame(uint8_t *cur, uint8_t *raw, uint16_t f) {
   uint16_t k = f;
   while (!gif.key[k]) k--;   // gifLoad checked: a segment starts with a key frame
   for (uint16_t i = k; i <= f; i++)
-    if (!gifApplyFrame(cur, raw, i, 0, gif.h)) return false;
+    if (!gifApplyFrame(cur, raw, i)) return false;
   return true;
 }
 

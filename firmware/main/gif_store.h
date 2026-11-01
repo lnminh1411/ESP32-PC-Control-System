@@ -4,17 +4,21 @@
 // its own palette of RGB444 colours: segments loop on their own and take
 // turns in shuffled rounds, GIF_SWITCH_S each. A frame is 8-bit palette indices: a key frame
 // (each GIF's first) holds the whole screen, any other only the pixels of its
-// dirty rects against the frame before it in the segment's loop.
+// dirty rects against the frame before it in the segment's loop, and most of those
+// come from that frame: each 8x8 block has a shift into it, and a GIF_SKIP pixel
+// takes the pixel its block's shift lands on. The packer lets such a pixel be up to a
+// GIF's "lossy" colour levels off (gifs.json), never on the backdrop colour.
 //
 // Pack format (little-endian, nothing aligned):
-//   "GIFP", u8 version (2; 1 had zlib frames), u8 nGif, u16 w, u16 h,
+//   "GIFP", u8 version (3; 2 had no shifts, 1 had zlib frames), u8 nGif, u16 w, u16 h,
 //   u16 frames in all GIFs, u32 bytes of indices once decoded (unused)
-//   per GIF: u16 nColors, u16 nFrames, nColors x u16 colour (0x0RGB)
+//   per GIF: u16 nColors (up to 255), u16 nFrames, nColors x u16 colour (0x0RGB)
 //   per frame: u16 duration_ms, u8 flags (bit 0 key frame), u8 nRects,
 //     nRects x u16 x, y, w, h (x and w even, w*h a multiple of 8, as is the
 //     GIF's w*h: display.cpp packs 8 pixels at a time), u32 zLen, zLen bytes of one
 //     LZ4 block (no size stored): key frame w*h indices, else the indices of
-//     its rects, rect by rect, row-major
+//     its rects, rect by rect, row-major, then (dy, dx) as i8 for every block,
+//     row-major, each landing wholly on the frame
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
@@ -23,6 +27,8 @@
 
 #define MAX_DIRTY_RECTS 8
 #define MAX_GIF_SEGS 12
+#define GIF_BLOCK 8                     // px, and the GIF's w and h are multiples of it
+#define GIF_SKIP 255                    // index: take the shifted pixel from the frame before
 
 struct GifRect {
   uint16_t x, y, w, h;
@@ -50,13 +56,14 @@ extern Gif gif;
 bool gifFsInit();                               // mount FAT; false = not available
 bool gifLoad();                                 // index the built-in pack; false = bad / no memory
 
-// cur: a panel's w*h indices, raw: w*h for the decoded rects. Apply needs
-// frame gifPrevFrame(f) in cur's rows [keep0, keep1): it decodes f's rects
-// into raw, back to back, and copies them into cur only on those rows (a key
-// frame decodes whole into cur). Build makes all of frame f in cur from any
-// state (decodes every frame from the segment's key frame). Any task, each
-// with its own buffers. false = the frame did not decode.
-bool gifApplyFrame(uint8_t *cur, uint8_t *raw, uint16_t f, int keep0, int keep1);
+// cur: a panel's w*h indices, raw: gifRawBytes() for the decoded rects. Apply
+// needs all of frame gifPrevFrame(f) in cur: it leaves f's rects in raw, back to
+// back, and all of f in cur (a key frame decodes whole into cur, raw unused).
+// Build makes frame f in cur from any state (decodes every frame from the
+// segment's key frame). Any task, each with its own buffers. false = the frame
+// did not decode.
+size_t gifRawBytes();
+bool gifApplyFrame(uint8_t *cur, uint8_t *raw, uint16_t f);
 bool gifBuildFrame(uint8_t *cur, uint8_t *raw, uint16_t f);
 
 uint8_t gifSegOf(uint16_t f);

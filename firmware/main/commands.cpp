@@ -359,17 +359,10 @@ static void cmdShot(const char *a1, const char *) {
   memcpy(copy, p.canvas->getBuffer(), bytes);   // snapshot: the canvas keeps changing
   displayWait(n - 1);   // gifdec and flush work on the GIF frame until then
   int16_t shown = p.gifShown;
-  uint8_t *frame = nullptr, *raw = nullptr;
+  uint8_t *frame = nullptr;
   if (p.gifMode && gif.n && shown >= 0) {
-    // the panel keeps only the overlay band's rows of its frame current:
-    // build the whole of it here
     frame = (uint8_t *)heap_caps_malloc((size_t)gif.w * gif.h, MALLOC_CAP_SPIRAM);
-    raw = (uint8_t *)heap_caps_malloc((size_t)gif.w * gif.h, MALLOC_CAP_SPIRAM);
-    if (!frame || !raw || !gifBuildFrame(frame, raw, shown)) {
-      free(frame);
-      frame = nullptr;
-    }
-    free(raw);
+    if (frame) memcpy(frame, p.gifCur, (size_t)gif.w * gif.h);
   }
   if (frame) {
     // GIF faces bypass the canvas: the panel's current frame through its

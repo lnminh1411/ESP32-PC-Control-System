@@ -16,6 +16,7 @@ pushed plus a fixed cost per rect), each frame LZ4-HC compressed.
 Needs numpy, Pillow and lz4.
 """
 import json
+import multiprocessing
 import os
 import struct
 
@@ -33,7 +34,10 @@ MAX_GIF_SEGS = 12       # gif_store.h
 MAX_FRAMES = 512        # config.h
 PARTITION = 6 << 20     # gifs in firmware/partitions.csv
 RECT_COST = 200         # pixels: a rect's CASET/RASET/RAMWR and DMA restart take about as long on the bus
-PACK_VERSION = 2        # 1 was zlib frames
+PACK_VERSION = 3        # 1 was zlib frames, 2 had no prediction
+BLOCK = 8               # px: GIF_BLOCK, gif_store.h
+SHIFT = 24              # px, the furthest a block looks in the frame before
+SKIP = 255              # GIF_SKIP, gif_store.h: this pixel comes from its block's shift
 
 
 def fill_panel(img):
@@ -69,21 +73,47 @@ def rgb_of(c):
 
 
 def build_palette(frames):
-    """The 256 most used colours and a colour -> index table; the worst colour
-    error as (RGB444 distance, share of pixels moved at all)."""
+    """The 255 most used colours (commonest first; 255 is SKIP) and a colour -> index
+    table; the worst colour error as (RGB444 distance, share of pixels moved at all)."""
     colours, counts = np.unique(np.stack(frames), return_counts=True)
     order = np.argsort(-counts, kind="stable")
     colours, counts = colours[order], counts[order]
-    palette = colours[:256]
+    palette = colours[:SKIP]
     lut = np.zeros(4096, dtype=np.uint8)
     lut[palette] = np.arange(len(palette))
     worst = 0.0
-    for c in colours[256:]:
+    for c in colours[SKIP:]:
         d = ((rgb_of(palette) - rgb_of(c)) ** 2).sum(axis=1)
         k = int(d.argmin())
         lut[c] = k
         worst = max(worst, float(d[k]) ** 0.5)
-    return palette, lut, worst, counts[256:].sum() / counts.sum()
+    return palette, lut, worst, counts[SKIP:].sum() / counts.sum()
+
+
+def flatten_backdrop(frames, levels):
+    """Colours within levels (of 15) of the commonest one become it, where they touch
+    it from the top or sides (figures run off the bottom): grain off the backdrop, pale
+    skin inside the outlines kept."""
+    colours, counts = np.unique(np.stack(frames), return_counts=True)
+    bg = colours[counts.argmax()]
+    out = []
+    for f in frames:
+        near = np.abs(rgb_of(f) - rgb_of(bg)).max(axis=2) <= levels
+        reached = np.zeros_like(near)
+        reached[0] = f[0] == bg
+        reached[:, [0, -1]] |= f[:, [0, -1]] == bg
+        while True:
+            grown = reached.copy()
+            grown[1:] |= reached[:-1]
+            grown[:-1] |= reached[1:]
+            grown[:, 1:] |= reached[:, :-1]
+            grown[:, :-1] |= reached[:, 1:]
+            grown &= near
+            if (grown == reached).all():
+                break
+            reached = grown
+        out.append(np.where(reached, bg, f))
+    return out
 
 
 def band_diff(cur, prev, y, n):
@@ -130,35 +160,94 @@ def rect_pixels(idx, rects):
     return b"".join(idx[y:y + h, x:x + w].tobytes() for x, y, w, h in rects)
 
 
-def replay_check(indexed, stored):
-    """Keyframe, then the deltas, then round the loop: must give every frame back."""
-    n = len(indexed)
-    def unpack(rects, z, key):
-        return lz4.block.decompress(z, uncompressed_size=PANEL_W * PANEL_H if key else sum(w * h for _, _, w, h in rects))
+def near_table(palette, levels):
+    """near[a, b]: colour a may stand in for colour b, at most levels (of 15) off.
+    The backdrop (palette[0]) trades with nothing else, so it stays clean."""
+    rgb = rgb_of(palette).astype(np.int16)
+    near = np.zeros((SKIP + 1, SKIP + 1), bool)
+    n = len(palette)
+    near[:n, :n] = np.abs(rgb[:, None] - rgb[None]).max(axis=2) <= levels
+    near[0], near[:, 0] = False, False
+    near[np.arange(n), np.arange(n)] = True
+    return near
 
-    cur = np.frombuffer(unpack(*stored[0], True), np.uint8).reshape(PANEL_H, PANEL_W).copy()
-    for i in list(range(1, n)) + [0]:
+
+def best_shifts(cur, ref, near):
+    """Each block's shift into ref: the fewest pixels that have to be stored, the
+    nearest shift on a tie. The whole block stays on the frame."""
+    rows, cols = PANEL_H // BLOCK, PANEL_W // BLOCK
+    wide = np.pad(ref, SHIFT, constant_values=SKIP)
+    best = np.full((rows, cols), BLOCK * BLOCK + 1)
+    mv = np.zeros((rows, cols, 2), np.int8)
+    ys, xs = np.arange(rows)[:, None] * BLOCK, np.arange(cols)[None] * BLOCK
+    span = range(-SHIFT, SHIFT + 1)
+    for dy, dx in sorted(((y, x) for y in span for x in span), key=lambda s: s[0] ** 2 + s[1] ** 2):
+        y, x = SHIFT + dy, SHIFT + dx
+        wrong = ~near[wide[y:y + PANEL_H, x:x + PANEL_W], cur]
+        n = wrong.reshape(rows, BLOCK, cols, BLOCK).sum(axis=(1, 3))
+        on = (ys + dy >= 0) & (ys + dy + BLOCK <= PANEL_H) & (xs + dx >= 0) & (xs + dx + BLOCK <= PANEL_W)
+        hit = (n < best) & on
+        best[hit] = n[hit]
+        mv[hit] = (dy, dx)
+        if not best.any():
+            break
+    return mv
+
+
+def predicted(ref, mv):
+    """ref's pixels through the shifts."""
+    out = np.empty_like(ref)
+    for r in range(PANEL_H // BLOCK):
+        for c in range(PANEL_W // BLOCK):
+            y, x = r * BLOCK, c * BLOCK
+            dy, dx = int(mv[r, c, 0]), int(mv[r, c, 1])
+            out[y:y + BLOCK, x:x + BLOCK] = ref[y + dy:y + dy + BLOCK, x + dx:x + dx + BLOCK]
+    return out
+
+
+def replay_check(indexed, stored):
+    """Keyframe, then the deltas, then round the loop, as gifApplyFrame does: must
+    give every frame back."""
+    n = len(indexed)
+    mv_len = (PANEL_H // BLOCK) * (PANEL_W // BLOCK) * 2
+    cur = None
+    for i in list(range(n)) + [0]:
         rects, z = stored[i]
-        raw = unpack(rects, z, i == 0)
         if i == 0:
+            raw = lz4.block.decompress(z, uncompressed_size=PANEL_W * PANEL_H)
             cur = np.frombuffer(raw, np.uint8).reshape(PANEL_H, PANEL_W).copy()
         else:
+            n_px = sum(w * h for _, _, w, h in rects)
+            raw = lz4.block.decompress(z, uncompressed_size=n_px + mv_len)
+            mv = np.frombuffer(raw, np.int8, offset=n_px).reshape(PANEL_H // BLOCK, PANEL_W // BLOCK, 2)
+            pred = predicted(cur, mv)
             off = 0
             for x, y, w, h in rects:
-                cur[y:y + h, x:x + w] = np.frombuffer(raw, np.uint8, w * h, off).reshape(h, w)
+                px = np.frombuffer(raw, np.uint8, w * h, off).reshape(h, w)
+                cur[y:y + h, x:x + w] = np.where(px == SKIP, pred[y:y + h, x:x + w], px)
                 off += w * h
-            assert off == len(raw)
         assert (cur == indexed[i]).all(), f"frame {i} does not replay"
 
 
-def pack_gif(name, every):
+def pack_gif(name, every, flatten, lossy):
     frames, durations = load_frames(os.path.join(GIF_DIR, name), every)
+    if flatten:
+        frames = flatten_backdrop(frames, flatten)
     palette, lut, worst, moved = build_palette(frames)
-    indexed = [lut[f] for f in frames]
+    source = [lut[f] for f in frames]
+    near = near_table(palette, lossy)
+    indexed, shifts, skips = [source[0]], [None], [None]    # indexed: what the panel shows
+    for cur in source[1:]:
+        mv = best_shifts(cur, indexed[-1], near)
+        pred = predicted(indexed[-1], mv)
+        skip = near[pred, cur]
+        indexed.append(np.where(skip, pred, cur))
+        shifts.append(mv)
+        skips.append(np.where(skip, SKIP, cur).astype(np.uint8))
     stored, psram, pushed = [], 0, 0
     for i, idx in enumerate(indexed):
         rects = frame_rects(idx, indexed[i - 1])   # frame 0 against the last one: the loop
-        raw = idx.tobytes() if i == 0 else rect_pixels(idx, rects)
+        raw = idx.tobytes() if i == 0 else rect_pixels(skips[i], rects) + shifts[i].tobytes()
         z = lz4.block.compress(raw, mode="high_compression", compression=12, store_size=False)
         stored.append((rects, z))
         psram += len(raw)
@@ -181,7 +270,8 @@ def main():
     with open(os.path.join(GIF_DIR, "gifs.json"), encoding="utf-8") as f:
         gifs = json.load(f)
     assert 1 <= len(gifs) <= MAX_GIF_SEGS, "too many GIFs"
-    packed = [pack_gif(g["file"], g.get("every", 1)) for g in gifs]
+    with multiprocessing.Pool(6) as pool:   # the shift search takes about a second a frame
+        packed = pool.starmap(pack_gif, [(g["file"], g.get("every", 1), g.get("flatten", 0), g.get("lossy", 0)) for g in gifs], 1)
     total = sum(p[1] for p in packed)
     assert total <= MAX_FRAMES, "too many frames"
     psram = sum(p[2] for p in packed)

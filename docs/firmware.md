@@ -24,7 +24,7 @@ Building and flashing: [build-and-flash.md](build-and-flash.md). Settings:
 | `weather`, `nowcast`, `owm`, `cyclone`, `owntracks`, `pushover` | Open-Meteo forecast and AQI, rain nowcast and warnings, OpenWeather One Call 4.0 minute-by-minute rain and alerts, GDACS typhoon tracking, phone location over MQTT, Pushover copies of the PC and weather announcements ([weather.md](weather.md)) |
 | `board_time` | Wall clock: SNTP over Wi-Fi, else the time the PC sends |
 | `net`, `discord` | Wi-Fi (TX power capped, self-healing rejoin), mDNS, HTTP server (`/layout`, `/bench`); Discord bot with an `/actions` panel and a standing #control panel ([discord.md](discord.md)) |
-| `gif_store` | GIFs in their own flash partition (`gifs.bin`, from `scripts/gif_pack.py`), played in shuffled rounds: palette frames, each storing only its dirty rects, kept LZ4-compressed in flash and decoded as they play |
+| `gif_store` | GIFs in their own flash partition (`gifs.bin`, from `scripts/gif_pack.py`), played in shuffled rounds: palette frames, each storing only its dirty rects, predicted from the frame before by shifted blocks, kept LZ4-compressed in flash and decoded as they play |
 | `commands`, `console`, `usb`, `host_uart`, `log` | The text command set ([console.md](console.md)); USB CDC, CH343 UART (3 Mbaud), WinUSB bulk and vendor-HID transports; the log fan-out (UART, CDC, Discord #logging) |
 | `sys`, `bench` | Reset reason and core dump summary at boot, brownout settle, PSRAM ECC log; `bench` tests |
 
@@ -75,7 +75,7 @@ Building and flashing: [build-and-flash.md](build-and-flash.md). Settings:
 |---|---|---|---|
 | main | 1 | 10 KB | Draws the faces; console, USB, power, night and the rest of the main loop (20 s task watchdog) |
 | `flush` | 0 | 4 KB | Diffs each canvas against the glass, sends the dirty rectangles |
-| `gifdec` | 1 | 3 KB | Decodes each GIF frame's rects from flash into the panel's buffers, then hands it to `flush`, which packs them to RGB444 as it sends (main's priority: about 12% of core 1 for a 20 fps GIF) |
+| `gifdec` | 2 | 3 KB | Decodes each GIF frame's rects from flash into the panel's buffers, then hands it to `flush`, which packs them to RGB444 as it sends (above main: about 26-30% of core 1 for a 20 fps GIF) |
 | `led` | 0 | 2 KB | Status LED patterns |
 | `discord` | 0 | 10 KB | Discord gateway and REST |
 | `weather` | 0 | 9 KB | Open-Meteo, OpenWeather, GDACS; the Pushover queue |

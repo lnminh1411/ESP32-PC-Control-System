@@ -54,9 +54,8 @@ struct Panel {
   int16_t gifShown;                 // index on glass, -1 = unknown
   uint16_t gifFrame;                // frame index to push
   // GIF buffers, PSRAM from the panel's first GIF frame. gifCur: frame
-  // gifShown as palette indices, all of it after a rebuild, after that only
-  // its rows under the overlay band (gifKeepY0..1, panel rows) kept current.
-  // gifRaw: the frame's decoded rects, back to back.
+  // gifShown as palette indices. gifRaw: the frame's decoded rects, back to
+  // back. gifKeepY0..1: the overlay band (panel rows) at the last whole push.
   uint8_t *gifCur, *gifRaw;
   int16_t gifKeepY0, gifKeepY1;
   bool gifFull;                     // gifdec rebuilt gifCur: push the whole frame, not its rects

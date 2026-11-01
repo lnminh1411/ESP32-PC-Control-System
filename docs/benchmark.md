@@ -12,17 +12,17 @@ and time Wi-Fi from the PC with
 
 ## Usage
 
-From `bench usage` (part of `bench all`), PC on, 222-frame GIF pack decoded as
+From `bench usage` (part of `bench all`), PC on, 472-frame GIF pack decoded as
 it plays, after GIFs had run on all three panels. Each panel that shows one
-holds 150 KB of PSRAM (its frame and its decoded rects).
+holds 153 KB of PSRAM (its frame and its decoded rects).
 
 | Memory | Used | Notes |
 |---|---|---|
-| SRAM (512 KB) | 397 KB (78%) | heap 366 KB, 117 KB free; lowest free ever: 52 KB, largest block 36 KB |
-| PSRAM (7680 KB) | 1880 KB (24%) | lowest free ever 4722 KB, largest free block 4992 KB |
+| SRAM (512 KB) | 397 KB (78%) | heap 366 KB; lowest free ever: 50 KB, largest block 31 KB |
+| PSRAM (7680 KB) | 1887 KB (25%) | lowest free ever 5024 KB, largest free block 4992 KB |
 | Flash (16 MB) | fully partitioned | one 8.9 MB app slot (no OTA), GIF pack 6 MB, FAT 1 MB, NVS 20 KB, core dump 64 KB |
 | App image | 1638 KB of 9088 KB (18%) | |
-| GIF pack | 5707 KB of 6144 KB (93%) | its own `gifs` partition: 9 GIFs, 222 frames |
+| GIF pack | 6071 KB of 6144 KB (99%) | its own `gifs` partition: 12 GIFs, 472 frames |
 | FAT /ffat | 4 KB of 972 KB (0%) | layout.json, saved text images |
 | NVS | 232 of 630 entries | 12 namespaces |
 
@@ -195,22 +195,22 @@ frames as their dirty rects, zlib-compressed in flash and inflated into PSRAM
 at boot. Both GIFs then played at 20 fps (Neuro 22 frames, Evil Neuro 20, 50 ms
 each); the first pack had 27 frames at 15 and 10 fps. "Before" is the previous
 firmware with its single test GIF, and its ~3.8 MB is an estimate. "Now" is
-today's nine GIFs: LZ4 in their own `gifs` partition, decoded as they play (the
-later sections cover each step).
+today's twelve GIFs: LZ4 in their own `gifs` partition, predicted from the frame
+before and decoded as they play (the later sections cover each step).
 
-| | Before | First pack, 27 frames | 42 frames | Now, 222 frames |
+| | Before | First pack, 27 frames | 42 frames | Now, 472 frames |
 |---|---|---|---|---|
-| GIF pack | none | 532 KB | 793 KB | 5707 KB |
-| Frames in PSRAM | ~3.8 MB with tables and buffers | 1780 KB | 2722 KB | none: 38 KB of tables, 150 KB a panel showing a GIF |
-| PSRAM used, `bench usage`, three 75 KB panel buffers in the older columns | 5179 KB | 3428 KB | 4374 KB | 1880 KB |
-| PSRAM free, lowest ever without bench buffers | 1438 KB | 3426 KB | 2456 KB | 4722 KB |
+| GIF pack | none | 532 KB | 793 KB | 6071 KB |
+| Frames in PSRAM | ~3.8 MB with tables and buffers | 1780 KB | 2722 KB | none: 38 KB of tables, 153 KB a panel showing a GIF |
+| PSRAM used, `bench usage`, three 75 KB panel buffers in the older columns | 5179 KB | 3428 KB | 4374 KB | 1887 KB |
+| PSRAM free, lowest ever without bench buffers | 1438 KB | 3426 KB | 2456 KB | 5024 KB |
 | App image | 1650 KB | 2178 KB | 2439 KB | 1638 KB |
 | FAT /ffat | 4508 KB | 4 KB | 4 KB | 4 KB |
-| Decoding at boot | 4.5 MB read from FAT | 329 ms to inflate | 498 ms to inflate | none, about 6 ms a frame as it plays |
+| Decoding at boot | 4.5 MB read from FAT | 329 ms to inflate | 498 ms to inflate | none, 13-15 ms a frame as it plays |
 
 Dirty rects covered most of the screen on most frames (86-95%), since most of
 each picture moves, which is why the frames took this much PSRAM. Today's
-optimal rects cover 44-99% depending on the GIF, and only the frame on screen
+optimal rects cover 58-99% depending on the GIF, and only the frame on screen
 is decoded.
 
 | GIF playback at 20 fps | Frame rate | Frame times | Bus |
@@ -218,18 +218,18 @@ is decoded.
 | One panel | 19.5 fps (17.7-20.5) | 1.04x nominal | 1.9 MB/s, 41% |
 | Two panels | 17.8 fps | 1.12x nominal | 70% |
 | Three panels | 12.7 fps | 1.67x nominal | 73% |
-| Now, one panel | 20.0 fps | 1.0x nominal | 1.5-2.1 MB/s, 39% |
-| Now, two panels | 19.1 fps, 17-18 on Kita, Miku and Teto | 1.01x nominal | 65% |
-| Now, three panels | 15.75 fps, 12-13 on Kita, Miku and Teto | 1.25x nominal | 77% |
+| Now, one panel | 19.9 fps | 1.0x nominal | 1.3-2.0 MB/s, 34% |
+| Now, two panels | 19.6 fps | 1.03x nominal | 74% |
+| Now, three panels | 14.9 fps | 1.34x nominal | 82% |
 
 A frame took 26-28 ms to push, now 21-25 ms. The GIF slows down rather than drop
-frames, so on three panels it played at about 60% speed, now about 80%; three
+frames, so on three panels it played at about 60% speed, now about 75%; three
 panels at 20 fps need about 5.7 MB/s, more than the 40 MHz wire carries.
 
 The app slots then grew from 3 MB to 5 MB each and FAT shrank from 9.9 MB
 to 5.9 MB (`partitions.csv`, flashed over USB). The same image filled 48%
 of its slot instead of 79%, leaving about 2.6 MB for more GIFs. The table is
-now one 8.9 MB app slot, FAT 1 MB and a 6 MB `gifs` partition with 437 KB free.
+now one 8.9 MB app slot, FAT 1 MB and a 6 MB `gifs` partition with 73 KB free.
 
 ### Frames inflated as they play
 
@@ -409,3 +409,81 @@ All 38 panel screenshots matched the packed frames exactly, and 19 turns kept to
 the round rule. Lowest SRAM free 52 KB, no crashes in the log channel. Herta was
 then replaced by a different GIF, so these playback figures and shots are from
 the 138 KB version, whose rects covered 44% of the screen.
+
+## Packing the GIFs smaller, 2026-11-01
+
+The packer now flattens backdrops: colours within `flatten` levels of a GIF's
+commonest colour become it, where they touch it from the top or sides. Applied to
+every pixel that colour test also took pale skin, so it stops at the outlines, and
+Filian and Herta stay at 0 (hair and sleeves leak), Miku at 1 (blue hair).
+
+| GIF | Flatten | Pack before | Pack now | Rects before | Rects now |
+|---|---|---|---|---|---|
+| Neuro | 2 | 525 KB | 518 KB | 70% | 70% |
+| Evil Neuro | 2 | 421 KB | 412 KB | 67% | 67% |
+| March 7th | 2 | 461 KB | 457 KB | 64% | 63% |
+| Firefly | 2 | 631 KB | 627 KB | 83% | 83% |
+| Miku | 1 | 1482 KB | 1419 KB | 96% | 92% |
+| Kita | 2 | 741 KB | 564 KB | 99% | 99% |
+| Teto | 2 | 1044 KB | 965 KB | 93% | 89% |
+
+The pack fell from 5707 KB to 5366 KB (-6%). Two panels 19.7 fps, three 15.9. All
+20 panel screenshots matched the packed frames exactly. One panel was not measured
+again.
+
+Other ideas measured on the same frames. Sizes are frame data; the
+first table's baseline is the pack before flattening, the second's after it.
+
+| Before flattening (5701 KB) | Size | Change |
+|---|---|---|
+| One LZ4 block, or frames linked to the one before | 5482 KB | -3.6%; one block cannot decode frame by frame |
+| zstd 19, each frame on its own | 4564 KB | -20%; decoder not tried on the board |
+| 128 colours | 5600 KB | -2% |
+| 16 rects instead of 8 | 5701 KB | 0% |
+| Holding near-identical pixels | 6593-7185 KB | +16-26% |
+
+| Motion compensation, after flattening (5359 KB) | Size | Change |
+|---|---|---|
+| Lossless, 8 or 16 px blocks, up to 24 px shift | 5624-5800 KB | +5-8% |
+| 1 level of error, 8 px blocks | 3590 KB | -33%; faint speckle, 17-38% of pixels one level off |
+| 2 levels of error, 8 px blocks | 2463 KB | -54%; visible speckle, grainy backdrops |
+
+Exact blocks cover 5-64% of the frame depending on the GIF, and shifted ones only
+3-9%: interpolated frames rarely repeat pixels exactly, so lossless motion
+compensation pays for its vectors and gets little back.
+
+## Twelve GIFs, frames predicted from the last one, 2026-11-01
+
+The 1-level version went in (pack v3): each 8x8 block has a shift up to 24 px into
+the frame before, and a pixel within 1 colour level of what that shift lands on is
+stored as one symbol. The backdrop colour is exempt, which keeps white backdrops
+clean. Rects now follow what the panel shows, so they shrink too. The same nine GIFs
+went from 5366 KB to 3730 KB (-30%), which made room for Bocchi, the Miku player and
+PPPP Teto. All 26 panel screenshots across the twelve matched the frames replayed
+from `gifs.bin`, 13 turns kept to the round rule, and the log channel shows no crashes.
+
+| GIF | Frames | Before | Now |
+|---|---|---|---|
+| Neuro | 22 | 518 KB | 293 KB |
+| Evil Neuro | 20 | 412 KB | 220 KB |
+| March 7th | 20 | 457 KB | 275 KB |
+| Firefly | 20 | 627 KB | 393 KB |
+| Miku | 50 | 1419 KB | 1146 KB |
+| Filian | 8 | 203 KB | 125 KB |
+| Kita | 16 | 564 KB | 418 KB |
+| Teto | 50 | 965 KB | 704 KB |
+| Herta | 16 | 200 KB | 156 KB |
+| Bocchi | 9 | | 114 KB |
+| Miku player | 176 | | 1152 KB |
+| PPPP Teto | 65 | | 1075 KB |
+
+| Decoding, one panel | Decode a frame | One panel fps |
+|---|---|---|
+| Before prediction | 6 ms | 20 |
+| Predicted, filled then copied, level with main | 26 ms | 13-20, by GIF |
+| One pass both ways, `gifdec` above main | 13-15 ms | 19.9 |
+
+At 26 ms `gifdec` lost time to main drawing the other two panels, so one panel
+came out slower than two. Now shifted pixels fill first, then one pass moves the
+rest both ways between `gifRaw` and `gifCur`, and `gifdec` runs above main. Three
+panels fell from 15.9 to 14.9 fps.

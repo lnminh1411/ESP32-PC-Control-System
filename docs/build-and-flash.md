@@ -47,7 +47,7 @@ cover art, in place of the made-up one.
 The GIFs have their own 6 MB `gifs` partition. Their sources are in
 `firmware/gifs/`, and `firmware/gifs/gifs.json` lists them (`every` keeps
 every Nth frame, up to 12 GIFs and 512 frames in all; the partition is the
-real limit, about 26 KB a frame). The board plays them in shuffled rounds:
+real limit, about 13 KB a frame). The board plays them in shuffled rounds:
 every GIF once, none twice in a row. After changing either, regenerate the
 pack and flash with `idf_flash.py` (`idf.py flash` writes the partition,
 `app-flash` does not):
@@ -60,8 +60,18 @@ It needs numpy, Pillow and lz4 (`pip install lz4`). It writes
 `firmware/main/gifs.bin` (committed) and prints the pack size, the size of
 the frames once decoded, how much of the screen their rects cover and the
 colour error of each palette. The board keeps the frames LZ4-compressed in
-flash and decodes each as it plays, about 6 ms of core 1 a frame.
+flash and decodes each as it plays, 13-15 ms of core 1 a frame.
 `GIF_SWITCH_S` sets how long each GIF plays.
+
+`flatten` in `gifs.json` (levels of 15, default 0) takes the grain off a GIF's
+backdrop: colours that near its commonest one become it, where they touch it from
+the top or sides. Check the result when raising it: pale skin or hair at a panel
+edge can go with the backdrop, which is why Filian and Herta stay at 0 and Miku at 1.
+
+`lossy` in `gifs.json` (levels of 15, default 0) lets a pixel be that far off when
+the frame before can supply it, which is what keeps the frames this small: every GIF
+is at 1. The packer searches 8x8 blocks for the best shift, about a second a frame,
+so a full pack takes a few minutes.
 
 The `*_20fps.gif` files are made from the originals kept beside them with the
 RIFE models from FluidFrames, which only give the midpoint of two frames:
@@ -87,6 +97,13 @@ RIFE models from FluidFrames, which only give the midpoint of two frames:
   her top kept.
 - `herta_20fps.gif` is the 8 frames of `herta.gif` plus a RIFE midpoint after
   each, last-to-first pair included, 0.8 s a loop. She fills the height on white.
+- `bocchi_20fps.gif` is the 6 poses of one 433 ms cycle of `bocchi.gif` brought to
+  9 frames with RIFE, filling the height, about a third of her arm on screen.
+- `miku_player_20fps.gif` is 26522132 on Tenor sized to 240x320, already 20 fps; its
+  11.8 MB original is not kept here.
+- `teto_pppp_20fps.gif` is the 28 frames of `teto_pppp.gif` at their own 80 and 160
+  ms, with RIFE in-betweens on the 50 ms grid, 5% past filling the height. The crop
+  follows the figure, eased over the loop.
 
 ## Other uploads
 

@@ -331,13 +331,13 @@ static void flushTask(void *) {
   }
 }
 
-// Decodes GIF frames from flash for each panel (rects into gifRaw, gifCur
-// kept on the overlay band's rows), then hands the panel to flush, which
+// Decodes GIF frames from flash for each panel (rects into gifRaw, all of the
+// frame in gifCur for the next one to predict from), then hands the panel to flush, which
 // packs the pixels to RGB444 on the way out. PSRAM bandwidth is what limits
 // three panels: a pass that packed RGB444 into PSRAM here, for flush to DMA
-// from there, and a second decoder on core 0 were both slower. Core 1 at the
-// main task's priority, so the two share time slices: below it, gifdec only
-// split the idle time with IDLE1 and a 20 fps GIF fell to 10 fps.
+// from there, and a second decoder on core 0 were both slower. Core 1 above the
+// main task: below it gifdec only split the idle time with IDLE1 (10 fps), and
+// level with it main's drawing of the other panels held one GIF panel to 13 fps.
 static void gifDecodeTask(void *) {
   for (;;) {
     int idx;
@@ -349,7 +349,7 @@ static void gifDecodeTask(void *) {
     }
     if (!p.gifCur) {   // first time on this panel
       p.gifCur = (uint8_t *)heap_caps_malloc((size_t)gif.w * gif.h, MALLOC_CAP_SPIRAM);
-      p.gifRaw = (uint8_t *)heap_caps_malloc((size_t)gif.w * gif.h, MALLOC_CAP_SPIRAM);
+      p.gifRaw = (uint8_t *)heap_caps_malloc(gifRawBytes(), MALLOC_CAP_SPIRAM);
       if (!p.gifCur || !p.gifRaw) {
         static bool told;
         if (!told) logMsg("gif: no PSRAM for a panel buffer");
@@ -364,13 +364,11 @@ static void gifDecodeTask(void *) {
     }
     uint16_t f = p.gifFrame;
     uint32_t t0 = nowUs();
-    // the frame before f on the glass and the band where gifCur was kept:
-    // decode f's rects; else (a segment switch, a new face, the band moved, a
-    // loop's first frame) rebuild all of gifCur and push it whole
-    int y0 = (TFT_H - gif.h) / 2;
+    // the frame before f on the glass and the band where it was: decode f's
+    // rects; else (a segment switch, a new face, the band moved, a loop's
+    // first frame) rebuild gifCur and push it whole
     p.gifFull = p.gifShown != (int16_t)gifPrevFrame(f) || gif.key[f] || p.bandY0 != p.gifKeepY0 || p.bandY1 != p.gifKeepY1;
-    bool ok = p.gifFull ? gifBuildFrame(p.gifCur, p.gifRaw, f)
-                        : gifApplyFrame(p.gifCur, p.gifRaw, f, p.bandY0 - y0, p.bandY1 - y0);
+    bool ok = p.gifFull ? gifBuildFrame(p.gifCur, p.gifRaw, f) : gifApplyFrame(p.gifCur, p.gifRaw, f);
     if (p.gifFull) {
       p.gifKeepY0 = p.bandY0;
       p.gifKeepY1 = p.bandY1;
@@ -526,7 +524,7 @@ void displayInit() {
   flushQueue = xQueueCreate(N_PANELS, sizeof(int));
   gifQueue = xQueueCreate(N_PANELS, sizeof(int));
   xTaskCreatePinnedToCore(flushTask, "flush", 4096, nullptr, 2, &flushTaskHandle, 0);
-  xTaskCreatePinnedToCore(gifDecodeTask, "gifdec", 3072, nullptr, 1, nullptr, 1);
+  xTaskCreatePinnedToCore(gifDecodeTask, "gifdec", 3072, nullptr, 2, nullptr, 1);
 }
 
 // ---- backlights & NVS persistence ----
