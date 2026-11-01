@@ -91,7 +91,7 @@ static bool readGifs(const uint8_t *p, uint8_t nGif, uint16_t total) {
         GifRect &q = gif.rects[f][r];
         memcpy(&q, p, sizeof q);
         p += sizeof q;
-        if (q.x + q.w > gif.w || q.y + q.h > gif.h || ((q.x | q.w) & 1)) return false;
+        if (!q.w || !q.h || q.x + q.w > gif.w || q.y + q.h > gif.h || ((q.x | q.w) & 1)) return false;
         rawLen += (size_t)q.w * q.h;
       }
       if (rawLen > (size_t)gif.w * gif.h) return false;   // overlapping rects would overrun s_raw

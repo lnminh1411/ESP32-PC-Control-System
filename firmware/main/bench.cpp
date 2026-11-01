@@ -343,6 +343,7 @@ static void benchUsb(uint32_t kb) {
   for (uint32_t i = 0; i < kb; i++) {   // stop when the PC stops reading: each failed write blocks 2 s
     if (!usbCdcWriteAll(line, 1024)) break;
     sent += 1024;
+    esp_task_wdt_reset();   // 4 MB to a slow reader outlasts the 20 s watchdog
   }
   int64_t dt = us() - t0;
   logMsg("bench usb: CDC write %.2f MB/s (%lu KB in %.0f ms)", mbps(sent, dt), (unsigned long)(sent / 1024), dt / 1000.0);

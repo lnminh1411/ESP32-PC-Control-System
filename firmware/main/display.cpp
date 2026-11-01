@@ -315,6 +315,10 @@ static void gifDecodeTask(void *) {
     int idx;
     if (xQueueReceive(gifQueue, &idx, portMAX_DELAY) != pdTRUE) continue;
     Panel &p = panels[idx];
+    if (!gif.n) {      // no pack (yet): nothing behind the frame tables
+      p.busy = false;
+      continue;
+    }
     if (!p.gifCur) {   // first time on this panel
       p.gifCur = (uint8_t *)heap_caps_malloc((size_t)gif.w * gif.h, MALLOC_CAP_SPIRAM);
       if (!p.gifCur) {
@@ -343,6 +347,9 @@ static void gifDecodeTask(void *) {
       continue;
     }
     xQueueSend(flushQueue, &idx, portMAX_DELAY);
+    // panels queued back to back would keep this task from blocking at all,
+    // and IDLE1, below it, feeds the task watchdog
+    if (uxQueueMessagesWaiting(gifQueue)) vTaskDelay(1);
   }
 }
 
@@ -386,6 +393,10 @@ void displayInit() {
   bus.quadwp_io_num = -1;
   bus.quadhd_io_num = -1;
   bus.max_transfer_sz = CHUNK_BYTES + 16;
+  // SPI ISR on the flush task's core. spi_bus_lock's bg_exit_core re-reads
+  // acquiring_dev between its check and the resume: from the other core, the
+  // flush task's polling RASET could end in that gap and the ISR takes NULL
+  bus.isr_cpu_id = ESP_INTR_CPU_AFFINITY_0;
   ESP_ERROR_CHECK(spi_bus_initialize(displayBus.host, &bus, SPI_DMA_CH_AUTO));
 
   // Full drive (~40 mA) on the bus lines: three panel inputs + the 33R on a

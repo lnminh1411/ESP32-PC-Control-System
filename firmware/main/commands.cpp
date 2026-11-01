@@ -3,6 +3,7 @@
 #include <ctype.h>
 #include <esp_heap_caps.h>
 #include <esp_system.h>
+#include <esp_task_wdt.h>
 #include <mbedtls/base64.h>
 #include <LovyanGFX.hpp>
 #include <math.h>
@@ -79,6 +80,7 @@ static void cmdSocks(const char *, const char *) {
 // Diffs FreeRTOS run-time counters, so it never blocks the main loop.
 static void cmdPerf(const char *, const char *) {
   static TaskStatus_t *prev = (TaskStatus_t *)psramCalloc(40 * sizeof(TaskStatus_t));   // 1.6 KB
+  if (!prev) { logMsg("perf: no memory"); return; }
   static UBaseType_t nPrev;
   static uint32_t prevUs, prevSpin, prevDec, prevDecN;
   extern uint32_t displaySpinUs;
@@ -385,6 +387,7 @@ static void cmdShot(const char *a1, const char *) {
                           bytes - off < 768 ? bytes - off : 768);
     line[7 + out] = '\n';
     if (!usbCdcWriteAll(line, 8 + out)) break;   // PC stopped reading
+    esp_task_wdt_reset();                        // a slow reader can take minutes
   }
   usbCdcWriteAll("SHOT end\n", 9);
   free(copy);

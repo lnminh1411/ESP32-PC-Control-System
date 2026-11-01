@@ -268,8 +268,33 @@ static void freeLayout(Layout *l) {
   free(l);
 }
 
+// cJSON recurses once per nesting level and allows 1000 of them, far past a
+// task's stack; a layout is 5 levels deep
+static bool jsonTooDeep(const char *json, size_t len) {
+  int depth = 0;
+  bool inStr = false;
+  for (size_t i = 0; i < len; i++) {
+    char ch = json[i];
+    if (inStr) {
+      if (ch == '\\') i++;
+      else if (ch == '"') inStr = false;
+    } else if (ch == '"') {
+      inStr = true;
+    } else if (ch == '[' || ch == '{') {
+      if (++depth > 8) return true;
+    } else if (ch == ']' || ch == '}') {
+      depth--;
+    }
+  }
+  return false;
+}
+
 static Layout *parseLayout(const char *json, size_t len) {
   if (!json || len == 0) return nullptr;
+  if (jsonTooDeep(json, len)) {
+    logMsg("layout: JSON nested too deep");
+    return nullptr;
+  }
   cJSON *root = cJSON_ParseWithLength(json, len);
   if (!root) {
     logMsg("layout: JSON parse error");
@@ -546,6 +571,7 @@ static void drawSpark(LGFX_Sprite &c, const Page &page, Widget &w, bool full, ui
         if (val < minV) val = minV;
         if (val > maxV) val = maxV;
         float norm = (val - minV) / (maxV - minV);
+        if (!(norm >= 0.0f)) norm = 0.0f;   // NaN with an infinite min or max in the JSON
         int py = w.y + w.h - 1 - (int)round(norm * (w.h - 1));
 
         if (hasPrev) {

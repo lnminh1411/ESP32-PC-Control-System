@@ -81,6 +81,9 @@ void pcStatsLine(const char *line) {
         v = strtod(p, &end);
         p = end;
       }
+      // a value no float holds (Infinity, 1e400) reads as missing: as a pixel
+      // it turns into INT_MAX and drawLine walks 2^31 steps to the clip rect
+      if (!isfinite((float)v)) v = NAN;
 
       int idx = -1;
       for (int i = 0; i < count; i++) {
