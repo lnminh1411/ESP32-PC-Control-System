@@ -26,10 +26,10 @@ holds 153 KB of PSRAM (its frame and its decoded rects).
 | FAT /ffat | 4 KB of 972 KB (0%) | layout.json, saved text images |
 | NVS | 232 of 630 entries | 12 namespaces |
 
-Task stacks, least ever free (bytes): main 6680, discord 5600, httpd 4908,
-websocket 4640, weather 3480, TinyUSB 2876, flush 2708, wifi 2640, gifdec 2192,
-esp_timer 2060, mdns 1496, tiT 1364, Tmr Svc 1328, mqtt 1232, led 1200, sys_evt 792,
-IDLE 688-696, ipc 444-500.
+Task stacks, least ever free (bytes): main 6720, discord 5528, httpd 4904,
+websocket 4652, weather 3472, TinyUSB 2808, flush 2716, wifi 2568, gifdec 2200,
+esp_timer 1988, mdns 1396, tiT 1372, Tmr Svc 1336, mqtt 1244, led 1200, sys_evt 788,
+IDLE 688-696, ipc 436-508.
 
 ## Internal RAM, before and after 2026-10-26
 
@@ -145,7 +145,7 @@ lines one byte at a time, the same as for the burst over COM12 (117 ms).
 | Flash | raw partition read (4 KB) | 10.8-11.4 MB/s |
 | Flash | memory-mapped read (cache) | 27.5-30.9 MB/s |
 | Display SPI | full 240x320 RGB444 frame (115 200 B) | 32.9-37.2 ms, 3.1-3.5 MB/s, 62-70% of the 40 MHz wire (27.8-28.9 ms, 4.0-4.1 MB/s with PSRAM at 80 MHz) |
-| Display SPI | GIFs on all three panels | 15.8 fps each, 3.6 MB/s, 76% of the wire (2026-11-01, see below) |
+| Display SPI | GIFs on all three panels | 14.9 fps each, 3.9 MB/s, 82% of the wire (2026-11-01, see below) |
 | USB CDC | board to PC | 0.70 MB/s (`bench usb 2048`) |
 | USB CDC | PC to board, text lines parsed | 0.4 MB/s (43 KB in 105 ms, 2026-10-26) |
 | USB | cover art, PC service to board | 115 ms on WinUSB bulk, 688 ms on HID (2026-10-26) |
