@@ -2,7 +2,6 @@
 
 #include <esp_heap_caps.h>
 #include <esp_vfs_fat.h>
-#include <miniz.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,8 +26,6 @@ struct GifTables {
   GifRect rects[MAX_FRAMES][MAX_DIRTY_RECTS];
 };
 
-static tinfl_decompressor *s_inf;   // 11 KB, PSRAM: internal RAM inflated no faster (15-16 ms a frame either way)
-static uint8_t *s_raw;              // w*h, PSRAM: a non-key frame's rects before they go into cur
 
 bool gifFsInit() {
   const esp_vfs_fat_mount_config_t mount_config = {
@@ -60,12 +57,47 @@ static uint32_t rd32(const uint8_t *&p) {
   return v;
 }
 
-static bool inflateFrame(tinfl_decompressor *d, const uint8_t *src, size_t srcLen, uint8_t *dst, size_t dstLen) {
-  tinfl_init(d);
-  size_t inLen = srcLen, outLen = dstLen;
-  tinfl_status st = tinfl_decompress(d, src, &inLen, dst, dst, &outLen,
-                                     TINFL_FLAG_PARSE_ZLIB_HEADER | TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF);
-  return st == TINFL_STATUS_DONE && outLen == dstLen;
+// One LZ4 block (no frame header, no stored size) into exactly dstLen bytes.
+// Every length and offset is checked against both buffers: false = corrupt.
+static bool lz4Block(const uint8_t *src, size_t srcLen, uint8_t *dst, size_t dstLen) {
+  const uint8_t *ip = src, *iEnd = src + srcLen;
+  uint8_t *op = dst, *oEnd = dst + dstLen;
+  auto more = [&](size_t &n) {   // a 15 nibble: 255-bytes until one below 255
+    uint8_t b;
+    do {
+      if (ip == iEnd) return false;
+      b = *ip++;
+      n += b;
+    } while (b == 255);
+    return true;
+  };
+  while (ip < iEnd) {
+    uint8_t tok = *ip++;
+    size_t n = tok >> 4;
+    if (n == 15 && !more(n)) return false;
+    if ((size_t)(iEnd - ip) < n || (size_t)(oEnd - op) < n) return false;
+    memcpy(op, ip, n);
+    op += n;
+    ip += n;
+    if (ip == iEnd) break;   // the last sequence is literals only
+    if (iEnd - ip < 2) return false;
+    size_t off = ip[0] | ip[1] << 8;
+    ip += 2;
+    n = tok & 15;
+    if (n == 15 && !more(n)) return false;
+    n += 4;
+    if (off == 0 || off > (size_t)(op - dst) || (size_t)(oEnd - op) < n) return false;
+    // an overlapping match repeats its last off bytes: copy whole periods,
+    // the copied run doubling each pass
+    for (size_t d = off; n;) {
+      size_t c = n < d ? n : d;
+      memcpy(op, op - d, c);
+      op += c;
+      n -= c;
+      d += c;
+    }
+  }
+  return op == oEnd;
 }
 
 // The GIFs after the pack's header, into the tables
@@ -91,10 +123,11 @@ static bool readGifs(const uint8_t *p, uint8_t nGif, uint16_t total) {
         GifRect &q = gif.rects[f][r];
         memcpy(&q, p, sizeof q);
         p += sizeof q;
-        if (!q.w || !q.h || q.x + q.w > gif.w || q.y + q.h > gif.h || ((q.x | q.w) & 1)) return false;
+        // display.cpp packs 8 pixels at a time: a rect is a multiple of 8
+        if (!q.w || !q.h || q.x + q.w > gif.w || q.y + q.h > gif.h || ((q.x | q.w) & 1) || ((q.w * q.h) & 7)) return false;
         rawLen += (size_t)q.w * q.h;
       }
-      if (rawLen > (size_t)gif.w * gif.h) return false;   // overlapping rects would overrun s_raw
+      if (rawLen > (size_t)gif.w * gif.h) return false;   // overlapping rects would overrun raw
       gif.nRects[f] = nr;
       gif.zLen[f] = rd32(p);
       if (!have(p, gif.zLen[f])) return false;
@@ -108,20 +141,17 @@ static bool readGifs(const uint8_t *p, uint8_t nGif, uint16_t total) {
 
 bool gifLoad() {
   const uint8_t *p = gifsBinStart;
-  if (!have(p, 16) || memcmp(p, "GIFP", 4) || p[4] != 1) return false;
+  if (!have(p, 16) || memcmp(p, "GIFP", 4) || p[4] != 2) return false;
   uint8_t nGif = p[5];
   p += 6;
   gif.w = rd16(p);
   gif.h = rd16(p);
   uint16_t total = rd16(p);
-  p += 4;   // inflated size: unused, frames inflate as they play
+  p += 4;   // decoded size: unused, frames decode as they play
   if (nGif == 0 || nGif > MAX_GIF_SEGS || gif.w == 0 || gif.w > TFT_W || (gif.w & 1) || gif.h == 0 || gif.h > TFT_H ||
-      total == 0 || total > MAX_FRAMES) return false;
-  size_t screen = (size_t)gif.w * gif.h;
+      ((gif.w * gif.h) & 7) || total == 0 || total > MAX_FRAMES) return false;
   GifTables *t = (GifTables *)heap_caps_calloc(1, sizeof(GifTables), MALLOC_CAP_SPIRAM);
-  s_raw = (uint8_t *)heap_caps_malloc(screen, MALLOC_CAP_SPIRAM);
-  s_inf = (tinfl_decompressor *)heap_caps_malloc(sizeof(tinfl_decompressor), MALLOC_CAP_SPIRAM);
-  bool ok = t && s_raw && s_inf;
+  bool ok = t;
   if (ok) {
     gif.durMs = t->durMs;
     gif.z = t->z;
@@ -133,41 +163,36 @@ bool gifLoad() {
   }
   if (!ok) {
     for (uint16_t *&pal : gif.pal) { free(pal); pal = nullptr; }
-    free(s_inf);
-    free(s_raw);
     free(t);
-    s_inf = nullptr;
-    s_raw = nullptr;
     return false;
   }
-  gif.bytes = sizeof(GifTables) + screen;
+  gif.bytes = sizeof(GifTables);
   gif.packBytes = gifsBinEnd - gifsBinStart;
   gif.nSeg = nGif;
   gif.n = total;   // last: the player starts when this is set
   return true;
 }
 
-bool gifApplyFrame(uint8_t *cur, uint16_t f) {
-  if (gif.key[f]) return inflateFrame(s_inf, gif.z[f], gif.zLen[f], cur, (size_t)gif.w * gif.h);
+bool gifApplyFrame(uint8_t *cur, uint8_t *raw, uint16_t f, int keep0, int keep1) {
+  if (gif.key[f]) return lz4Block(gif.z[f], gif.zLen[f], cur, (size_t)gif.w * gif.h);
   size_t rawLen = 0;
   for (uint8_t i = 0; i < gif.nRects[f]; i++) rawLen += (size_t)gif.rects[f][i].w * gif.rects[f][i].h;
-  if (!inflateFrame(s_inf, gif.z[f], gif.zLen[f], s_raw, rawLen)) return false;
-  const uint8_t *s = s_raw;
+  if (!lz4Block(gif.z[f], gif.zLen[f], raw, rawLen)) return false;
+  const uint8_t *s = raw;
   for (uint8_t i = 0; i < gif.nRects[f]; i++) {
     const GifRect &r = gif.rects[f][i];
-    for (int y = r.y; y < r.y + r.h; y++) {
-      memcpy(cur + (size_t)y * gif.w + r.x, s, r.w);
-      s += r.w;
-    }
+    int y0 = r.y > keep0 ? r.y : keep0, y1 = r.y + r.h < keep1 ? r.y + r.h : keep1;
+    for (int y = y0; y < y1; y++) memcpy(cur + (size_t)y * gif.w + r.x, s + (size_t)(y - r.y) * r.w, r.w);
+    s += (size_t)r.w * r.h;
   }
   return true;
 }
 
-bool gifBuildFrame(uint8_t *cur, uint16_t f) {
+bool gifBuildFrame(uint8_t *cur, uint8_t *raw, uint16_t f) {
   uint16_t k = f;
   while (!gif.key[k]) k--;   // gifLoad checked: a segment starts with a key frame
   for (uint16_t i = k; i <= f; i++)
-    if (!gifApplyFrame(cur, i)) return false;
+    if (!gifApplyFrame(cur, raw, i, 0, gif.h)) return false;
   return true;
 }
 

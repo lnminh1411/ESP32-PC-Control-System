@@ -172,8 +172,9 @@ python scripts/check_pins.py
 Builds `firmware/main/gifs.bin`, the GIF pack embedded in the firmware, from
 the GIFs listed in `firmware/gifs/gifs.json`: frames scaled to 240x320, one
 palette of up to 256 RGB444 colours per GIF, and only each frame's dirty rects
-stored, zlib-compressed. Format in `firmware/main/gif_store.h`. Needs numpy
-and Pillow.
+stored (the cheapest cover of its changed 8-row bands by at most 8 rects),
+LZ4-HC compressed. Format in `firmware/main/gif_store.h`. Needs numpy, Pillow
+and lz4.
 
 ```bash
 python scripts/gif_pack.py

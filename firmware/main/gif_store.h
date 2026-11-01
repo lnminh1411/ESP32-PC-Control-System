@@ -1,5 +1,5 @@
 // GIF frames, built into the firmware: main/gifs.bin (from scripts/gif_pack.py,
-// sources in firmware/gifs/) stays compressed in flash; each frame is inflated
+// sources in firmware/gifs/) stays compressed in flash; each frame is decoded
 // as it plays (display.cpp's gifdec task, core 1). Each GIF is a segment with
 // its own palette of RGB444 colours: segments loop on their own and take
 // turns, GIF_SWITCH_S each. A frame is 8-bit palette indices: a key frame
@@ -7,13 +7,14 @@
 // dirty rects against the frame before it in the segment's loop.
 //
 // Pack format (little-endian, nothing aligned):
-//   "GIFP", u8 version (1), u8 nGif, u16 w, u16 h, u16 frames in all GIFs,
-//   u32 bytes of indices once inflated (unused since frames inflate as they play)
+//   "GIFP", u8 version (2; 1 had zlib frames), u8 nGif, u16 w, u16 h,
+//   u16 frames in all GIFs, u32 bytes of indices once decoded (unused)
 //   per GIF: u16 nColors, u16 nFrames, nColors x u16 colour (0x0RGB)
 //   per frame: u16 duration_ms, u8 flags (bit 0 key frame), u8 nRects,
-//     nRects x u16 x, y, w, h (x and w even), u32 zLen, zLen bytes of zlib:
-//     key frame w*h indices, else the indices of its rects, rect by rect,
-//     row-major
+//     nRects x u16 x, y, w, h (x and w even, w*h a multiple of 8, as is the
+//     GIF's w*h: display.cpp packs 8 pixels at a time), u32 zLen, zLen bytes of one
+//     LZ4 block (no size stored): key frame w*h indices, else the indices of
+//     its rects, rect by rect, row-major
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
@@ -32,12 +33,12 @@ struct GifRect {
 struct Gif {
   uint16_t w, h, n;               // pushed size (w even), frame count
   uint16_t *durMs;                // [MAX_FRAMES]
-  const uint8_t **z;              // [MAX_FRAMES] zlib data in the pack (flash)
+  const uint8_t **z;              // [MAX_FRAMES] LZ4 block in the pack (flash)
   uint32_t *zLen;                 // [MAX_FRAMES]
   uint8_t *key;                   // [MAX_FRAMES] the whole screen, not its rects
   uint8_t *nRects;                // [MAX_FRAMES] up to 8 dirty rects vs previous frame
   GifRect (*rects)[MAX_DIRTY_RECTS];   // [MAX_FRAMES]
-  uint32_t bytes;                 // PSRAM: tables and the inflate buffer
+  uint32_t bytes;                 // PSRAM: the tables
   uint32_t packBytes;             // gifs.bin in flash
   uint8_t nSeg;                   // segments (GIFs)
   uint16_t segStart[MAX_GIF_SEGS + 1];   // segment s: frames segStart[s] .. segStart[s + 1] - 1
@@ -49,12 +50,14 @@ extern Gif gif;
 bool gifFsInit();                               // mount FAT; false = not available
 bool gifLoad();                                 // index the built-in pack; false = bad / no memory
 
-// cur: a panel's w*h indices. Apply needs frame gifPrevFrame(f) in cur, and
-// inflates f's rects over it; Build makes frame f from any state (inflates
-// every frame from the segment's key frame). One task only: they share one
-// inflate buffer. false = the frame did not inflate.
-bool gifApplyFrame(uint8_t *cur, uint16_t f);
-bool gifBuildFrame(uint8_t *cur, uint16_t f);
+// cur: a panel's w*h indices, raw: w*h for the decoded rects. Apply needs
+// frame gifPrevFrame(f) in cur's rows [keep0, keep1): it decodes f's rects
+// into raw, back to back, and copies them into cur only on those rows (a key
+// frame decodes whole into cur). Build makes all of frame f in cur from any
+// state (decodes every frame from the segment's key frame). Any task, each
+// with its own buffers. false = the frame did not decode.
+bool gifApplyFrame(uint8_t *cur, uint8_t *raw, uint16_t f, int keep0, int keep1);
+bool gifBuildFrame(uint8_t *cur, uint8_t *raw, uint16_t f);
 
 uint8_t gifSegOf(uint16_t f);
 uint16_t gifPrevFrame(uint16_t f);              // the frame before f in its segment's loop

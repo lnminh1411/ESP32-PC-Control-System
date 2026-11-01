@@ -82,13 +82,15 @@ static void cmdPerf(const char *, const char *) {
   static TaskStatus_t *prev = (TaskStatus_t *)psramCalloc(40 * sizeof(TaskStatus_t));   // 1.6 KB
   if (!prev) { logMsg("perf: no memory"); return; }
   static UBaseType_t nPrev;
-  static uint32_t prevUs, prevSpin, prevDec, prevDecN;
+  static uint32_t prevUs, prevSpin, prevDec, prevDecN, prevPack;
   extern uint32_t displaySpinUs;
   uint32_t spin = displaySpinUs - prevSpin;
   prevSpin = displaySpinUs;
   uint32_t dec = gifDecodeUs - prevDec, decN = gifDecodeN - prevDecN;
   prevDec = gifDecodeUs;
   prevDecN = gifDecodeN;
+  uint32_t pack = gifPackUs - prevPack;
+  prevPack = gifPackUs;
   TaskStatus_t cur[40];
   uint32_t total;
   UBaseType_t n = uxTaskGetSystemState(cur, 40, &total);
@@ -108,7 +110,8 @@ static void cmdPerf(const char *, const char *) {
            100 - idle[0] * 100.0f / dt, 100 - idle[1] * 100.0f / dt, busLoadPct());
     logMsg("  flush DMA wait %.1f%%  fps %.1f / %.1f / %.1f", spin * 100.0f / dt,
            panels[0].fps, panels[1].fps, panels[2].fps);
-    if (decN) logMsg("  gif inflate %.1f%% of core 1, %.1f ms a frame", dec * 100.0f / dt, dec / 1000.0f / decN);
+    if (decN) logMsg("  gif decode %.1f%% of core 1, %.1f ms a frame; flush packs RGB444 in %.1f ms", dec * 100.0f / dt,
+                     dec / 1000.0f / decN, pack / 1000.0f / decN);
     logMsg("  canvas internal %d/%d/%d  internal heap free %uK", panels[0].canvasInternal,
            panels[1].canvasInternal, panels[2].canvasInternal,
            (unsigned)(freeInternal() / 1024));
@@ -354,11 +357,24 @@ static void cmdShot(const char *a1, const char *) {
   if (!copy) { logMsg("shot: no memory"); return; }
   Panel &p = panels[n - 1];
   memcpy(copy, p.canvas->getBuffer(), bytes);   // snapshot: the canvas keeps changing
-  displayWait(n - 1);   // the flush task writes the GIF frame while it pushes
-  if (p.gifMode && gif.n && p.gifCur && p.gifShown >= 0) {
+  displayWait(n - 1);   // gifdec and flush work on the GIF frame until then
+  int16_t shown = p.gifShown;
+  uint8_t *frame = nullptr, *raw = nullptr;
+  if (p.gifMode && gif.n && shown >= 0) {
+    // the panel keeps only the overlay band's rows of its frame current:
+    // build the whole of it here
+    frame = (uint8_t *)heap_caps_malloc((size_t)gif.w * gif.h, MALLOC_CAP_SPIRAM);
+    raw = (uint8_t *)heap_caps_malloc((size_t)gif.w * gif.h, MALLOC_CAP_SPIRAM);
+    if (!frame || !raw || !gifBuildFrame(frame, raw, shown)) {
+      free(frame);
+      frame = nullptr;
+    }
+    free(raw);
+  }
+  if (frame) {
     // GIF faces bypass the canvas: the panel's current frame through its
     // palette, and only the overlay band from the canvas
-    const uint16_t *pal = gif.pal[gifSegOf(p.gifShown)];
+    const uint16_t *pal = gif.pal[gifSegOf(shown)];
     int x0 = ((TFT_W - gif.w) / 2) & ~1, y0 = (TFT_H - gif.h) / 2;
     for (int y = 0; y < TFT_H; y++) {
       bool inBand = p.bandY1 > p.bandY0 && y >= p.bandY0 && y < p.bandY1;
@@ -368,7 +384,7 @@ static void cmdShot(const char *a1, const char *) {
         int gx = x - x0, gy = y - y0;
         uint16_t c = 0;
         if (gx >= 0 && gx < gif.w && gy >= 0 && gy < gif.h) {
-          uint16_t q = pal[p.gifCur[(size_t)gy * gif.w + gx]];
+          uint16_t q = pal[frame[(size_t)gy * gif.w + gx]];
           int r = q >> 8, g = (q >> 4) & 15, b = q & 15;
           c = (uint16_t)((r << 12) | (r >> 3 << 11) | (g << 7) | (g >> 2 << 5) | (b << 1) | (b >> 3));
         }
@@ -377,6 +393,7 @@ static void cmdShot(const char *a1, const char *) {
       }
     }
   }
+  free(frame);
   char line[1100];
   int len = snprintf(line, sizeof line, "SHOT begin %d %d %d\n", n, TFT_W, TFT_H);
   usbCdcWriteAll(line, len);

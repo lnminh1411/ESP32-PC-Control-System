@@ -9,15 +9,17 @@ width, quantized to RGB444 and given its own palette of at most 256 colours
 (the most used ones; the rest take the nearest palette colour). "every" keeps
 every Nth frame; the dropped frames' time goes to the frame kept before them.
 Frame 0 of each GIF stores the whole screen, every other frame only the pixels
-of its dirty rects against the frame before it in the GIF's loop.
+of its dirty rects against the frame before it in the GIF's loop. The rects
+are the cheapest cover of the changed 8-row bands by at most 8 rects (pixels
+pushed plus a fixed cost per rect), each frame LZ4-HC compressed.
 
-Needs numpy and Pillow.
+Needs numpy, Pillow and lz4.
 """
 import json
 import os
 import struct
-import zlib
 
+import lz4.block
 import numpy as np
 from PIL import Image, ImageSequence
 
@@ -29,6 +31,8 @@ BAND = 8                # rows, as computeFrameRects did on the board
 MAX_DIRTY_RECTS = 8     # gif_store.h
 MAX_GIF_SEGS = 8        # gif_store.h
 MAX_FRAMES = 512        # config.h
+RECT_COST = 200         # pixels: a rect's CASET/RASET/RAMWR and DMA restart take about as long on the bus
+PACK_VERSION = 2        # 1 was zlib frames
 
 
 def fill_panel(img):
@@ -89,18 +93,36 @@ def band_diff(cur, prev, y, n):
 
 
 def frame_rects(cur, prev):
-    """Runs of dirty bands, one rect per run; more than MAX_DIRTY_RECTS: the whole frame."""
-    rects, run_y, rx0, rx1 = [], -1, PANEL_W, -1
-    for y in range(0, PANEL_H + BAND, BAND):   # the extra pass closes the last run
-        dirty = band_diff(cur, prev, y, BAND) if y < PANEL_H else None
-        if dirty:
-            if run_y < 0:
-                run_y = y
-            rx0, rx1 = min(rx0, dirty[0]), max(rx1, dirty[1])
-        elif run_y >= 0:
-            rects.append((rx0, run_y, rx1 - rx0 + 1, y - run_y))
-            run_y, rx0, rx1 = -1, PANEL_W, -1
-    return rects if len(rects) <= MAX_DIRTY_RECTS else [(0, 0, PANEL_W, PANEL_H)]
+    """Fewest pixels (plus RECT_COST a rect) covering the changed bands with at
+    most MAX_DIRTY_RECTS rects, each a run of whole bands at their changed x
+    range. best[i][r]: the cost of bands i.. with r rects left."""
+    ranges = [band_diff(cur, prev, y, BAND) for y in range(0, PANEL_H, BAND)]
+    n, k, inf = len(ranges), MAX_DIRTY_RECTS, float("inf")
+    best = [[inf] * (k + 1) for _ in range(n)] + [[0] * (k + 1)]
+    pick = [[None] * (k + 1) for _ in range(n)]   # (last band, x0, x1) of the rect starting at band i
+    for i in range(n - 1, -1, -1):
+        for r in range(k + 1):
+            if ranges[i] is None:                 # clean: no rect needs to start here
+                best[i][r] = best[i + 1][r]
+                continue
+            if r == 0:
+                continue
+            x0, x1 = PANEL_W, -1
+            for j in range(i, n):
+                if ranges[j] is not None:
+                    x0, x1 = min(x0, ranges[j][0]), max(x1, ranges[j][1])
+                v = (x1 - x0 + 1) * BAND * (j - i + 1) + RECT_COST + best[j + 1][r - 1]
+                if v < best[i][r]:
+                    best[i][r], pick[i][r] = v, (j, x0, x1)
+    rects, i, r = [], 0, k
+    while i < n:
+        if pick[i][r] is None:                    # clean band (or nothing left to cover)
+            i += 1
+            continue
+        j, x0, x1 = pick[i][r]
+        rects.append((x0, i * BAND, x1 - x0 + 1, (j - i + 1) * BAND))
+        i, r = j + 1, r - 1
+    return rects
 
 
 def rect_pixels(idx, rects):
@@ -110,10 +132,13 @@ def rect_pixels(idx, rects):
 def replay_check(indexed, stored):
     """Keyframe, then the deltas, then round the loop: must give every frame back."""
     n = len(indexed)
-    cur = np.frombuffer(zlib.decompress(stored[0][1]), np.uint8).reshape(PANEL_H, PANEL_W).copy()
+    def unpack(rects, z, key):
+        return lz4.block.decompress(z, uncompressed_size=PANEL_W * PANEL_H if key else sum(w * h for _, _, w, h in rects))
+
+    cur = np.frombuffer(unpack(*stored[0], True), np.uint8).reshape(PANEL_H, PANEL_W).copy()
     for i in list(range(1, n)) + [0]:
         rects, z = stored[i]
-        raw = zlib.decompress(z)
+        raw = unpack(rects, z, i == 0)
         if i == 0:
             cur = np.frombuffer(raw, np.uint8).reshape(PANEL_H, PANEL_W).copy()
         else:
@@ -129,12 +154,14 @@ def pack_gif(name, every):
     frames, durations = load_frames(os.path.join(GIF_DIR, name), every)
     palette, lut, worst, moved = build_palette(frames)
     indexed = [lut[f] for f in frames]
-    stored, psram = [], 0
+    stored, psram, pushed = [], 0, 0
     for i, idx in enumerate(indexed):
         rects = frame_rects(idx, indexed[i - 1])   # frame 0 against the last one: the loop
         raw = idx.tobytes() if i == 0 else rect_pixels(idx, rects)
-        stored.append((rects, zlib.compress(raw, 9)))
+        z = lz4.block.compress(raw, mode="high_compression", compression=12, store_size=False)
+        stored.append((rects, z))
         psram += len(raw)
+        pushed += sum(w * h for _, _, w, h in rects)
     replay_check(indexed, stored)
 
     body = struct.pack("<2H", len(palette), len(frames)) + palette.astype("<u2").tobytes()
@@ -144,7 +171,8 @@ def pack_gif(name, every):
         body += struct.pack("<I", len(z)) + z
     print(f"{name}: {len(frames)} frames, {sum(durations)} ms a loop, {len(palette)} colours, "
           f"worst colour error {worst:.2f} of 15 (RGB444 distance, {moved * 100:.2f}% of pixels moved), "
-          f"pack {len(body) / 1024:.1f} KB, {psram / 1024:.1f} KB inflated")
+          f"pack {len(body) / 1024:.1f} KB, {psram / 1024:.1f} KB inflated, "
+          f"rects {100 * pushed / (len(frames) * PANEL_W * PANEL_H):.0f}% of the screen a frame")
     return body, len(frames), psram
 
 
@@ -156,12 +184,12 @@ def main():
     total = sum(p[1] for p in packed)
     assert total <= MAX_FRAMES, "too many frames"
     psram = sum(p[2] for p in packed)
-    data = b"GIFP" + struct.pack("<2B3HI", 1, len(gifs), PANEL_W, PANEL_H, total, psram)
+    data = b"GIFP" + struct.pack("<2B3HI", PACK_VERSION, len(gifs), PANEL_W, PANEL_H, total, psram)
     data += b"".join(p[0] for p in packed)
     with open(OUT, "wb") as f:
         f.write(data)
     print(f"{OUT}: {len(gifs)} GIFs, {total} frames, pack {len(data)} bytes ({len(data) / 1024:.1f} KB) "
-          f"in the app image (5 MB slot), {psram / 1024:.1f} KB inflated, frame by frame as they play")
+          f"in the app image (5 MB slot), {psram / 1024:.1f} KB decoded, frame by frame as they play")
 
 
 if __name__ == "__main__":

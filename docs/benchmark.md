@@ -12,21 +12,21 @@ and time Wi-Fi from the PC with
 
 ## Usage
 
-From `bench usage` (part of `bench all`), PC on, 62-frame GIF pack inflated as
-it plays, one panel having shown a GIF. Each panel that shows one holds 75 KB
-of PSRAM.
+From `bench usage` (part of `bench all`), PC on, 62-frame GIF pack decoded as
+it plays, all three panels having shown a GIF. Each panel that shows one holds
+150 KB of PSRAM (its frame and its decoded rects).
 
 | Memory | Used | Notes |
 |---|---|---|
-| SRAM (512 KB) | 393 KB (77%) | 145 KB static (code in IRAM, data/bss, ROM, cache); heap 366 KB, 121 KB free; lowest free ever: 47 KB, largest block 31 KB |
-| PSRAM (7680 KB) | 1585 KB (21%) | lowest free ever 5017 KB, largest free block 6015 KB |
+| SRAM (512 KB) | 393 KB (77%) | 145 KB static (code in IRAM, data/bss, ROM, cache); heap 366 KB, 121 KB free; lowest free ever: 56 KB, largest block 31 KB |
+| PSRAM (7680 KB) | 1880 KB (24%) | lowest free ever 4728 KB before `bench all`, largest free block 4608 KB |
 | Flash (16 MB) | fully partitioned | one 10 MB app slot (no OTA), FAT 5.9 MB, NVS 20 KB, core dump 64 KB |
-| App image | 2836 KB of 10240 KB (28%) | 1199 KB of it is the GIF pack |
+| App image | 3044 KB of 10240 KB (30%) | 1407 KB of it is the GIF pack |
 | FAT /ffat | 4 KB of 5932 KB (0%) | layout.json, saved text images |
-| NVS | 229 of 630 entries | 12 namespaces |
+| NVS | 232 of 630 entries | 12 namespaces |
 
-Task stacks, least ever free (bytes): main 6616, discord 5528, httpd 4896,
-websocket 4648, weather 3472, TinyUSB 2876, flush 2852, wifi 2564, gifdec 2240,
+Task stacks, least ever free (bytes): main 6616, discord 5524, httpd 4904,
+websocket 4648, weather 3484, TinyUSB 2876, flush 2708, wifi 2676, gifdec 2192,
 esp_timer 2052, mdns 1788, tiT 1368, Tmr Svc 1328, mqtt 1236, led 1200, sys_evt 792,
 IDLE 688-696, ipc 500-508.
 
@@ -141,9 +141,10 @@ lines one byte at a time, the same as for the burst over COM12 (117 ms).
 | PSRAM | random read (1 MB span) | 1410-1420 ns (697 at 80 MHz) |
 | PSRAM | stress, 4 MB x 8 passes | 0 bad words, 2.5 s |
 | PSRAM to SRAM | copy in 4 KB pieces | 43 MB/s (86 at 80 MHz) |
-| Flash | raw partition read (4 KB) | 10.8 MB/s |
-| Flash | memory-mapped read (cache) | 27.5-30.4 MB/s |
+| Flash | raw partition read (4 KB) | 10.8-11.4 MB/s |
+| Flash | memory-mapped read (cache) | 27.5-30.9 MB/s |
 | Display SPI | full 240x320 RGB444 frame (115 200 B) | 32.9-37.2 ms, 3.1-3.5 MB/s, 62-70% of the 40 MHz wire (27.8-28.9 ms, 4.0-4.1 MB/s with PSRAM at 80 MHz) |
+| Display SPI | GIFs on all three panels | 15.8 fps each, 3.6 MB/s, 76% of the wire (2026-11-01, see below) |
 | USB CDC | board to PC | 0.70 MB/s (`bench usb 2048`) |
 | USB CDC | PC to board, text lines parsed | 0.4 MB/s (43 KB in 105 ms, 2026-10-26) |
 | USB | cover art, PC service to board | 115 ms on WinUSB bulk, 688 ms on HID (2026-10-26) |
@@ -292,3 +293,63 @@ With the SPI ISR and heap back in IRAM for a while: 161 KB static, 105 KB
 free. Back in flash with the patch and the core pin: 145 KB static, 121 KB
 free, and 3.6 minutes with GIFs on all three panels plus `bench spi` every
 25 s (bus 74%, 10.8-11.8 fps each) ran without a fault.
+
+## GIF pipeline, 2026-11-01 (later)
+
+Three changes, then two more after measuring:
+
+- **Packer:** each frame's dirty rects are the cheapest cover of its changed
+  8-row bands by at most 8 rects (pixels pushed plus 200 a rect for the
+  window commands), found by dynamic programming. The old packer took one
+  rect per run of changed bands, and more than 8 runs meant the whole frame.
+  Rects now cover 64-70% of the screen a frame, down from 86-95%.
+- **LZ4 instead of zlib:** pack format 2, one LZ4-HC block a frame, decoded
+  on the board by a bounds-checked LZ4 block decoder (`gif_store.cpp`)
+  instead of miniz's tinfl. The pack grew from 1199 to 1407 KB.
+- **Packing RGB444:** gifdec decodes a frame's rects into a buffer of its own
+  (`gifRaw`, back to back) and copies them into the panel's frame
+  (`gifCur`) only on the overlay band's rows. Flush packs the pixels through
+  the palette, 8 at a time, into the internal DMA chunks, each chunk while
+  the one before it is on the wire. A band move, a segment switch or a
+  loop's first frame rebuilds the whole frame and pushes it whole; `shot`
+  rebuilds the frame it captures.
+
+`perf`, PC on, GIF on panel 1 alone, then on all three:
+
+| | Before | After |
+|---|---|---|
+| One panel | 19.9 fps, 18.8 ms to inflate a frame, `gifdec` 37.5% of core 1 | 19.9 fps, 5.9 ms to decode, `gifdec` 11.8% of core 1, flush packs in 2.7 ms |
+| One panel, bus | 41% | 32% |
+| Three panels | 10.8-11.8 fps, bus 74%, core 1 93% | 15.8 fps each, bus 76%, core 1 58%, core 0 46% |
+| PSRAM a GIF panel | 75 KB, plus one shared 75 KB inflate buffer and 11 KB inflate state | 150 KB |
+
+The steps measured with three panels, all at bus 62-76%:
+
+| Step | fps | Core 1 | `gifdec` CPU a frame |
+|---|---|---|---|
+| zlib, old rects (before) | 10.8-11.8 | 93% | 18.8 ms (wall) |
+| LZ4, new rects, gifdec packs RGB444 into PSRAM, flush DMAs it from there | 13.6-14.9 | 98% | ~16 ms, 8 ms of it packing |
+| The same, packing with word stores | 14.9 | 98% | 8 ms packing: no change |
+| A second gifdec on core 0 | 12.8-13.8 | 90% (core 0 91%) | ~25 ms |
+| Flush packs into internal DMA chunks, `gifCur` copied on band rows only | 13.9-14.9 | 54% | 6.4 ms |
+| Flush packs each chunk while the previous one is on the wire | 15.8 | 58% | 6.7 ms |
+
+- **PSRAM bandwidth was the limit,** not the CPU. PSRAM at 40 MHz with ECC
+  copies at 15 MB/s, and the first design moved about 370 KB a frame through
+  it: the decode, the copy into `gifCur`, 80 KB of RGB444 written and read
+  back by DMA. Word stores did not speed up packing, and a second decoder on
+  the other core made each frame slower. The final design moves about
+  110 KB a frame.
+- **DMA straight from PSRAM works on the S3** (AHB GDMA version 1 needs no
+  alignment, even with ECC): `psram_dma_direct` in esp_lcd and transfers up
+  to 32 KB. It was dropped with the PSRAM push buffer.
+- **The wire is the next limit:** a frame is about 77 KB, so three panels at
+  20 fps would need 94% of the 40 MHz wire. Most rects fit one 15 KB chunk,
+  so packing each chunk while the previous one is on the wire was worth
+  1 fps.
+- **The bus budget was not the limit:** with `fps budget 95` three panels ran
+  at the same 14.9-15.8 fps, bus 76%, no frame deferred at either budget.
+  The default went from 85% to 95% anyway, as headroom.
+
+`bench all` after the change: CPU, SRAM, PSRAM and flash as in the Speed
+table; a full frame 33.4-33.7 ms on the panels without a GIF.

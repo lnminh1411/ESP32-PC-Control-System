@@ -30,7 +30,7 @@ static uint8_t *dmaBuf[2];
 static volatile uint32_t txDone;
 static uint32_t txIssued;
 static QueueHandle_t flushQueue;
-static QueueHandle_t gifQueue;      // GIF panels to inflate before flush
+static QueueHandle_t gifQueue;      // GIF panels to decode before flush
 static TaskHandle_t flushTaskHandle;   // the only task that waits on DMA
 static volatile float busWirePct = 0.0f;
 
@@ -44,7 +44,7 @@ static bool IRAM_ATTR onTxDone(esp_lcd_panel_io_handle_t, esp_lcd_panel_io_event
 }
 
 uint32_t displaySpinUs;   // perf: time the flush task spends blocked on DMA
-uint32_t gifDecodeUs, gifDecodeN;   // perf: time gifdec spends inflating, frames inflated
+uint32_t gifDecodeUs, gifDecodeN, gifPackUs;   // perf: gifdec time, frames decoded, flush time packing GIF pixels
 
 // Blocks (core 0 free for other work) until at most inFlight transfers are
 // queued. Each finished transfer notifies; the timeout only guards against a
@@ -148,45 +148,68 @@ static uint32_t displayFlush(Panel &p) {
   return us;
 }
 
-static void pushGifRectRaw(Panel &p, const uint16_t *pal, int rx, int ry, int rw, int rh, int x0, int y0);
-
-// GIF rect minus the overlay band: up to two slices above and below it
-static void pushGifRect(Panel &p, const uint16_t *pal, int rx, int ry, int rw, int rh, int x0, int y0) {
-  if (p.bandY1 <= p.bandY0) { pushGifRectRaw(p, pal, rx, ry, rw, rh, x0, y0); return; }
-  int top = y0 + ry, bot = top + rh;                    // panel rows
-  int a1 = std::min(bot, (int)p.bandY0), b0 = std::max(top, (int)p.bandY1);
-  if (a1 > top) pushGifRectRaw(p, pal, rx, ry, rw, a1 - top, x0, y0);
-  if (bot > b0) pushGifRectRaw(p, pal, rx, ry + (b0 - top), rw, bot - b0, x0, y0);
+// n indices through the palette to RGB444 at o (word aligned), 2 px in 3
+// bytes. A run that starts word aligned goes 8 px at a time: two word loads,
+// three word stores.
+static void packPixels(uint8_t *o, const uint8_t *s, const uint16_t *pal, size_t n) {
+  if (!((uintptr_t)s & 3)) {
+    const uint32_t *in = (const uint32_t *)s;
+    uint32_t *out = (uint32_t *)o;
+    for (; n >= 8; n -= 8) {
+      uint32_t a = in[0], b = in[1];
+      in += 2;
+      uint32_t x0 = (uint32_t)pal[a & 255] << 12 | pal[(a >> 8) & 255];    // 2 px, 24 bits, first px on top
+      uint32_t x1 = (uint32_t)pal[(a >> 16) & 255] << 12 | pal[a >> 24];
+      uint32_t x2 = (uint32_t)pal[b & 255] << 12 | pal[(b >> 8) & 255];
+      uint32_t x3 = (uint32_t)pal[(b >> 16) & 255] << 12 | pal[b >> 24];
+      out[0] = __builtin_bswap32(x0 << 8 | x1 >> 16);                      // the 12 bytes, first on the wire lowest
+      out[1] = __builtin_bswap32(x1 << 16 | x2 >> 8);
+      out[2] = __builtin_bswap32(x2 << 24 | x3);
+      out += 3;
+    }
+    s = (const uint8_t *)in;
+    o = (uint8_t *)out;
+  }
+  for (; n >= 2; n -= 2, s += 2, o += 3) {
+    uint16_t a = pal[s[0]], c = pal[s[1]];
+    o[0] = a >> 4;                                                  // R1 G1
+    o[1] = (a << 4) | (c >> 8);                                     // B1 R2
+    o[2] = c;                                                       // G2 B2
+  }
 }
 
-// Rect of the panel's current frame: indices through the palette to RGB444
-static void pushGifRectRaw(Panel &p, const uint16_t *pal, int rx, int ry, int rw, int rh, int x0, int y0) {
-  int gx = x0 + rx;
-  int gy = y0 + ry;
-  waitTx(0);
-  setWindow(p, gx, gy, rw, rh);
-  size_t rowBytes = (size_t)rw * 3 / 2;
-  int rowsPerChunk = std::max(1, (int)(CHUNK_BYTES / rowBytes));
-  bool first = true;
-  for (int r0 = 0; r0 < rh; r0 += rowsPerChunk) {
-    int rows = std::min(rowsPerChunk, rh - r0);
+// Rows [r0, r1) of a GIF rect at panel (gx, gy), rw wide, whose indices start
+// at src (row-major, rw a row): packed into the DMA chunks as they go out.
+// Each chunk is packed while the one before it is on the wire, the previous
+// rect's last chunk included: most rects fit one chunk.
+static void pushGifRows(Panel &p, const uint8_t *src, const uint16_t *pal, int gx, int gy, int rw, int r0, int r1) {
+  if (r1 <= r0) return;
+  const size_t chunkPx = CHUNK_BYTES / 3 * 2;   // a multiple of 8
+  size_t n = (size_t)rw * (r1 - r0);
+  const uint8_t *s = src + (size_t)r0 * rw;
+  for (size_t i = 0; i < n; i += chunkPx) {
+    size_t m = std::min(chunkPx, n - i);
     waitTx(1);
-    uint8_t *b = dmaBuf[txIssued & 1], *o = b;
-    for (int r = 0; r < rows; r++) {
-      const uint8_t *s = p.gifCur + (size_t)(ry + r0 + r) * gif.w + rx;
-      for (int k = 0; k < rw; k += 2) {
-        uint16_t a = pal[s[k]], c = pal[s[k + 1]];
-        o[0] = a >> 4;                                              // R1 G1
-        o[1] = (a << 4) | (c >> 8);                                 // B1 R2
-        o[2] = c;                                                   // G2 B2
-        o += 3;
-      }
+    uint8_t *b = dmaBuf[txIssued & 1];
+    uint32_t t = nowUs();
+    packPixels(b, s + i, pal, m);
+    gifPackUs += nowUs() - t;
+    if (!i) {          // the window waits for the bus to go idle
+      waitTx(0);
+      setWindow(p, gx, gy + r0, rw, r1 - r0);
     }
     txIssued++;
-    esp_lcd_panel_io_tx_color(p.io, first ? 0x2C : 0x3C, b, o - b);
-    first = false;
+    esp_lcd_panel_io_tx_color(p.io, i ? 0x3C : 0x2C, b, m * 3 / 2);
   }
-  p.bytes += rowBytes * rh;
+  p.bytes += n * 3 / 2;
+}
+
+// GIF rect minus the overlay band: up to two slices above and below it
+static void pushGifRect(Panel &p, const uint8_t *src, const uint16_t *pal, int rx, int ry, int rw, int rh, int x0, int y0) {
+  int gx = x0 + rx, gy = y0 + ry;
+  if (p.bandY1 <= p.bandY0) { pushGifRows(p, src, pal, gx, gy, rw, 0, rh); return; }
+  pushGifRows(p, src, pal, gx, gy, rw, 0, std::clamp(p.bandY0 - gy, 0, rh));
+  pushGifRows(p, src, pal, gx, gy, rw, std::clamp(p.bandY1 - gy, 0, rh), rh);
 }
 
 // Overlay band over a GIF: canvas pixels, except C_GIF_KEY ones, which take
@@ -234,7 +257,7 @@ static void pushBand(Panel &p, const uint16_t *pal, int x0, int y0) {
   p.bytes += rowBytes * (yB - yA);
 }
 
-// gifdec has put frame gifFrame in gifCur
+// gifdec has decoded frame gifFrame: its rects in gifRaw, or all of it in gifCur
 static void pushGif(Panel &p) {
   if (!gif.n || !p.gifCur) return;
   uint32_t t0 = nowUs();
@@ -244,14 +267,16 @@ static void pushGif(Panel &p) {
   const uint16_t *pal = gif.pal[gifSegOf(fIdx)];
   bool band = p.bandY1 > p.bandY0, bandDirty = false;
   if (!p.gifFull) {
+    const uint8_t *s = p.gifRaw;
     uint8_t nr = gif.nRects[fIdx];
     for (uint8_t i = 0; i < nr; i++) {
       const GifRect &r = gif.rects[fIdx][i];
-      pushGifRect(p, pal, r.x, r.y, r.w, r.h, x0, y0);
+      pushGifRect(p, s, pal, r.x, r.y, r.w, r.h, x0, y0);
+      s += (size_t)r.w * r.h;
       if (y0 + r.y < p.bandY1 && y0 + r.y + r.h > p.bandY0) bandDirty = true;
     }
   } else {
-    pushGifRect(p, pal, 0, 0, gif.w, gif.h, x0, y0);
+    pushGifRect(p, p.gifCur, pal, 0, 0, gif.w, gif.h, x0, y0);
     bandDirty = true;
   }
   if (band) {   // the overlay sits on the GIF: re-mix it when the GIF or the overlay changed
@@ -306,10 +331,13 @@ static void flushTask(void *) {
   }
 }
 
-// Inflates GIF frames from flash into each panel's gifCur, then hands the
-// panel to flush. Core 1 at the main task's priority, so the two share time
-// slices: below it, gifdec only split the idle time with IDLE1 and a 20 fps
-// GIF fell to 10 fps.
+// Decodes GIF frames from flash for each panel (rects into gifRaw, gifCur
+// kept on the overlay band's rows), then hands the panel to flush, which
+// packs the pixels to RGB444 on the way out. PSRAM bandwidth is what limits
+// three panels: a pass that packed RGB444 into PSRAM here, for flush to DMA
+// from there, and a second decoder on core 0 were both slower. Core 1 at the
+// main task's priority, so the two share time slices: below it, gifdec only
+// split the idle time with IDLE1 and a 20 fps GIF fell to 10 fps.
 static void gifDecodeTask(void *) {
   for (;;) {
     int idx;
@@ -321,10 +349,14 @@ static void gifDecodeTask(void *) {
     }
     if (!p.gifCur) {   // first time on this panel
       p.gifCur = (uint8_t *)heap_caps_malloc((size_t)gif.w * gif.h, MALLOC_CAP_SPIRAM);
-      if (!p.gifCur) {
+      p.gifRaw = (uint8_t *)heap_caps_malloc((size_t)gif.w * gif.h, MALLOC_CAP_SPIRAM);
+      if (!p.gifCur || !p.gifRaw) {
         static bool told;
         if (!told) logMsg("gif: no PSRAM for a panel buffer");
         told = true;
+        free(p.gifCur);
+        free(p.gifRaw);
+        p.gifCur = p.gifRaw = nullptr;
         p.busy = false;
         continue;
       }
@@ -332,15 +364,22 @@ static void gifDecodeTask(void *) {
     }
     uint16_t f = p.gifFrame;
     uint32_t t0 = nowUs();
-    // the frame before f on the glass: inflate f's rects over it; else (a
-    // segment switch, a new face) rebuild from the key frame and push it whole
-    p.gifFull = p.gifShown != (int16_t)gifPrevFrame(f);
-    bool ok = p.gifFull ? gifBuildFrame(p.gifCur, f) : gifApplyFrame(p.gifCur, f);
+    // the frame before f on the glass and the band where gifCur was kept:
+    // decode f's rects; else (a segment switch, a new face, the band moved, a
+    // loop's first frame) rebuild all of gifCur and push it whole
+    int y0 = (TFT_H - gif.h) / 2;
+    p.gifFull = p.gifShown != (int16_t)gifPrevFrame(f) || gif.key[f] || p.bandY0 != p.gifKeepY0 || p.bandY1 != p.gifKeepY1;
+    bool ok = p.gifFull ? gifBuildFrame(p.gifCur, p.gifRaw, f)
+                        : gifApplyFrame(p.gifCur, p.gifRaw, f, p.bandY0 - y0, p.bandY1 - y0);
+    if (p.gifFull) {
+      p.gifKeepY0 = p.bandY0;
+      p.gifKeepY1 = p.bandY1;
+    }
     gifDecodeUs += nowUs() - t0;
     gifDecodeN++;
     if (!ok) {
       static bool told;
-      if (!told) logMsg("gif: frame %u did not inflate", f);
+      if (!told) logMsg("gif: frame %u did not decode", f);
       told = true;
       p.gifShown = -1;   // gifCur is partly written: the next frame rebuilds, the glass keeps the last one
       p.busy = false;
@@ -471,6 +510,8 @@ void displayInit() {
     p.busy = false;
     p.gifShown = -1;
     p.gifFrame = 0;
+    p.gifCur = p.gifRaw = nullptr;
+    p.gifKeepY0 = p.gifKeepY1 = 0;
     p.gifMode = false;
     p.bandY0 = p.bandY1 = 0;
     p.lastFrameBytes = 0;

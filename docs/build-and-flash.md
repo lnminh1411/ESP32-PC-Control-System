@@ -54,10 +54,11 @@ flash:
 python scripts/gif_pack.py
 ```
 
-It writes `firmware/main/gifs.bin` (committed) and prints the pack size, the
-size of the frames once inflated and the colour error of each palette. The
-board keeps the frames compressed in flash and inflates each as it plays,
-about 15 ms of core 1 a frame.
+It needs numpy, Pillow and lz4 (`pip install lz4`). It writes
+`firmware/main/gifs.bin` (committed) and prints the pack size, the size of
+the frames once decoded, how much of the screen their rects cover and the
+colour error of each palette. The board keeps the frames LZ4-compressed in
+flash and decodes each as it plays, about 6 ms of core 1 a frame.
 `GIF_SWITCH_S` sets how long each GIF plays.
 
 The two `*_20fps.gif` files are made from the originals kept beside them with
