@@ -12,7 +12,7 @@ and time Wi-Fi from the PC with
 
 ## Usage
 
-From `bench usage` (part of `bench all`), PC on, 220-frame GIF pack decoded as
+From `bench usage` (part of `bench all`), PC on, 222-frame GIF pack decoded as
 it plays, after GIFs had run on all three panels. Each panel that shows one
 holds 150 KB of PSRAM (its frame and its decoded rects).
 
@@ -22,7 +22,7 @@ holds 150 KB of PSRAM (its frame and its decoded rects).
 | PSRAM (7680 KB) | 1880 KB (24%) | lowest free ever 4722 KB, largest free block 4992 KB |
 | Flash (16 MB) | fully partitioned | one 8.9 MB app slot (no OTA), GIF pack 6 MB, FAT 1 MB, NVS 20 KB, core dump 64 KB |
 | App image | 1638 KB of 9088 KB (18%) | |
-| GIF pack | 5645 KB of 6144 KB (92%) | its own `gifs` partition: 9 GIFs, 220 frames |
+| GIF pack | 5707 KB of 6144 KB (93%) | its own `gifs` partition: 9 GIFs, 222 frames |
 | FAT /ffat | 4 KB of 972 KB (0%) | layout.json, saved text images |
 | NVS | 232 of 630 entries | 12 namespaces |
 
@@ -198,9 +198,9 @@ firmware with its single test GIF, and its ~3.8 MB is an estimate. "Now" is
 today's nine GIFs: LZ4 in their own `gifs` partition, decoded as they play (the
 later sections cover each step).
 
-| | Before | First pack, 27 frames | 42 frames | Now, 220 frames |
+| | Before | First pack, 27 frames | 42 frames | Now, 222 frames |
 |---|---|---|---|---|
-| GIF pack | none | 532 KB | 793 KB | 5645 KB |
+| GIF pack | none | 532 KB | 793 KB | 5707 KB |
 | Frames in PSRAM | ~3.8 MB with tables and buffers | 1780 KB | 2722 KB | none: 38 KB of tables, 150 KB a panel showing a GIF |
 | PSRAM used, `bench usage`, three 75 KB panel buffers in the older columns | 5179 KB | 3428 KB | 4374 KB | 1880 KB |
 | PSRAM free, lowest ever without bench buffers | 1438 KB | 3426 KB | 2456 KB | 4722 KB |
@@ -229,7 +229,7 @@ panels at 20 fps need about 5.7 MB/s, more than the 40 MHz wire carries.
 The app slots then grew from 3 MB to 5 MB each and FAT shrank from 9.9 MB
 to 5.9 MB (`partitions.csv`, flashed over USB). The same image filled 48%
 of its slot instead of 79%, leaving about 2.6 MB for more GIFs. The table is
-now one 8.9 MB app slot, FAT 1 MB and a 6 MB `gifs` partition with 499 KB free.
+now one 8.9 MB app slot, FAT 1 MB and a 6 MB `gifs` partition with 437 KB free.
 
 ### Frames inflated as they play
 
@@ -390,14 +390,14 @@ matched the packed frames exactly, and 15 turns in a row kept to the round rule.
 
 ## Nine GIFs, 2026-11-01
 
-Kita, Teto and Herta bring the pack to 220 frames and 5645 KB, too much for 5 MB,
+Kita, Teto and Herta bring the pack to 222 frames and 5707 KB, too much for 5 MB,
 so the partition table is now app 8.9 MB, FAT 1 MB, GIFs 6 MB. Up to 12 GIFs.
 
 | GIF | Frames | Pack | Rects, share of the screen | Palette, worst error |
 |---|---|---|---|---|
 | Kita | 16 | 741 KB | 99%: the paper grain changes every frame | 241, exact |
 | Teto | 50 | 1044 KB | 93% | 256, 4.90 of 15 (2.9% of pixels) |
-| Herta | 14 | 138 KB | 44% | 119, exact |
+| Herta | 16 | 200 KB | 58% | 112, exact |
 
 | GIF playback at 20 fps | Frame rate | Frame times | Bus |
 |---|---|---|---|
@@ -405,7 +405,7 @@ so the partition table is now app 8.9 MB, FAT 1 MB, GIFs 6 MB. Up to 12 GIFs.
 | Two panels | 19.1 fps median, 17-18 on Kita, Miku and Teto | 1.01x nominal | 65% |
 | Three panels | 15.75 fps median, 12-13 on Kita, Miku and Teto | 1.25x nominal | 77% |
 
-Herta counts 17.5 fps on any panel count: two frames repeat, so the packer holds
-the one before for 100 ms, and the loop stays 800 ms. All 38 panel screenshots
-matched the packed frames exactly, and 19 turns kept to the round rule. Lowest SRAM
-free 52 KB, no crashes in the log channel.
+All 38 panel screenshots matched the packed frames exactly, and 19 turns kept to
+the round rule. Lowest SRAM free 52 KB, no crashes in the log channel. Herta was
+then replaced by a different GIF, so these playback figures and shots are from
+the 138 KB version, whose rects covered 44% of the screen.

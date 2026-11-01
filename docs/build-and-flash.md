@@ -85,10 +85,8 @@ RIFE models from FluidFrames, which only give the midpoint of two frames:
 - `teto_20fps.gif` is frames 179-241 of `teto.gif`, a closing loop, brought from
   63 frames to 50 with RIFE. The side bars are cut and she fills the width with
   her top kept.
-- `herta_20fps.gif` is `herta.gif` at half speed, 0.8 s, 16 frames with RIFE
-  in-betweens. The midpoints of frames 1-2 and 4-5 melt under every model, so
-  real frames stand in for those two. The backdrop is flattened; she fills the
-  width and sits on the bottom edge.
+- `herta_20fps.gif` is the 8 frames of `herta.gif` plus a RIFE midpoint after
+  each, last-to-first pair included, 0.8 s a loop. She fills the height on white.
 
 ## Other uploads
 
