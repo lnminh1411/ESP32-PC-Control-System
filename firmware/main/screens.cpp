@@ -1467,6 +1467,9 @@ static void drawClock(LGFX_Sprite &c) {
   } else if (going == GO_UPDATE_RESTART || going == GO_UPDATE_SHUTDOWN) {
     chipText = "PC Updating";
     dotCol = C_WARN;
+  } else if (screensNight) {   // night mode shows this face with the PC still on, or asleep
+    chipText = pcState() == PC_ON ? "Night mode" : "Night mode | PC asleep";
+    dotCol = C_FAINT;
   } else {
     chipText = "PC Offline / Disconnected";
     dotCol = C_BAD;
