@@ -312,7 +312,7 @@
 #define SCREEN_MARQUEE_PAUSE_S 1.5f               // pause at each end of the title
 #endif
 #ifndef VIEW_BUS_BUDGET_PCT
-#define VIEW_BUS_BUDGET_PCT 85                    // share of the SPI bus the panels may use (`fps budget` changes it)
+#define VIEW_BUS_BUDGET_PCT 95                    // share of the SPI bus the panels may use (`fps budget` changes it)
 #endif
 #ifndef VIEW_MIN_FRAME_MS
 #define VIEW_MIN_FRAME_MS 50                      // canvas faces: at most 20 fps

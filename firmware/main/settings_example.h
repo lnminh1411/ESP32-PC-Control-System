@@ -165,7 +165,7 @@
 // ---- Screens and frame rate ----
 #define SCREEN_MARQUEE_PX_S 30.0f                 // media title scroll speed, px/s
 #define SCREEN_MARQUEE_PAUSE_S 1.5f               // pause at each end of the title
-#define VIEW_BUS_BUDGET_PCT 85                    // share of the SPI bus the panels may use (`fps budget` changes it)
+#define VIEW_BUS_BUDGET_PCT 95                    // share of the SPI bus the panels may use (`fps budget` changes it)
 #define VIEW_MIN_FRAME_MS 50                      // canvas faces: at most 20 fps
 #define VIEW_GIF_MIN_FRAME_MS 16                  // GIF face: at most ~60 fps (GIF frame times still apply)
 #define GIF_SWITCH_S 15                           // firmware/gifs/gifs.json with several GIFs: each loops this long, in turn

@@ -152,7 +152,7 @@ The secrets are described in [settings.md](settings.md).
 |---|---|---|
 | `SCREEN_MARQUEE_PX_S` | `30.0f` | media title scroll speed, px/s |
 | `SCREEN_MARQUEE_PAUSE_S` | `1.5f` | pause at each end of the title |
-| `VIEW_BUS_BUDGET_PCT` | `85` | share of the SPI bus the panels may use (`fps budget` changes it) |
+| `VIEW_BUS_BUDGET_PCT` | `95` | share of the SPI bus the panels may use (`fps budget` changes it) |
 | `VIEW_MIN_FRAME_MS` | `50` | canvas faces: at most 20 fps |
 | `VIEW_GIF_MIN_FRAME_MS` | `16` | GIF face: at most ~60 fps (GIF frame times still apply) |
 | `GIF_SWITCH_S` | `15` | firmware/gifs/gifs.json with several GIFs: each loops this long, in turn |

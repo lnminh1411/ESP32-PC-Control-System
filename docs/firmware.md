@@ -36,12 +36,13 @@ Building and flashing: [build-and-flash.md](build-and-flash.md). Settings:
   nothing.
 - **Event-driven redraw with an SPI budget:** faces redraw when their data
   changes or their own timer is due (the marquee at 25 fps, the clock once
-  a second), and a token bucket keeps the shared bus under 85%. GIFs slow
+  a second), and a token bucket keeps the shared bus under 95%. GIFs slow
   down instead of dropping frames when the bus is busy. `fps` shows and
   tunes it.
 - **RGB444 on the wire** (12 bits per pixel, 25% less data than RGB565).
 - **Two cores:** core 1 draws, core 0 diffs and sends. A GIF on one panel
-  keeps its own frame times (20 fps, 1.9 MB/s).
+  keeps its own frame times (20 fps, 1.5 MB/s); on all three panels each
+  plays at about 16 fps, the 40 MHz wire 76% busy.
 
 ## Other behaviour
 
