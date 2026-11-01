@@ -169,7 +169,7 @@ python scripts/check_pins.py
 
 ### gif_pack.py
 
-Builds `firmware/main/gifs.bin`, the GIF pack embedded in the firmware, from
+Builds `firmware/main/gifs.bin`, the GIF pack for the board's `gifs` partition, from
 the GIFs listed in `firmware/gifs/gifs.json`: frames scaled to 240x320, one
 palette of up to 256 RGB444 colours per GIF, and only each frame's dirty rects
 stored (the cheapest cover of its changed 8-row bands by at most 8 rects),

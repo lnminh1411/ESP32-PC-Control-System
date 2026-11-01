@@ -4,3 +4,5 @@ include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 # Build only the components main (and what it requires) pulls in, not all of ESP-IDF
 idf_build_set_property(MINIMAL_BUILD ON)
 project(carrier)
+# The GIF pack has its own partition: idf.py flash writes it, app-flash leaves it
+esptool_py_flash_to_partition(flash "gifs" "${CMAKE_CURRENT_SOURCE_DIR}/main/gifs.bin")

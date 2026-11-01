@@ -44,11 +44,13 @@ cover art, in place of the made-up one.
 
 ## Changing the GIFs
 
-The GIFs are part of the firmware. Their sources are in `firmware/gifs/`, and
-`firmware/gifs/gifs.json` lists them in play order (`every` keeps every Nth
-frame, up to 8 GIFs and 512 frames in all; the 10 MB app slot is the real
-limit, about 19 KB a frame). After changing either, regenerate the pack and
-flash:
+The GIFs have their own 5 MB `gifs` partition. Their sources are in
+`firmware/gifs/`, and `firmware/gifs/gifs.json` lists them (`every` keeps
+every Nth frame, up to 8 GIFs and 512 frames in all; the partition is the
+real limit, about 27 KB a frame). The board plays them in shuffled rounds:
+every GIF once, none twice in a row. After changing either, regenerate the
+pack and flash with `idf_flash.py` (`idf.py flash` writes the partition,
+`app-flash` does not):
 
 ```bash
 python scripts/gif_pack.py
@@ -61,8 +63,8 @@ colour error of each palette. The board keeps the frames LZ4-compressed in
 flash and decodes each as it plays, about 6 ms of core 1 a frame.
 `GIF_SWITCH_S` sets how long each GIF plays.
 
-The two `*_20fps.gif` files are made from the originals kept beside them with
-the RIFE models from FluidFrames, which only give the midpoint of two frames:
+The `*_20fps.gif` files are made from the originals kept beside them with the
+RIFE models from FluidFrames, which only give the midpoint of two frames:
 
 - `evil_neuro_20fps.gif` is all 10 frames of `evil_neuro.gif` plus a RIFE Lite
   midpoint after each, last-to-first pair included.
@@ -71,6 +73,12 @@ the RIFE models from FluidFrames, which only give the midpoint of two frames:
   the tail jumps sides from one frame to the next, so RIFE cuts it in a few
   frames (9 and 15 show it most); the motion is smoother this way than with
   real frames in their place.
+- `firefly_20fps.gif` and `miku_20fps.gif` are every frame of the 10 fps
+  original plus a RIFE midpoint after each, last-to-first pair included, laid
+  out at 240x320. Firefly is on white at 0.75 scale. Miku fills the width with
+  her top kept, so her legs run off the bottom.
+- `filian_20fps.gif` is 8 frames at quarter steps through the 6-frame original,
+  at 1.44 scale, cut so about a third of her pointing arm stays on screen.
 
 ## Other uploads
 

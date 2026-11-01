@@ -1,6 +1,8 @@
 #include "gif_store.h"
 
 #include <esp_heap_caps.h>
+#include <esp_partition.h>
+#include <esp_random.h>
 #include <esp_vfs_fat.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,8 +14,8 @@
 Gif gif;
 static wl_handle_t s_wl_handle = WL_INVALID_HANDLE;
 
-extern const uint8_t gifsBinStart[] asm("_binary_gifs_bin_start");
-extern const uint8_t gifsBinEnd[] asm("_binary_gifs_bin_end");
+static const uint8_t *s_packEnd;   // end of the mapped gifs partition
+static uint32_t s_seed;            // turn order, new each boot
 
 // Frame tables in PSRAM (76 B a frame); the player reads a few rects per
 // frame, nothing it would notice
@@ -41,7 +43,7 @@ bool gifFsInit() {
   return true;
 }
 
-static bool have(const uint8_t *p, size_t n) { return (size_t)(gifsBinEnd - p) >= n; }
+static bool have(const uint8_t *p, size_t n) { return (size_t)(s_packEnd - p) >= n; }
 
 static uint16_t rd16(const uint8_t *&p) {
   uint16_t v;
@@ -100,8 +102,8 @@ static bool lz4Block(const uint8_t *src, size_t srcLen, uint8_t *dst, size_t dst
   return op == oEnd;
 }
 
-// The GIFs after the pack's header, into the tables
-static bool readGifs(const uint8_t *p, uint8_t nGif, uint16_t total) {
+// The GIFs after the pack's header, into the tables; p ends past the last frame
+static bool readGifs(const uint8_t *&p, uint8_t nGif, uint16_t total) {
   uint16_t f = 0;
   for (uint8_t s = 0; s < nGif; s++) {
     if (!have(p, 4)) return false;
@@ -140,8 +142,13 @@ static bool readGifs(const uint8_t *p, uint8_t nGif, uint16_t total) {
 }
 
 bool gifLoad() {
-  const uint8_t *p = gifsBinStart;
-  if (!have(p, 16) || memcmp(p, "GIFP", 4) || p[4] != 2) return false;
+  const esp_partition_t *part = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, (esp_partition_subtype_t)0x40, "gifs");
+  const void *map;
+  esp_partition_mmap_handle_t mapH;
+  if (!part || esp_partition_mmap(part, 0, part->size, ESP_PARTITION_MMAP_DATA, &map, &mapH) != ESP_OK) return false;
+  const uint8_t *start = (const uint8_t *)map, *p = start;
+  s_packEnd = start + part->size;
+  if (!have(p, 16) || memcmp(p, "GIFP", 4) || p[4] != 2) { esp_partition_munmap(mapH); return false; }
   uint8_t nGif = p[5];
   p += 6;
   gif.w = rd16(p);
@@ -149,7 +156,7 @@ bool gifLoad() {
   uint16_t total = rd16(p);
   p += 4;   // decoded size: unused, frames decode as they play
   if (nGif == 0 || nGif > MAX_GIF_SEGS || gif.w == 0 || gif.w > TFT_W || (gif.w & 1) || gif.h == 0 || gif.h > TFT_H ||
-      ((gif.w * gif.h) & 7) || total == 0 || total > MAX_FRAMES) return false;
+      ((gif.w * gif.h) & 7) || total == 0 || total > MAX_FRAMES) { esp_partition_munmap(mapH); return false; }
   GifTables *t = (GifTables *)heap_caps_calloc(1, sizeof(GifTables), MALLOC_CAP_SPIRAM);
   bool ok = t;
   if (ok) {
@@ -164,10 +171,12 @@ bool gifLoad() {
   if (!ok) {
     for (uint16_t *&pal : gif.pal) { free(pal); pal = nullptr; }
     free(t);
+    esp_partition_munmap(mapH);
     return false;
   }
+  s_seed = esp_random();
   gif.bytes = sizeof(GifTables);
-  gif.packBytes = gifsBinEnd - gifsBinStart;
+  gif.packBytes = p - start;
   gif.nSeg = nGif;
   gif.n = total;   // last: the player starts when this is set
   return true;
@@ -207,8 +216,33 @@ uint16_t gifPrevFrame(uint16_t f) {
   return f == gif.segStart[s] ? gif.segStart[s + 1] - 1 : f - 1;
 }
 
+// Every GIF once in a shuffled round, then a new shuffle
+static void roundOrder(uint32_t round, uint8_t *order) {
+  uint32_t x = (round + 1) * 2654435761u ^ s_seed;
+  for (uint8_t i = 0; i < gif.nSeg; i++) order[i] = i;
+  for (uint8_t i = gif.nSeg - 1; i > 0; i--) {
+    x = x * 1664525u + 1013904223u;
+    uint8_t j = (x >> 16) % (i + 1), t = order[i];
+    order[i] = order[j];
+    order[j] = t;
+  }
+}
+
+// Whose turn it is. From the clock alone, so every panel agrees. A round never
+// starts with the GIF the last one ended on (swapping 0 and 1 leaves the last
+// place alone, which is what the next round compares with).
 static uint8_t segDue(uint32_t nowMs) {
-  return gif.nSeg > 1 ? (uint8_t)(nowMs / (GIF_SWITCH_S * 1000UL) % gif.nSeg) : 0;
+  if (gif.nSeg < 2) return 0;
+  uint32_t turn = nowMs / (GIF_SWITCH_S * 1000UL);
+  if (gif.nSeg == 2) return turn % 2;
+  uint32_t round = turn / gif.nSeg;
+  uint8_t order[MAX_GIF_SEGS], last[MAX_GIF_SEGS];
+  roundOrder(round, order);
+  if (round) {
+    roundOrder(round - 1, last);
+    if (order[0] == last[gif.nSeg - 1]) { order[0] = order[1]; order[1] = last[gif.nSeg - 1]; }
+  }
+  return order[turn % gif.nSeg];
 }
 
 uint16_t gifNextFrame(uint16_t idx, uint32_t nowMs) {

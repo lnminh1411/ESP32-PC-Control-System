@@ -12,23 +12,24 @@ and time Wi-Fi from the PC with
 
 ## Usage
 
-From `bench usage` (part of `bench all`), PC on, 62-frame GIF pack decoded as
-it plays, all three panels having shown a GIF. Each panel that shows one holds
+From `bench usage` (part of `bench all`), PC on, 140-frame GIF pack decoded as
+it plays, two panels having shown a GIF. Each panel that shows one holds
 150 KB of PSRAM (its frame and its decoded rects).
 
 | Memory | Used | Notes |
 |---|---|---|
-| SRAM (512 KB) | 393 KB (77%) | 145 KB static (code in IRAM, data/bss, ROM, cache); heap 366 KB, 121 KB free; lowest free ever: 56 KB, largest block 31 KB |
-| PSRAM (7680 KB) | 1880 KB (24%) | lowest free ever 4728 KB before `bench all`, largest free block 4608 KB |
-| Flash (16 MB) | fully partitioned | one 10 MB app slot (no OTA), FAT 5.9 MB, NVS 20 KB, core dump 64 KB |
-| App image | 3044 KB of 10240 KB (30%) | 1407 KB of it is the GIF pack |
-| FAT /ffat | 4 KB of 5932 KB (0%) | layout.json, saved text images |
+| SRAM (512 KB) | 394 KB (77%) | heap 366 KB, 118 KB free; lowest free ever: 50 KB, largest block 31 KB |
+| PSRAM (7680 KB) | 1880 KB (24%) | lowest free ever 5026 KB, largest free block 4992 KB |
+| Flash (16 MB) | fully partitioned | one 9.9 MB app slot (no OTA), GIF pack 5 MB, FAT 1 MB, NVS 20 KB, core dump 64 KB |
+| App image | 1638 KB of 10112 KB (16%) | |
+| GIF pack | 3722 KB of 5120 KB (73%) | its own `gifs` partition: 6 GIFs, 140 frames |
+| FAT /ffat | 4 KB of 972 KB (0%) | layout.json, saved text images |
 | NVS | 232 of 630 entries | 12 namespaces |
 
-Task stacks, least ever free (bytes): main 6616, discord 5524, httpd 4904,
-websocket 4648, weather 3484, TinyUSB 2876, flush 2708, wifi 2676, gifdec 2192,
-esp_timer 2052, mdns 1788, tiT 1368, Tmr Svc 1328, mqtt 1236, led 1200, sys_evt 792,
-IDLE 688-696, ipc 500-508.
+Task stacks, least ever free (bytes): main 6680, discord 5600, httpd 4908,
+websocket 4640, weather 3480, TinyUSB 2876, flush 2708, wifi 2640, gifdec 2192,
+esp_timer 2060, mdns 1496, tiT 1364, Tmr Svc 1328, mqtt 1232, led 1200, sys_evt 792,
+IDLE 688-696, ipc 444-500.
 
 ## Internal RAM, before and after 2026-10-26
 
@@ -353,3 +354,28 @@ The steps measured with three panels, all at bus 62-76%:
 
 `bench all` after the change: CPU, SRAM, PSRAM and flash as in the Speed
 table; a full frame 33.4-33.7 ms on the panels without a GIF.
+
+## Six GIFs in their own partition, shuffled, 2026-11-01
+
+Firefly, Miku and Filian joined Neuro, Evil Neuro and March 7th, all at 20 fps:
+140 frames. The pack left the app image for a 5 MB `gifs` partition, memory-mapped
+at boot, so the partition table is now app 9.9 MB, FAT 1 MB, GIFs 5 MB. GIFs take
+turns in shuffled rounds: every GIF once a round, none twice in a row across rounds.
+
+| GIF | Frames | Pack | Rects, share of the screen | Palette, worst error |
+|---|---|---|---|---|
+| Neuro | 22 | 525 KB | 70% | 256, 1.00 of 15 |
+| Evil Neuro | 20 | 421 KB | 67% | 212, exact |
+| March 7th | 20 | 461 KB | 64% | 256, 3.00 of 15 |
+| Firefly | 20 | 631 KB | 83% | 181, exact |
+| Miku | 50 | 1482 KB | 96% | 256, 8.54 of 15 on the rarest colours (2.4% of pixels) |
+| Filian | 8 | 203 KB | 63% | 225, exact |
+
+| GIF playback at 20 fps | Frame rate | Frame times | Bus |
+|---|---|---|---|
+| One panel, every GIF | 20.0 fps | 1.0x nominal | 1.5-1.6 MB/s, Miku 2.1-2.2 MB/s |
+| Two panels | 19.8 fps | 1.0x nominal | 73% |
+| Three panels | 15.9 fps, 12-13 fps on Miku | 1.25x nominal | 77% |
+
+A frame takes 21-22 ms of push time. All 42 panel screenshots across the six GIFs
+matched the packed frames exactly, and 15 turns in a row kept to the round rule.
