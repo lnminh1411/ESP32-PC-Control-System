@@ -1902,14 +1902,14 @@ partial class PcStats : ServiceBase {
       if (oauth.ContainsKey("subscriptionType") && oauth["subscriptionType"] != null) {
         sub = oauth["subscriptionType"].ToString();
       }
-      string raw = tier;
-      if (string.IsNullOrEmpty(raw) || raw == "default_claude_ai") {
-        if (!string.IsNullOrEmpty(sub)) raw = sub;
-      }
-      if (string.IsNullOrEmpty(raw)) return "";
-      string cleaned = raw.Replace("default_", "").Replace("_", " ").Trim();
+      // The plans are Pro, Max and Ultra (2026-11): subscriptionType names
+      // them; the tier ("default_claude_max_5x") only stands in without it,
+      // its usage multiplier dropped
+      string raw = !string.IsNullOrEmpty(sub) ? sub : tier;
+      if (string.IsNullOrEmpty(raw) || raw == "default_claude_ai") return "";
+      string cleaned = Regex.Replace(raw.Replace("default_", "").Replace("claude_", "").Replace("_", " "), @"\s*\b\d+x\b", "").Trim();
       if (cleaned.Length == 0) return "";
-      return CultureInfo.InvariantCulture.TextInfo.ToTitleCase(cleaned).Replace("X", "x");
+      return "Claude " + CultureInfo.InvariantCulture.TextInfo.ToTitleCase(cleaned.ToLowerInvariant());
     }
 
     static ClaudeLiveSnapshot ParseLiveSnapshot(Dictionary<string, object> root) {

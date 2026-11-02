@@ -58,7 +58,7 @@ BASE_STATS = {
 }
 BASE_TEXT = {
     "media.title": "ゆめ (feat. 重音テト)", "media.artist": "d0tc0mmie", "media.source": "Spotify",
-    "claude.plan": "Claude Max 5x", "claude.s_pace_v": "ok",
+    "claude.plan": "Claude Max", "claude.s_pace_v": "ok",
     "agy.active": "user@example.com", "agy2.email": "user@example.com", "agy2.plan": "Pro",
     "ai.phase_name": "idle", "ai.tool": "grep_search",
     "pc.vpn": "vpn", "pc.vpn_stack": "vpn", "pc.exit_loc": "SG",

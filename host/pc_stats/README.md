@@ -123,7 +123,7 @@ The service can stream Claude Code live utilization and local spend totals to th
   - `claude.usd_today`: Estimated cost ($) since local midnight
   - `claude.usd_30d`: Estimated cost ($) in the last 30 days
 - **Text stats (`@t`)**:
-  - `claude.plan`: Subscription / tier plan name (e.g. `Pro`, `Max 5x`)
+  - `claude.plan`: Subscription / tier plan name (`Claude Pro`, `Claude Max`, `Claude Ultra`; from `subscriptionType`)
   - `claude.s_reset_at`: Local time of session reset (`HH:mm`)
   - `claude.w_reset_at`: Local weekly reset (`ddd dd MMM HH:mm`, InvariantCulture)
   - `claude.s_pace_v`: Session pace verdict (`ok`, `tight`, `over`)
