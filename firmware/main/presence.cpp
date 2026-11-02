@@ -13,9 +13,11 @@
 #include "pc_state.h"
 #include "pcstats.h"
 #include "power.h"
+#include "screens.h"
 #include "settings_or_example.h"
 #include "sys.h"
 #include "usb.h"
+#include "views.h"
 #include "weather.h"
 
 // The last check. The bot task reads them for the panel: words, set whole
@@ -209,7 +211,17 @@ static void phoneFollow() {
   alertPendingMs = alertedMs = 0;
 }
 
+// Away from the PC (the desk rule's 5 min, or the phone away without input):
+// the board panels show their PC-off faces, the clock chip reads "AFK"
+static void afkFollow() {
+  bool afk = deskOff || presenceDisplaysOff();
+  if (afk == screensAfk) return;
+  screensAfk = afk;
+  viewsMarkDirty(-1);
+}
+
 static void displaysFollow(uint32_t now) {
+  afkFollow();
   float idle;
   bool known = idleKnown(&idle);
   if (offAtMs && known && idle + 3 < (now - offAtMs) / 1000.0f) {   // 3 s for the feed's lag

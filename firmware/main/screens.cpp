@@ -1478,6 +1478,9 @@ static void drawClock(LGFX_Sprite &c) {
   } else if (screensNight) {   // night mode shows this face with the PC still on, or asleep
     chipText = pcState() == PC_ON ? "Night mode" : "Night mode | PC asleep";
     dotCol = C_FAINT;
+  } else if (screensAfk && pcState() == PC_ON) {   // nobody at the PC: displays off, PC still on
+    chipText = "AFK";
+    dotCol = C_FAINT;
   } else {
     chipText = "PC Offline / Disconnected";
     dotCol = C_BAD;
@@ -1544,6 +1547,7 @@ static void drawClock(LGFX_Sprite &c) {
 
 Face screensForce[N_PANELS];
 bool screensNight;
+bool screensAfk;
 
 // Pinned faces survive a restart: NVS "screens"/"force", one byte per panel
 void screensForceLoad() {
@@ -1569,7 +1573,7 @@ void screensForceSave() {
 Face screensFace(View v) {
   GoingKind going = pcGoing();
   bool restartish = (going == GO_RESTART || going == GO_UPDATE_RESTART || going == GO_UPDATE_SHUTDOWN);
-  bool on = (pcState() == PC_ON && !restartish && !screensNight);
+  bool on = (pcState() == PC_ON && !restartish && !screensNight && !screensAfk);
 
   switch (v) {
     case VIEW_PC:

@@ -36,6 +36,7 @@ extern Face screensForce[N_PANELS];             // `face` command / Discord Disp
 void screensForceLoad();                        // boot: the pins saved before the restart
 void screensForceSave();                        // after a change: kept in NVS
 extern bool screensNight;                       // night mode: the PC-off faces everywhere, pins ignored
+extern bool screensAfk;                         // away from the PC (presence.cpp): the same, clock chip "AFK"
 bool screensIsGif(Face f);                      // FACE_GIF*
 void screensDraw(Face f, LGFX_Sprite &c);       // full canvas redraw (GIF faces: the band only)
 uint32_t screensPeriodMs(Face f);               // redraw period with no new data; 0 = data-driven
