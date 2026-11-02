@@ -656,35 +656,38 @@ void nightManual(bool on) {
   else if (!on && engaged) disengage("ended by hand");
 }
 
-void nightLowPower(bool on) {
+void nightSleepHold(char *buf, uint32_t size) { sleepHold(buf, size); }
+
+void nightLowPower(bool on, const char *why) {
   if (on == lowPower) return;
   lowPower = on;
   saveNvs();
   boardSide();
   lassoSend();
-  char rgbPct[8], what[192];
+  char rgbPct[8], what[240];
   snprintf(rgbPct, sizeof rgbPct, "%d %%", RGB_PCT);
   if (on) {
     struct tm t;
     lowPowerAtMin = boardLocalTime(&t) ? t.tm_hour * 60 + t.tm_min : 0;
     rgbLower();
     lowRgbPending = !rgbLowered && !pcReachable();   // PC off or PcHwCtl not up: lower when it is
-    logMsg("night: low power mode on (PC LEDs %s)", rgbLowered ? rgbPct : "unchanged");
-    snprintf(what, sizeof what, "On by hand: Process Lasso night config (E-cores, efficiency mode), PC LEDs %s, board panels %d %%, status LED %d %%",
-             rgbLowered ? rgbPct : lowRgbPending ? "10 % once PcHwCtl answers" : "unchanged", PANEL_PCT, STATUS_LED_PCT);
+    logMsg("night: low power mode on %s (PC LEDs %s)", why, rgbLowered ? rgbPct : "unchanged");
+    snprintf(what, sizeof what, "On %s: Process Lasso night config (E-cores, efficiency mode), PC LEDs %s, board panels %d %%, status LED %d %%",
+             why, rgbLowered ? rgbPct : lowRgbPending ? "10 % once PcHwCtl answers" : "unchanged", PANEL_PCT, STATUS_LED_PCT);
     discordPost(DC_PC, "Low power mode", what, 0x2C3E50);
     return;
   }
   lowRgbPending = false;
   if (engaged) {
-    logMsg("night: low power mode off, night mode still engaged");
-    discordPost(DC_PC, "Low power mode", "Off by hand; night mode is still engaged", 0xF1C40F);
+    logMsg("night: low power mode off %s, night mode still engaged", why);
+    snprintf(what, sizeof what, "Off %s; night mode is still engaged", why);
+    discordPost(DC_PC, "Low power mode", what, 0xF1C40F);
     return;
   }
   rgbRestoreTry(false);
-  logMsg("night: low power mode off%s", rgbLowered ? ", PC LEDs go back when PcHwCtl answers" : "");
-  snprintf(what, sizeof what, "Off by hand: Process Lasso day config, panels and status LED back to normal%s",
-           rgbLowered ? "; PC LEDs go back once the PC is on" : "");
+  logMsg("night: low power mode off %s%s", why, rgbLowered ? ", PC LEDs go back when PcHwCtl answers" : "");
+  snprintf(what, sizeof what, "Off %s: Process Lasso day config, panels and status LED back to normal%s",
+           why, rgbLowered ? "; PC LEDs go back once the PC is on" : "");
   discordPost(DC_PC, "Low power mode", what, 0xF1C40F);
 }
 

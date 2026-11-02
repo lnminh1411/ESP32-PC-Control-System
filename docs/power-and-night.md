@@ -117,7 +117,7 @@ in its Presence field.
 |---|---|---|
 | Night window, Night auto on, 5 idle minutes over | every 10 s | Someone there: the night holds off, displays on. After 30 min (`NIGHT_DESK_HOLD_S`), still idle and nothing blocking sleep: night engages, displays off. Nobody (two checks in a row): night engages and the PC sleeps at once, or only the displays go off while something blocks sleep, and it sleeps when that clears. Can't tell: the night engages as it always did, sleep 1 h after the last input |
 | Phone beyond 200 m (`PRESENCE_AWAY_KM`) | every 10 s | Someone there: see below |
-| At home, Night auto off or outside its window | every 5 min | Nobody, no input for 60 s (`PRESENCE_DAY_IDLE_S`), nothing keeping the display on: displays off. Someone seen, or input: on again |
+| At home, Night auto off or outside its window | every 1 min | Nobody seen and no input for 5 min (`PRESENCE_DAY_OFF_S`), nothing keeping the display on: Windows' own display off (`display sleep`, no DDC/CI: the monitors keep their power), and low power mode on unless something holds sleep (tried again at each check). Someone seen, input, the PC going off or the phone coming home: displays on, and low power mode off if this turned it on (one turned on by hand stays) |
 
 The phone going beyond 200 m turns the displays off, at any hour; back within
 180 m (`PRESENCE_HOME_KM`, a margin so a fix on the line doesn't flap) turns

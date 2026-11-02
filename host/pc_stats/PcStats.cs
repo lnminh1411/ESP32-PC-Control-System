@@ -909,7 +909,7 @@ partial class PcStats : ServiceBase {
 
   // ---- PC Monitor Control (PcHwCtl displays) ----
   // The board's `!mon <id> <command>` (bright <n|all> <pct>, power <n|all>
-  // on|off) becomes PcHwCtl's `display ...` commands (docs/ipc.md#displays);
+  // on|off, power all sleep|wake) becomes PcHwCtl's `display ...` commands (docs/ipc.md#displays);
   // its user-session agent talks DDC/CI. "power all off" also sends `display
   // sleep` (Windows' display off, for monitors without a power method), "power
   // all on" a `display wake` first. The answer comes back as the text stat
@@ -942,8 +942,10 @@ partial class PcStats : ServiceBase {
     } else if (arg == "on") {
       if (target == "all") commands.Add("display wake");
       commands.Add("display power " + target + " on");
+    } else if ((arg == "sleep" || arg == "wake") && target == "all") {
+      commands.Add("display " + arg);   // Windows' own display off / on, monitors keep their power
     } else {
-      SetMonReply(id, "err power is on or off");
+      SetMonReply(id, "err power is on, off, or (all) sleep, wake");
       return;
     }
     ThreadPool.QueueUserWorkItem(delegate(object o) {

@@ -5,7 +5,7 @@
 // `!mon <id> <command>` to the PC; the answer comes back as the text stat
 // monctl.reply = "<id> ok" | "<id> err <why>". Same shape as aictl.h.
 // Commands: bright <n|all> <0-100>, power <n|all> on|off (n counts from the
-// left). The monitors themselves arrive as mon.count and mon.<n>.name / main /
+// left), power all sleep|wake (Windows' own display off / on, no DDC/CI). The monitors themselves arrive as mon.count and mon.<n>.name / main /
 // bright / power.
 
 #include <stddef.h>

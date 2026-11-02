@@ -192,14 +192,14 @@ The secrets are described in [settings.md](settings.md).
 | Key | Default | Note |
 |---|---|---|
 | `PRESENCE_FAST_S` | `10` | s between checks while you are away and around the night's start |
-| `PRESENCE_DAY_S` | `(5 * 60)` | s between checks otherwise |
+| `PRESENCE_DAY_S` | `60` | s between checks otherwise |
 | `PRESENCE_AWAY_KM` | `0.20` | phone beyond this from home = you are away |
 | `PRESENCE_HOME_KM` | `0.18` | ...and back only under this (a margin: no flapping at the line) |
 | `PRESENCE_ACC_M` | `150` | a fix vaguer than this (m) doesn't switch away / back |
 | `PRESENCE_FIX_FRESH_S` | `120` | someone at the desk with a fix older than this: ask the phone before alerting |
 | `PRESENCE_ASK_WAIT_S` | `30` | ...and alert anyway after this long without an answer |
 | `PRESENCE_ALERT_REPEAT_S` | `(10 * 60)` | alert again this often while someone stays at the desk |
-| `PRESENCE_DAY_IDLE_S` | `60` | nobody at the desk only turns the displays off after this long without input |
+| `PRESENCE_DAY_OFF_S` | `(5 * 60)` | by day: nobody seen and no input this long = displays off (Windows), low power mode on |
 | `PRESENCE_AWAY_IDLE_S` | `(5 * 60)` | input while away gives the displays back until this long without input |
 | `NIGHT_DESK_HOLD_S` | `(30 * 60)` | someone at the desk past the idle timer holds the night off this long |
 | `NIGHT_GUARD_VETO_MS` | `120000` | the camera can overrule real input once this often (a dim room can miss you) |

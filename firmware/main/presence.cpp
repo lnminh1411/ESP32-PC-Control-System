@@ -6,6 +6,7 @@
 
 #include "discord.h"
 #include "log.h"
+#include "monctl.h"
 #include "night.h"
 #include "owntracks.h"
 #include "pc_state.h"
@@ -30,9 +31,13 @@ static bool dry;                         // test: log instead of acting (RAM onl
 static int sentEvery = -1;               // cadence the helper has, -1 = none
 static uint32_t sentMs;
 
-static bool deskOff;                     // nobody at the desk by day
+static bool deskOff;                     // nobody at the desk by day: Windows' display off
+static uint32_t nobodySinceMs;           // by day: the first of the checks that saw nobody, 0 = none
+static bool nativeOff;                   // our Windows display off went out
+static uint32_t nativeTryMs;             // the last one failed: again 30 s later
+static bool lowByDesk;                   // low power mode is on because nobody was at the desk
 static bool awayInput;                   // input while away: displays back until it stops
-static bool offSent;                     // our displays off went out
+static bool offSent;                     // our displays off (DDC, away) went out
 static uint32_t offAtMs, offTryMs;       // input newer than offAtMs gives them back
 
 static int yesRun;                       // someone seen while away, in a row (unknown doesn't end it)
@@ -79,18 +84,51 @@ static void alertFollow(uint32_t now) {
   else discordPost(DC_PC, "Someone at your PC", what, 0xE74C3C, 2);
 }
 
-static void deskCheck(uint32_t now) {
-  if (seen == PRES_SOMEONE) {
-    if (deskOff) logMsg("presence: someone at the desk, displays on");
-    deskOff = false;
+// The desk in use again (or the PC off, or you home): Windows' display off ends
+// (displaysFollow), and so does the low power mode it turned on
+static void deskBack(const char *why) {
+  nobodySinceMs = 0;
+  if (deskOff) logMsg("presence: %s, displays on", why);
+  deskOff = false;
+  if (!lowByDesk) return;
+  lowByDesk = false;
+  if (dry) logMsg("presence: dry, would end low power mode");
+  else nightLowPower(false, why);
+}
+
+// Low power mode with the displays, unless something holds sleep; tried again
+// at each check that still sees nobody
+static void deskLowPower() {
+  static char lastHold[64];
+  if (!deskOff || lowByDesk || nightLowPowerOn()) return;   // on by hand: stays the user's
+  char hold[64];
+  nightSleepHold(hold, sizeof hold);
+  if (*hold) {
+    if (strcmp(hold, lastHold)) logMsg("presence: low power mode held, %s", hold);
+    snprintf(lastHold, sizeof lastHold, "%s", hold);
     return;
   }
-  if (seen != PRES_NOBODY || deskOff || away || nightEngaged() || nightCovers()) return;
+  lastHold[0] = 0;
+  lowByDesk = true;
+  if (dry) logMsg("presence: dry, would turn low power mode on");
+  else nightLowPower(true, "with nobody at the desk");
+}
+
+// By day at home: nobody seen and no input for PRESENCE_DAY_OFF_S, nothing
+// keeping the display on: Windows' display off (no DDC/CI: the monitors keep
+// their power and wake with any input) and low power mode
+static void deskCheck(uint32_t now) {
+  if (seen == PRES_SOMEONE) { deskBack("with someone at the desk"); return; }
+  if (seen != PRES_NOBODY || away || nightEngaged() || nightCovers()) return;
+  if (!nobodySinceMs) nobodySinceMs = now | 1;
+  if (deskOff) { deskLowPower(); return; }
+  if (now - nobodySinceMs + 5000 < PRESENCE_DAY_OFF_S * 1000UL) return;   // 5 s: check timing
   float idle;
-  if (!idleKnown(&idle) || idle < PRESENCE_DAY_IDLE_S || pcStat("pc.disp_req") >= 1) return;
+  if (!idleKnown(&idle) || idle < PRESENCE_DAY_OFF_S || pcStat("pc.disp_req") >= 1) return;
   deskOff = true;
   offAtMs = now;
-  logMsg("presence: nobody at the desk, displays off");
+  logMsg("presence: nobody at the desk for %d min, displays off", PRESENCE_DAY_OFF_S / 60);
+  deskLowPower();
 }
 
 static void onCheck(int answer, int conf, const char *whyText) {
@@ -140,7 +178,12 @@ static void phoneFollow() {
   if (is == was) return;
   away = is;
   logMsg("presence: phone %s", is ? "away from home" : "back home");
-  deskOff = false;
+  if (is) {   // the away rule takes the displays; low power mode stays
+    deskOff = false;
+    nobodySinceMs = 0;
+  } else {
+    deskBack("with you back home");
+  }
   awayInput = false;
   yesRun = 0;
   alertPendingMs = alertedMs = 0;
@@ -151,14 +194,27 @@ static void displaysFollow(uint32_t now) {
   bool known = idleKnown(&idle);
   if (offAtMs && known && idle + 3 < (now - offAtMs) / 1000.0f) {   // 3 s for the feed's lag
     offAtMs = 0;
-    if (deskOff) logMsg("presence: input on the PC, displays on");
-    deskOff = false;
+    deskBack("with input on the PC");
     if (away) {
       awayInput = true;
       logMsg("presence: input on the PC while away, displays on until %d min without input", PRESENCE_AWAY_IDLE_S / 60);
     }
   }
   if (awayInput && known && idle >= PRESENCE_AWAY_IDLE_S) awayInput = false;
+  if (deskOff != nativeOff && pcReachable() && (!nativeTryMs || now - nativeTryMs >= 30000)) {
+    const char *cmd = deskOff ? "power all sleep" : "power all wake";
+    const char *err = nullptr;
+    uint32_t id;
+    if (dry) logMsg("presence: dry, would send %s", cmd);
+    else err = monSend(cmd, &id);
+    if (err) {
+      nativeTryMs = now | 1;
+      logMsg("presence: %s: %s, again in 30 s", cmd, err);
+    } else {
+      nativeOff = deskOff;
+      nativeTryMs = 0;
+    }
+  }
   if (!presenceDisplaysOff()) {
     if (offSent) {
       offSent = false;
@@ -193,6 +249,7 @@ void presencePoll() {
   if (pcState() != PC_ON || !pcStatsFresh()) {
     sentEvery = -1;
     nobodyRun = yesRun = 0;
+    if (pcState() != PC_ON) deskBack("with the PC off");
     displaysFollow(now);
     return;
   }
@@ -214,7 +271,7 @@ uint32_t presenceChecks() { return checks; }
 int presenceSeen() { return seen; }
 bool presenceNobody() { return nobodyRun >= 2 && nowMs() - checkedMs < 30000; }
 bool presenceAway() { return away; }
-bool presenceDisplaysOff() { return deskOff || (away && !awayInput); }
+bool presenceDisplaysOff() { return away && !awayInput; }
 bool presenceDry() { return dry; }
 
 void presenceStatus(char *buf, uint32_t size) {

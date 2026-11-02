@@ -15,10 +15,13 @@
 // than PRESENCE_FIX_FRESH_S is checked with the phone first: an alert for
 // someone coming home to a stale fix helps nobody.
 //
-// At home outside the night window: a check that sees nobody turns the
-// displays off, unless the PC was used in the last PRESENCE_DAY_IDLE_S or
-// something keeps the display on (pc.disp_req). Someone seen, or input, turns
-// them on again. Unknown (too dark, camera busy) changes nothing anywhere.
+// At home outside the night window: nobody seen and no input for
+// PRESENCE_DAY_OFF_S, nothing keeping the display on (pc.disp_req): Windows'
+// own display off (`!mon power all sleep`, no DDC/CI), and low power mode on
+// unless something holds sleep (nightSleepHold; tried again at each check).
+// Someone seen, input, the PC going off or the phone coming home: displays
+// back, and low power mode off if this turned it on. Unknown (too dark, camera
+// busy) changes nothing anywhere.
 
 #include <stdint.h>
 

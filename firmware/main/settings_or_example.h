@@ -393,7 +393,7 @@
 #define PRESENCE_FAST_S 10                        // s between checks while you are away and around the night's start
 #endif
 #ifndef PRESENCE_DAY_S
-#define PRESENCE_DAY_S (5 * 60)                   // s between checks otherwise
+#define PRESENCE_DAY_S 60                         // s between checks otherwise
 #endif
 #ifndef PRESENCE_AWAY_KM
 #define PRESENCE_AWAY_KM 0.20                     // phone beyond this from home = you are away
@@ -413,8 +413,8 @@
 #ifndef PRESENCE_ALERT_REPEAT_S
 #define PRESENCE_ALERT_REPEAT_S (10 * 60)         // alert again this often while someone stays at the desk
 #endif
-#ifndef PRESENCE_DAY_IDLE_S
-#define PRESENCE_DAY_IDLE_S 60                    // nobody at the desk only turns the displays off after this long without input
+#ifndef PRESENCE_DAY_OFF_S
+#define PRESENCE_DAY_OFF_S (5 * 60)               // by day: nobody seen and no input this long = displays off (Windows), low power mode on
 #endif
 #ifndef PRESENCE_AWAY_IDLE_S
 #define PRESENCE_AWAY_IDLE_S (5 * 60)             // input while away gives the displays back until this long without input
