@@ -41,7 +41,10 @@ void nightManual(bool on);         // start now (any hour, no idle wait) / end n
 // the night's Process Lasso config (`!night 1`), PC LEDs 10 %, board panels
 // 10 % with their normal faces, status LED 20 %, until turned off. Posts to
 // #pc-announcement (and Pushover). why: "by hand", or what turned it on or off.
-void nightLowPower(bool on, const char *why = "by hand");
+// pcOnly (the desk rule by day): the Process Lasso config alone, LEDs, panels
+// and status LED left as they are; turning it on by hand then makes it full.
+void nightLowPower(bool on, const char *why = "by hand", bool pcOnly = false);
+bool nightLowPowerPcOnly();
 // What holds sleep right now ("" = nothing): busy, a power request, the network
 void nightSleepHold(char *buf, uint32_t size);
 bool nightLowPowerOn();

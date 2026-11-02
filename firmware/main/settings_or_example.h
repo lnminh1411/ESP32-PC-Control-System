@@ -419,6 +419,9 @@
 #ifndef PRESENCE_ASK_WAIT_S
 #define PRESENCE_ASK_WAIT_S 30                    // ...and alert anyway after this long without an answer
 #endif
+#ifndef PRESENCE_USE_S
+#define PRESENCE_USE_S 30                         // away: someone seen alerts only with input on the PC this recent (s)
+#endif
 #ifndef PRESENCE_ALERT_REPEAT_S
 #define PRESENCE_ALERT_REPEAT_S (10 * 60)         // alert again this often while someone stays at the desk
 #endif

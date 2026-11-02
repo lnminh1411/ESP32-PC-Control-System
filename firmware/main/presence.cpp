@@ -36,8 +36,8 @@ static bool deskOff;                     // nobody at the desk by day: Windows' 
 static uint32_t nobodySinceMs;           // by day: the first of the checks that saw nobody, 0 = none
 static bool nativeOff;                   // our Windows display off went out
 static uint32_t nativeTryMs;             // the last one failed: again 30 s later
-static bool lowByDesk;                   // low power mode is on because nobody was at the desk
-static bool awayInput;                   // input while away: displays back until it stops
+static bool dryLow;                      // test: low power mode "on" for the desk rule (the real one is night.cpp's PC-only mode)
+static bool awayInput;                  // input while away: displays back until it stops
 static bool offSent;                     // our displays off (DDC, away) went out
 static uint32_t offAtMs, offTryMs;       // input newer than offAtMs gives them back
 
@@ -52,18 +52,31 @@ static bool idleKnown(float *idle) {
   return pcStatsFresh() && pcStat("idle.ok") >= 1 && !isnan(*idle);
 }
 
-// Away: two checks in a row before anything happens, the second right away.
-// The lock goes first and costs nothing; the alert waits for a recent fix.
+// Input on the PC in the last PRESENCE_USE_S: someone is using it
+static bool pcUsed() {
+  float idle;
+  return idleKnown(&idle) && idle <= PRESENCE_USE_S;
+}
+
+// Away: someone seen on two checks in a row (the second is the next regular
+// one: PcHwCtl answers a call within 10 s of a check with that same check) and
+// the PC in use. Someone in the room who leaves the PC alone gets nothing.
+// Once alerted, staying at the desk is enough for the repeats (a locked PC
+// may hide their input). The lock goes first and costs nothing; the alert
+// waits for a recent fix.
 static void intruderCheck(uint32_t now) {
-  if (!away) { yesRun = 0; return; }
+  static bool roomLogged;
+  if (!away) { yesRun = 0; roomLogged = false; return; }
   if (seen == PRES_NOBODY) yesRun = 0;
   if (seen != PRES_SOMEONE) return;
-  if (!yesRun) {
-    yesRun = 1;
-    presenceCheckNow();
+  if (yesRun < 2) yesRun++;
+  if (yesRun < 2) return;
+  if (!alertedMs && !alertPendingMs && !pcUsed()) {
+    if (!roomLogged) logMsg("presence: someone seen while away (%d %%), PC not in use: no alert", (int)confPct);
+    roomLogged = true;
     return;
   }
-  yesRun = 2;
+  roomLogged = false;
   if (dry) logMsg("presence: dry, would lock the PC");
   else {
     const char *err = powerLockQuiet();
@@ -71,7 +84,7 @@ static void intruderCheck(uint32_t now) {
   }
   if (alertPendingMs || (alertedMs && now - alertedMs < PRESENCE_ALERT_REPEAT_S * 1000UL)) return;
   alertPendingMs = now | 1;
-  logMsg("presence: someone at the desk while away (%d %%), PC locked", (int)confPct);
+  logMsg("presence: someone using the PC while away (%d %%), PC locked", (int)confPct);
   if (simAway < 0 && owntracksAgeSec() > PRESENCE_FIX_FRESH_S) owntracksAskNow();
 }
 
@@ -83,7 +96,7 @@ static void alertFollow(uint32_t now) {
   alertedMs = now | 1;
   char what[140], stale[40] = "";
   if (age > PRESENCE_FIX_FRESH_S) snprintf(stale, sizeof stale, " Last phone fix %lu min old.", (unsigned long)(age / 60));
-  snprintf(what, sizeof what, "Someone is at the desk while you are away (%d %% sure). PC locked.%s", (int)confPct, stale);
+  snprintf(what, sizeof what, "Someone is using your PC while you are away (%d %% sure). PC locked.%s", (int)confPct, stale);
   if (dry) logMsg("presence: dry, would alert: %s", what);
   else discordPost(DC_PC, "Someone at your PC", what, 0xE74C3C, 2);
 }
@@ -94,17 +107,17 @@ static void deskBack(const char *why) {
   nobodySinceMs = 0;
   if (deskOff) logMsg("presence: %s, displays on", why);
   deskOff = false;
-  if (!lowByDesk) return;
-  lowByDesk = false;
-  if (dry) logMsg("presence: dry, would end low power mode");
-  else nightLowPower(false, why);
+  if (dryLow) logMsg("presence: dry, would end low power mode");
+  dryLow = false;
+  if (nightLowPowerPcOnly()) nightLowPower(false, why);   // on by hand (full): stays the user's
 }
 
 // Low power mode with the displays, unless something holds sleep; tried again
-// at each check that still sees nobody
+// at each check that still sees nobody. PC only: the PC LEDs, board panels and
+// status LED stay as they are by day
 static void deskLowPower() {
   static char lastHold[64];
-  if (!deskOff || lowByDesk || nightLowPowerOn()) return;   // on by hand: stays the user's
+  if (!deskOff || dryLow || nightLowPowerOn()) return;   // on by hand: stays the user's
   char hold[64];
   nightSleepHold(hold, sizeof hold);
   if (*hold) {
@@ -113,9 +126,12 @@ static void deskLowPower() {
     return;
   }
   lastHold[0] = 0;
-  lowByDesk = true;
-  if (dry) logMsg("presence: dry, would turn low power mode on");
-  else nightLowPower(true, "with nobody at the desk");
+  if (dry) {
+    dryLow = true;
+    logMsg("presence: dry, would turn low power mode on (PC only)");
+  } else {
+    nightLowPower(true, "with nobody at the desk", true);
+  }
 }
 
 // By day at home: nobody seen and no input for PRESENCE_DAY_OFF_S, nothing

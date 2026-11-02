@@ -1005,7 +1005,7 @@ static void buildEmbed(cJSON *embed, const char *footerText, bool standing) {
     addField(fields, "PSRAM", v);
     addField(fields, "Last restart", resetReasonText());
     if (ledMode() == LED_OFF) snprintf(v, sizeof v, "off");
-    else if (nightEngaged() || nightLowPowerOn())
+    else if (nightEngaged() || (nightLowPowerOn() && !nightLowPowerPcOnly()))
       snprintf(v, sizeof v, "on, max %u %% (%s: %d %%)", (unsigned)ledBrightness(), nightEngaged() ? "night" : "low power",
                NIGHT_STATUS_LED_PCT);
     else snprintf(v, sizeof v, "on, max %u %%", (unsigned)ledBrightness());
@@ -1021,7 +1021,7 @@ static void buildEmbed(cJSON *embed, const char *footerText, bool standing) {
     snprintf(nightDisp, sizeof nightDisp, "night mode (%d %%, PC-off screens)", NIGHT_PANEL_PCT);
     snprintf(lowDisp, sizeof lowDisp, "low power mode (%d %%)", NIGHT_PANEL_PCT);
     addField(fields, "Displays", backlightForcedOff() ? "off" : backlightIsIdle() ? "dark (PC asleep)" :
-                                 nightEngaged() ? nightDisp : nightLowPowerOn() ? lowDisp : "on");
+                                 nightEngaged() ? nightDisp : nightLowPowerOn() && !nightLowPowerPcOnly() ? lowDisp : "on");
   }
 
   const char *ft = (footerText && footerText[0]) ? footerText :
@@ -1093,7 +1093,8 @@ static void buildComponents(cJSON *data, PanelView view, bool standing) {
     r = addRow(comps);
     addButton(r, nightEnabled() ? "Night auto: on" : "Night auto: off", "night", nightEnabled() ? 1 : 2);
     addButton(r, nightEngaged() ? "End night now" : "Start night now", "night_now", nightEngaged() ? 3 : 2);
-    addButton(r, nightLowPowerOn() ? "Low power: on" : "Low power: off", "lowpower", nightLowPowerOn() ? 1 : 2);
+    addButton(r, nightLowPowerPcOnly() ? "Low power: PC only" : nightLowPowerOn() ? "Low power: on" : "Low power: off", "lowpower",
+              nightLowPowerOn() ? 1 : 2);
     addButton(r, presenceEnabled() ? "Presence: on" : "Presence: off", "presence", presenceEnabled() ? 1 : 2);
     r = addRow(comps);
     addButton(r, "Screenshot", "shot", 2);   // Refresh/Close share this row
@@ -1724,7 +1725,7 @@ static void onInteraction(cJSON *d) {
                on ? "Presence detection on: desk checks by the camera again" : "Presence detection off: no camera checks; night mode goes by input alone");
       sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
     } else if (!strcmp(cid, "lowpower")) {
-      bool on = !nightLowPowerOn();
+      bool on = !nightLowPowerOn() || nightLowPowerPcOnly();   // the desk rule's PC-only one: full mode by hand
       char ignore[64];
       runAndGetFirstLine(on ? "night low on" : "night low off", ignore, sizeof ignore);
       snprintf(lastPanelResult, sizeof lastPanelResult, "%s",

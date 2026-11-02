@@ -9,15 +9,18 @@
 // Phone beyond PRESENCE_AWAY_KM of home: PC displays off, on again when it is
 // back within PRESENCE_HOME_KM. Input on the PC while away gives them back
 // until PRESENCE_AWAY_IDLE_S without input (a dead phone can't leave you in
-// the dark). Someone at the desk while away, on two checks in a row: the PC
-// locks (again at each further check) and #pc-announcement and Pushover
-// (emergency) get an alert, repeated every PRESENCE_ALERT_REPEAT_S. A fix older
+// the dark). Someone seen while away on two checks in a row, with input on
+// the PC in the last PRESENCE_USE_S (someone in the room who leaves the PC
+// alone gets nothing): the PC locks (again at each further check) and
+// #pc-announcement and Pushover (emergency) get an alert, repeated every
+// PRESENCE_ALERT_REPEAT_S while they stay at the desk. A fix older
 // than PRESENCE_FIX_FRESH_S is checked with the phone first: an alert for
 // someone coming home to a stale fix helps nobody.
 //
 // At home outside the night window: nobody seen and no input for
 // PRESENCE_DAY_OFF_S, nothing keeping the display on (pc.disp_req): Windows'
-// own display off (`!mon power all sleep`, no DDC/CI), and low power mode on
+// own display off (`!mon power all sleep`, no DDC/CI), and low power mode on,
+// PC only (Process Lasso; PC LEDs, board panels and status LED unchanged),
 // unless something holds sleep (nightSleepHold; tried again at each check).
 // Someone seen, input, the PC going off or the phone coming home: displays
 // back, and low power mode off if this turned it on. Unknown (too dark, camera

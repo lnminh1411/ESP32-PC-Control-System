@@ -122,7 +122,7 @@ displays-off doesn't use the camera and still applies.
 |---|---|---|
 | Night window, Night auto on, 5 idle minutes over | every 10 s | Someone there: the night holds off, displays on. After 30 min (`NIGHT_DESK_HOLD_S`), still idle and nothing blocking sleep: night engages, displays off. Nobody (two checks in a row): night engages and the PC sleeps at once, or only the displays go off while something blocks sleep, and it sleeps when that clears. Can't tell: the night engages as it always did, sleep 1 h after the last input |
 | Phone beyond 200 m (`PRESENCE_AWAY_KM`) | every 10 s | Someone there: see below |
-| At home, Night auto off or outside its window | every 1 min | Nobody seen and no input for 5 min (`PRESENCE_DAY_OFF_S`), nothing keeping the display on: Windows' own display off (`display sleep`, no DDC/CI: the monitors keep their power), and low power mode on unless something holds sleep (tried again at each check). Someone seen, input, the PC going off or the phone coming home: displays on, and low power mode off if this turned it on (one turned on by hand stays) |
+| At home, Night auto off or outside its window | every 1 min | Nobody seen and no input for 5 min (`PRESENCE_DAY_OFF_S`), nothing keeping the display on: Windows' own display off (`display sleep`, no DDC/CI: the monitors keep their power), and low power mode on, PC only (Process Lasso night config; PC LEDs, board panels and status LED unchanged; button reads "Low power: PC only", pressing it makes it the full mode), unless something holds sleep (tried again at each check). It stays on while the phone is away. Someone seen, input, the PC going off or the phone coming home: displays on, and low power mode off if this turned it on (one turned on by hand stays) |
 
 The phone going beyond 200 m turns the displays off, at any hour; back within
 180 m (`PRESENCE_HOME_KM`, a margin so a fix on the line doesn't flap) turns
@@ -131,12 +131,15 @@ them on, unless night mode wants them off. A fix vaguer than 150 m
 on the PC while away gives the displays back until 5 min pass without input
 (`PRESENCE_AWAY_IDLE_S`): a dead phone must not leave you at a dark screen.
 
-Someone at the desk while the phone is away: a second check runs at once, and
-two `yes` in a row lock the PC (again at every further `yes`, so unlocking it
-doesn't last) and send a red "Someone at your PC" post to #pc-announcement and
+Someone using the PC while the phone is away: two `yes` in a row (the second
+is the next 10 s check; PcHwCtl answers a call within 10 s of a check with that
+same check) with input on the PC in the last 30 s (`PRESENCE_USE_S`) lock the
+PC (again at every further `yes`, so unlocking it doesn't last) and send a red
+"Someone at your PC" post to #pc-announcement and
 a Pushover emergency alert, which repeats every 60 s for an hour or until
-acknowledged. The alert repeats every 10 min while someone stays
-(`PRESENCE_ALERT_REPEAT_S`). A phone fix older than 2 min could be you, home
+acknowledged. Someone in the room who leaves the PC alone gets nothing (logged
+once). After the first alert, staying at the desk is enough: the alert repeats
+every 10 min while someone stays (`PRESENCE_ALERT_REPEAT_S`). A phone fix older than 2 min could be you, home
 already, so the board first asks the phone for its location
 (`reportLocation`) and waits up to 30 s; a fix inside the line cancels the
 alert, the lock has already happened.

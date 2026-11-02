@@ -35,6 +35,7 @@ static bool engaged;
 // 10 %, panels 10 % (normal faces), status LED 20 %, at any hour, until
 // turned off. No display off, no sleep, input doesn't end it.
 static bool lowPower;
+static bool lowPcOnly;                   // the desk rule's: Process Lasso only, LEDs, panels and status LED left alone (NVS)
 static uint32_t lowPowerAtMin;           // minutes since midnight, for the status line
 static bool lowRgbPending;               // PC LEDs to lower once PcHwCtl answers
 static bool manual;                      // started by hand: no window, no idle needed
@@ -110,6 +111,7 @@ static void saveNvs() {
   nvs_set_i8(h, "rgb", savedRgb);
   nvs_set_u8(h, "monon", monOnOwed ? 1 : 0);
   nvs_set_u8(h, "low", lowPower ? 1 : 0);
+  nvs_set_u8(h, "lowpc", lowPcOnly ? 1 : 0);
   nvs_commit(h);
   nvs_close(h);
 }
@@ -124,8 +126,9 @@ void nightInit() {
   if (nvs_get_u8(h, "monon", &mon) == ESP_OK) monOnOwed = mon;
   uint8_t low = 0;
   if (nvs_get_u8(h, "low", &low) == ESP_OK) lowPower = low;
+  if (nvs_get_u8(h, "lowpc", &low) == ESP_OK) lowPcOnly = lowPower && low;
   nvs_close(h);
-  lowRgbPending = lowPower;
+  lowRgbPending = lowPower && !lowPcOnly;
   rgbLowered = savedRgb >= 0;   // a restart while engaged: the LEDs are still at 10 %
 }
 
@@ -135,10 +138,13 @@ void nightWindowText(char *buf, uint32_t size) {
 
 bool pcReachable() { return pcState() == PC_ON && pcStatsFresh() && pcStat("hw.ok") >= 1; }
 
+// Low power mode that dims the LEDs, panels and status LED (not the desk rule's PC-only one)
+static bool lowDims() { return lowPower && !lowPcOnly; }
+
 // PC-off faces while engaged; panels and status LED dimmed while engaged or in low power mode
 static void boardSide() {
   screensNight = engaged;
-  bool dim = engaged || lowPower;
+  bool dim = engaged || lowDims();
   backlightCap(dim ? PANEL_PCT : 100);
   ledCapSet(dim ? STATUS_LED_PCT : 100);
   viewsMarkDirty(-1);
@@ -486,7 +492,7 @@ static void engage(bool byHand) {
 // Everything back, PC displays on. post = false: a wake being checked, whose
 // outcome is posted when known (backToNormal or a quiet re-engage).
 static void backToNormal(const char *why) {
-  if (lowPower) {
+  if (lowDims()) {
     logMsg("night: off again (%s), low power mode stays on", why);
     char what[160];
     snprintf(what, sizeof what, "Over (%s); low power mode stays on (PC LEDs, panels and status LED stay dimmed)", why);
@@ -507,7 +513,7 @@ static void disengage(const char *why, bool post) {
   lassoSend();
   monOnSentMs = 0;   // now, not in 30 s
   monOnTry(nowMs());
-  if (!lowPower) rgbRestoreTry(false);   // the "back to normal" post covers it
+  if (!lowDims()) rgbRestoreTry(false);   // the "back to normal" post covers it
   if (post) backToNormal(why);
 }
 
@@ -547,7 +553,7 @@ void nightPoll() {
     lowRgbPending = false;
     rgbLower();
   }
-  if (!engaged && !lowPower) rgbRestoreTry(true);   // owed from a morning or a restart
+  if (!engaged && !lowDims()) rgbRestoreTry(true);   // owed from a morning or a restart
   monOnTry(now);
   presenceWatch(engaged || guardUntilMs || dueMs);
 
@@ -658,17 +664,28 @@ void nightManual(bool on) {
 
 void nightSleepHold(char *buf, uint32_t size) { sleepHold(buf, size); }
 
-void nightLowPower(bool on, const char *why) {
-  if (on == lowPower) return;
+void nightLowPower(bool on, const char *why, bool pcOnly) {
+  // on by hand over the desk rule's PC-only one: the full mode, kept until turned off
+  if (on == lowPower && !(on && lowPcOnly && !pcOnly)) return;
+  bool upgrade = on && lowPower, wasPcOnly = lowPcOnly;
   lowPower = on;
+  lowPcOnly = on && pcOnly;
   saveNvs();
   boardSide();
   lassoSend();
   char rgbPct[8], what[240];
   snprintf(rgbPct, sizeof rgbPct, "%d %%", RGB_PCT);
-  if (on) {
+  if (on && lowPcOnly) {
     struct tm t;
     lowPowerAtMin = boardLocalTime(&t) ? t.tm_hour * 60 + t.tm_min : 0;
+    logMsg("night: low power mode on %s, PC only", why);
+    snprintf(what, sizeof what, "On %s: Process Lasso night config (E-cores, efficiency mode) on the PC only; PC LEDs, board panels and status LED unchanged", why);
+    discordPost(DC_PC, "Low power mode", what, 0x2C3E50);
+    return;
+  }
+  if (on) {
+    struct tm t;
+    if (!upgrade) lowPowerAtMin = boardLocalTime(&t) ? t.tm_hour * 60 + t.tm_min : 0;
     rgbLower();
     lowRgbPending = !rgbLowered && !pcReachable();   // PC off or PcHwCtl not up: lower when it is
     logMsg("night: low power mode on %s (PC LEDs %s)", why, rgbLowered ? rgbPct : "unchanged");
@@ -686,15 +703,19 @@ void nightLowPower(bool on, const char *why) {
   }
   rgbRestoreTry(false);
   logMsg("night: low power mode off %s%s", why, rgbLowered ? ", PC LEDs go back when PcHwCtl answers" : "");
-  snprintf(what, sizeof what, "Off %s: Process Lasso day config, panels and status LED back to normal%s",
-           why, rgbLowered ? "; PC LEDs go back once the PC is on" : "");
+  snprintf(what, sizeof what, "Off %s: Process Lasso day config%s%s", why,
+           wasPcOnly ? "" : ", panels and status LED back to normal", rgbLowered ? "; PC LEDs go back once the PC is on" : "");
   discordPost(DC_PC, "Low power mode", what, 0xF1C40F);
 }
 
 bool nightLowPowerOn() { return lowPower; }
+bool nightLowPowerPcOnly() { return lowPower && lowPcOnly; }
 
 void nightLowPowerStatus(char *buf, uint32_t size) {
-  if (lowPower)
+  if (lowPower && lowPcOnly)
+    snprintf(buf, size, "on since %02lu:%02lu, PC only (Lasso night config; nobody at the desk)",
+             (unsigned long)(lowPowerAtMin / 60), (unsigned long)(lowPowerAtMin % 60));
+  else if (lowPower)
     snprintf(buf, size, "on since %02lu:%02lu (Lasso night config, LEDs %d %%, panels %d %%, status LED %d %%)",
              (unsigned long)(lowPowerAtMin / 60), (unsigned long)(lowPowerAtMin % 60), RGB_PCT, PANEL_PCT, STATUS_LED_PCT);
   else
