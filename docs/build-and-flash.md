@@ -16,6 +16,12 @@ python scripts/idf_flash.py --no-build
 `idf_flash.py` stops the PC stats service, reboots the board into the ROM
 with a 1200-baud touch on the app's CDC port (`--port`, default COM12),
 flashes over the ROM's USB-Serial-JTAG port and starts the service again.
+It writes only what changed: esptool's `verify_flash` compares the board's
+MD5 of each image in `build/flasher_args.json` (bootloader, partition table,
+app, GIF pack) first, then `write_flash` gets the ones that differ, so a code
+change writes the 1.7 MB app in about 20 s and leaves the 6 MB GIF pack
+(about 80 s) alone. Nothing changed: it just restarts the board. `--full`
+writes everything (`idf.py flash`), as does a failed MD5 check.
 `--idf coredump-info` runs any other `idf.py` action on that port instead.
 It needs pyserial: run it with ESP-IDF's own Python
 (`C:\Espressif\python_env\idf5.5_py3.12_env\Scripts\python.exe`).
@@ -50,8 +56,8 @@ every Nth frame, up to 12 GIFs and 512 frames in all; the partition is the
 real limit, about 13 KB a frame). The board plays them in random cycles:
 it keeps a list of what played, so every GIF comes once a cycle, and a GIF stays
 away for at least half the GIFs when a new cycle starts. After changing either, regenerate the
-pack and flash with `idf_flash.py` (`idf.py flash` writes the partition,
-`app-flash` does not):
+pack and flash with `idf_flash.py` (it sees the pack changed and writes the
+partition; `app-flash` would not):
 
 ```bash
 python scripts/gif_pack.py

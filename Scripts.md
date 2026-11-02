@@ -43,7 +43,7 @@ Validates firmware GPIO definitions against the atopile hardware pin map. Helps 
 Builds `firmware/main/gifs.bin`, the GIF pack for the board's `gifs` partition, from `firmware/gifs/gifs.json` and the GIFs it lists. Run `python scripts/gif_pack.py` after changing them, then flash; it prints the pack and PSRAM sizes. Located at `scripts/gif_pack.py`.
 
 ### idf_flash.py
-Builds and flashes `firmware` over the native USB port hands-off: stops the ESP32PcStats service (no UAC prompt when it is already stopped), does a 1200-baud touch on COM12, waits for the ROM downloader port and runs `idf.py flash`. Run it with the ESP-IDF Python (`C:\Espressif\python_env\idf5.5_py3.12_env\Scripts\python.exe scripts\idf_flash.py [--no-build]`). Located at `scripts/idf_flash.py`.
+Builds and flashes `firmware` over the native USB port hands-off: stops the ESP32PcStats service (no UAC prompt when it is already stopped), does a 1200-baud touch on COM12, waits for the ROM downloader port, compares each image's MD5 on the board and writes only the changed ones (`--full` = `idf.py flash`). Run it with the ESP-IDF Python (`C:\Espressif\python_env\idf5.5_py3.12_env\Scripts\python.exe scripts\idf_flash.py [--no-build]`). Located at `scripts/idf_flash.py`.
 
 ### make_vlw.py
 Converts a TTF/OTF font into an anti-aliased LovyanGFX VLW font as a C array (`font_*.cpp` in firmware/main). Usage: `python scripts/make_vlw.py FONT.otf SIZE NAME OUT.cpp [--extra U+F2C9]`. Located at `scripts/make_vlw.py`.
