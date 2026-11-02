@@ -278,7 +278,8 @@ static const char *calcDayName(int y, int m, int d) {
 static void loadDemo(int mode) {
   WeatherNow w = {};
   w.valid = true;
-  snprintf(w.place, sizeof(w.place), "%s", homeName[0] ? homeName : WEATHER_HOME_NAME);
+  // a made-up place: demo screenshots go public, and the home's name places you
+  strcpy(w.place, "Demo City");
   strcpy(w.updated, "21:40");
   w.temp = 29.0f;
   w.tmax = 33;
@@ -2141,7 +2142,7 @@ void weatherCommand(const char *a1, const char *a2) {
     homeReq.lon = lon;
     snprintf(homeReq.name, sizeof homeReq.name, "%s", name);
     homeReq.set = true;
-    logMsg("weather: home set to %s (%.5f, %.5f)", name, lat, lon);
+    logMsg("weather: home set to %s", name);   // never the coordinates: the log reaches Discord
   } else if (a1 && !strcmp(a1, "refresh")) {
     homeChanged = true;     // forecast, AQI and nowcast at once
     cycloneRefresh = true;  // and GDACS

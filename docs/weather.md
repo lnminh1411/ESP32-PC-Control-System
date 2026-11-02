@@ -94,6 +94,12 @@ EMQX Cloud's Serverless broker is free up to a monthly allowance of session minu
    #define OWNTRACKS_TOPIC "owntracks/your_username/phone"
    ```
 7. Leaving `MQTT_URI` empty (`""`) keeps the phone engine disabled. Secrets are never logged to console or UART.
+8. Encrypt the payloads end to end (the broker then sees only ciphertext): set
+   `#define OWNTRACKS_SECRET "<passphrase>"` in settings.h and the same text in
+   the app (Settings -> Encryption key). The board decrypts with libsodium
+   secretbox (the key is the passphrase zero-padded to 32 bytes, as the app
+   does), ignores plaintext locations while a secret is set, and encrypts the
+   location requests it sends the phone.
 
 **Client footprint** (`owntracks.cpp`):
 - TLS over TCP only. The WebSocket transports are off in sdkconfig.defaults.
@@ -450,7 +456,7 @@ Access commands via USB-UART or Discord `/actions` command:
 ## 13. Sample `weather show` Output
 
 ```
-weather: Tương Mai 28.8 C (31/25) wind 15 km/h from 116 deg, AQI 105 | rain none
+weather: Home 28.8 C (31/25) wind 15 km/h from 116 deg, AQI 105 | rain none
 weather: home engine: Light Rain now (14:47 to 17:00, 1.2 mm/h, from E) | cadence 5 min
 weather: phone engine: off (MQTT_URI empty)
 weather: cyclone TWO: 1971 km now, closest 1971 km, peak 120 km/h, not a typhoon threat

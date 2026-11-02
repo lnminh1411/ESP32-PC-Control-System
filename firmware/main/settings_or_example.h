@@ -41,6 +41,15 @@
 #ifndef OWNTRACKS_TOPIC
 #define OWNTRACKS_TOPIC "owntracks/#"
 #endif
+#ifndef OWNTRACKS_SECRET
+#define OWNTRACKS_SECRET ""
+#endif
+#ifndef COREDUMP_KEEP
+#define COREDUMP_KEEP false                       // keep the core dump after a crash (debugging; it can hold secrets), else erased once its summary is logged
+#endif
+#ifndef LINK_KEY
+#define LINK_KEY ""
+#endif
 #ifndef PUSHOVER_TOKEN
 #define PUSHOVER_TOKEN ""
 #endif

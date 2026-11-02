@@ -87,6 +87,9 @@ static void logResetReason() {
     logMsg("crash: task %s, PC 0x%08lx, cause %lu, vaddr 0x%08lx, reason: %s", cd->exc_task, (unsigned long)cd->exc_pc,
            (unsigned long)cd->ex_info.exc_cause, (unsigned long)cd->ex_info.exc_vaddr, reason[0] ? reason : "-");
     logMsg("crash: backtrace%s%s", bt, cd->exc_bt_info.corrupted ? " (corrupted)" : "");
+    // the dump holds task stacks, which can hold secrets: gone once the summary
+    // is out, unless COREDUMP_KEEP asks for it (`idf_flash.py --idf coredump-info`)
+    if (!COREDUMP_KEEP && esp_core_dump_image_erase() == ESP_OK) logMsg("crash: core dump erased (COREDUMP_KEEP keeps it)");
   }
   free(cd);
   if (r != ESP_RST_POWERON && r != ESP_RST_SW && r != ESP_RST_USB) {

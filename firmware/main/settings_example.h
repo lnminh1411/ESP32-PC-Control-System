@@ -34,6 +34,16 @@
 #define MQTT_USER       ""
 #define MQTT_PASS       ""
 #define OWNTRACKS_TOPIC "owntracks/<user>/<device>"   // exact topic; a wildcard also brings events and other devices
+// OwnTracks payload encryption: the app's Settings > Encryption key, the same
+// text here. Set = only encrypted locations count (a forged one could hibernate
+// the PC or arm the away lock), and the board's requests to the phone go out
+// encrypted. Empty = plain JSON, as before.
+#define OWNTRACKS_SECRET ""
+
+// Board <-> PC helper link key: the helper challenges each USB link and only
+// trusts a board that answers with it (another ESP32 plugged in gets nothing).
+// Any long random text, e.g. 64 hex digits. Empty = no challenge.
+#define LINK_KEY ""
 
 // Pushover notifications for rain alerts. Empty token/user = Pushover disabled.
 #define PUSHOVER_TOKEN  ""

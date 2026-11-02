@@ -123,7 +123,13 @@ def upload_serial(port, data_bytes, baud=115200):
 
 
 def upload_http(host, password, data_bytes):
-    if host.startswith("http://") or host.startswith("https://"):
+    # the board serves plain HTTP only: an https:// target would quietly send
+    # the password in the clear, so refuse it rather than downgrade
+    if host.startswith("https://"):
+        sys.stderr.write("Error: the board has no HTTPS; use --host <name> (plain HTTP on your LAN) or --port (USB)
+")
+        sys.exit(1)
+    if host.startswith("http://"):
         parsed = urllib.parse.urlparse(host)
         host = parsed.netloc
 
@@ -170,7 +176,8 @@ def main():
     parser.add_argument("file", help="Path to layout JSON file")
     parser.add_argument("--port", default=None, help="Serial port (e.g. COM12)")
     parser.add_argument("--host", default=None, help="Target hostname or IP address (e.g. esp32-pc-control.local)")
-    parser.add_argument("--password", default=None, help="OTA password for HTTP PUT (default: read from settings.h)")
+    # no --password: a command line is visible to every process on the PC
+
     parser.add_argument("--baud", type=int, default=115200, help="Serial baud rate (default: 115200)")
     args = parser.parse_args()
 
@@ -181,7 +188,7 @@ def main():
         sys.exit(1)
 
     if args.host:
-        password = args.password if args.password is not None else find_ota_pass(repo_root)
+        password = os.environ.get("OTA_PASS") or find_ota_pass(repo_root)   # env var, else settings.h
         upload_http(args.host, password, data_bytes)
     else:
         port = args.port if args.port is not None else "COM12"

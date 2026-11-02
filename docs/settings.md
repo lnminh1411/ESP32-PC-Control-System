@@ -37,9 +37,11 @@ feature is off.
 | `WIFI_SSID`, `WIFI_PASS` | Wi-Fi (2.4 GHz) |
 | `DISCORD_TOKEN`, `DISCORD_APP_ID`, `DISCORD_GUILD_ID`, `DISCORD_OWNER_ID` | The Discord bot ([discord.md](discord.md)); setup steps are in `firmware/main/discord.h` |
 | `DISCORD_CHANNEL_ID`, `DISCORD_CH_PC`, `DISCORD_CH_WEATHER`, `DISCORD_CH_LOG`, `DISCORD_CH_CONTROL` | Channel ids |
-| `DISCORD_SHOT_WEBHOOK` | The Screenshot button's webhook |
-| `OTA_PASS` | `PUT /layout` (the name is left from OTA, now removed) |
+| `DISCORD_SHOT_WEBHOOK` | The Screenshot button's webhook (compiled into the helper, not the board) |
+| `LINK_KEY` | Shared key the board proves to the helper before it is trusted ([helper.md](helper.md#build-and-install)); 64 hex chars, `python -c "import secrets;print(secrets.token_hex(32))"`; rebuild both |
+| `OTA_PASS` | `PUT /layout` and `GET /bench` (header `X-OTA-Pass`; 5 wrong tries lock the server 30 s) |
 | `MQTT_URI`, `MQTT_USER`, `MQTT_PASS`, `OWNTRACKS_TOPIC` | OwnTracks over MQTT ([weather.md](weather.md)) |
+| `OWNTRACKS_SECRET` | OwnTracks payload encryption key, same as the app's ([weather.md](weather.md)) |
 | `PUSHOVER_TOKEN`, `PUSHOVER_USER` | Pushover |
 | `WOL_MAC`, `WOL_TARGET` | Wake-on-LAN before the helper has reported the PC's MAC; an extra address to send to |
 | `WEATHER_HOME` | Home place, `lat,lon[,name]`, applied at boot |

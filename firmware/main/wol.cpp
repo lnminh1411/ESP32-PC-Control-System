@@ -19,6 +19,7 @@
 
 static uint8_t s_mac[6];
 static bool s_macValid = false;
+static bool s_macDirty;   // learned, not yet in NVS
 static char s_macStr[18] = "";
 
 static bool parseMac(const char *str, uint8_t mac[6]) {
@@ -76,6 +77,14 @@ void wolPoll() {
   if (now - lastCheckMs < 1000) return;
   lastCheckMs = now;
 
+  // at most one flash write a minute (a flipping value can't wear NVS out)
+  static uint32_t savedMs;
+  if (s_macDirty && (!savedMs || nowMs() - savedMs >= 60000)) {
+    s_macDirty = false;
+    savedMs = nowMs() | 1;
+    saveMacToNvs(s_mac);
+  }
+
   const char *macText = pcText("pc.mac");
   if (!macText || !*macText) return;
 
@@ -87,7 +96,7 @@ void wolPoll() {
     s_macValid = true;
     snprintf(s_macStr, sizeof(s_macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
              s_mac[0], s_mac[1], s_mac[2], s_mac[3], s_mac[4], s_mac[5]);
-    saveMacToNvs(s_mac);
+    s_macDirty = true;
     const char *ifName = pcText("pc.mac_if");
     logMsg("wol: PC MAC %s (from %s)", s_macStr, (ifName && *ifName) ? ifName : "unknown");
   }

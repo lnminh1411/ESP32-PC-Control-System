@@ -43,7 +43,7 @@ category dropdown; picking one swaps the controls below it:
 | Tab | Shows | Controls |
 |---|---|---|
 | Door | Door remote state | Door 1-4 |
-| PC Control | PC state, board Wi-Fi, night and low power mode, power plan, CPU, RAM, both GPUs, drive, fans, network, presence at the desk | Wake PC, Lock; Sleep, Hibernate, Restart, Shut down, PC reset (these ask first); Screenshot; Night auto on/off; Start / End night now; Low power on/off |
+| PC Control | PC state, board Wi-Fi, night and low power mode, power plan, CPU, RAM, both GPUs, drive, fans, network, presence at the desk | Wake PC, Lock; Sleep, Hibernate, Restart, Shut down, PC reset (these ask first); Screenshot; Night auto on/off; Start / End night now; Low power on/off; Presence on/off |
 | PC Case RGB LEDs | PcHwCtl's RGB rules and brightness | Mode, color and brightness dropdowns; target group (All, Motherboard, RAM) |
 | PC Fan Control | Each fan's speed, rpm and temperature, the RX 6600 and RTX 3050 included (with Zero RPM) | Target (All fans, Case fans, one case fan, RX 6600, RTX 3050), speed (held 5/15/60 min) and curve dropdowns; a Zero RPM dropdown in place of the curve for a GPU; Auto releases the override |
 | PC Monitor Control | Each monitor's power and brightness, numbered from the left | Target (one monitor or all), brightness in 10 % steps (DDC/CI); All screens on / off (each monitor's power method in PcHwCtl, plus Windows' display off) |
@@ -68,14 +68,19 @@ without use.
 
 **Screenshot** (PC Control) captures the whole desktop (every monitor in one
 image) and posts it to a Discord webhook for 5 minutes, then deletes the post.
-The image stays in memory only. The board only asks (`!shot` over the USB link,
-with the webhook from settings.h), the helper passes that to PcHwCtl
-(`screenshot <nonce> <webhook>`, its `docs/ipc.md`), and PcHwCtl's agent in the
-signed-in session does the capture, overlay, upload and delete. Right after the
+The image stays in memory only. The board only asks (`!shot <nonce>` over the
+USB link; the webhook never crosses USB), the helper adds the webhook it was
+built with (`DISCORD_SHOT_WEBHOOK`, compiled in by `gen_settings.ps1`) and
+passes it to PcHwCtl (`screenshot <nonce> <webhook>`, its `docs/ipc.md`) once
+the pipe's server is the PcHwCtl service process. PcHwCtl captures, overlays,
+uploads and deletes, and only posts to webhook ids listed in its
+`pchwctl.json` (`screenshot.webhookIds`; elevated edit). Right after the
 capture, a red border and "Screenshot Captured" in red show on every monitor for
 5 s - these are drawn *after* the capture, so they are never in the image. If
-the desktop is locked or nobody is signed in it logs the reason in the helper
-log and does nothing; a press while the last upload runs is declined as `busy`.
+the desktop is locked, the monitors are off or nobody is signed in it logs the
+reason (`locked`, `display`, `agent`) in the helper log and does nothing; a
+press while the last upload runs, or within 10 s of it, is declined as `busy`,
+a webhook not on PcHwCtl's list as `webhook`.
 PcHwCtl's config sets the times (`screenshot.deleteMin`, `borderS`).
 
 Set it up with one line in settings.h (keeps the config in one place):
@@ -83,6 +88,9 @@ Set it up with one line in settings.h (keeps the config in one place):
 1. In Discord: #logging -> Edit Channel -> Integrations -> Webhooks -> New
    Webhook -> Copy Webhook URL.
 2. `#define DISCORD_SHOT_WEBHOOK "https://discord.com/api/webhooks/..."` in settings.h.
+3. Rebuild and install the helper (`build.cmd`, `install.ps1`) and the board.
+4. Add the webhook's numeric id (the number after `/webhooks/`) to
+   `screenshot.webhookIds` in `C:\ProgramData\PcHwCtl\pchwctl.json`.
 
 Empty (the default) disables the button: it answers "no screenshot webhook in
 settings.h".

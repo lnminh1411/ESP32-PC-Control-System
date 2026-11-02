@@ -13,6 +13,11 @@ __pycache__/
 # Firmware secrets + settings (copy settings_example.h -> settings.h); secrets.h is the old name
 firmware/**/settings.h
 firmware/**/secrets.h
+# and any copy of them (an agent worktree under .claude/ has its own)
+**/settings.h
+**/secrets.h
+.claude/worktrees/
+graphify-out/
 
 # Host settings generated from settings.h by gen_settings.ps1
 host/pc_stats/Settings.g.cs

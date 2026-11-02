@@ -8,7 +8,7 @@ The dated sections below were measured at the time, the ones before
 Run it again with the console command `bench all` (`bench usage` for memory use only,
 `bench usb <KB>` for USB),
 and time Wi-Fi from the PC with
-`curl -o NUL -w "%{speed_download}\n" http://<board-ip>/bench?kb=4096`.
+`curl -o NUL -H "X-OTA-Pass: <OTA_PASS>" -w "%{speed_download}\n" http://<board-ip>/bench?kb=4096`.
 
 ## Usage
 

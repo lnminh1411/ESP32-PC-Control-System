@@ -52,13 +52,38 @@ static esp_err_t rootGetHandler(httpd_req_t *req) {
 // without closing would otherwise hold the HTTP task
 constexpr uint32_t UPLOAD_STALL_MS = 30000;
 
-static esp_err_t layoutPutHandler(httpd_req_t *req) {
-  char passHdr[64] = {0};
-  if (httpd_req_get_hdr_value_str(req, "X-OTA-Pass", passHdr, sizeof passHdr) != ESP_OK ||
-      !constantTimeEq(passHdr, OTA_PASS)) {
-    httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Forbidden");
-    return ESP_OK;
+// X-OTA-Pass on every route but `/`. Five wrong ones lock the server for 30 s
+// (guessing is limited to that pace; the HTTP task handles one request at a
+// time, so these need no lock). False: the 403 or 429 is already sent.
+static bool passOk(httpd_req_t *req) {
+  static uint8_t fails;
+  static uint32_t lockedUntilMs;
+  if (lockedUntilMs && (int32_t)(lockedUntilMs - nowMs()) > 0) {
+    httpd_resp_set_status(req, "429 Too Many Requests");
+    httpd_resp_send(req, "Too many wrong passwords, wait 30 s", HTTPD_RESP_USE_STRLEN);
+    return false;
   }
+  char passHdr[64] = {0};
+  if (httpd_req_get_hdr_value_str(req, "X-OTA-Pass", passHdr, sizeof passHdr) == ESP_OK && constantTimeEq(passHdr, OTA_PASS)) {
+    fails = 0;
+    return true;
+  }
+  if (++fails >= 5) {
+    fails = 0;
+    lockedUntilMs = (nowMs() + 30000) | 1;
+    logMsg("http: 5 wrong passwords, locked for 30 s");
+  }
+  httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Forbidden");
+  return false;
+}
+
+static esp_err_t benchGetHandler(httpd_req_t *req) {
+  if (!passOk(req)) return ESP_OK;
+  return benchHttpHandler(req);
+}
+
+static esp_err_t layoutPutHandler(httpd_req_t *req) {
+  if (!passOk(req)) return ESP_OK;
 
   if (req->content_len <= 0) {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Content-Length required");
@@ -301,7 +326,7 @@ void netPoll() {
       httpd_uri_t get_bench = {
         .uri = "/bench",
         .method = HTTP_GET,
-        .handler = benchHttpHandler,
+        .handler = benchGetHandler,
         .user_ctx = nullptr
       };
       httpd_register_uri_handler(httpServer, &get_bench);

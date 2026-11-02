@@ -37,6 +37,22 @@ static void logEmit(const char *buf, size_t len) {
   }
 }
 
+// Every line can reach Discord #logging. ESP-IDF's own lines can carry a URL
+// whole (esp_http_client's "Error parse url"), with an API key in its query:
+// cut the line at any key-looking parameter or a webhook path
+static size_t redact(char *buf, size_t len) {
+  static const char *const marks[] = {"appid=", "apikey=", "api_key=", "token=", "key=", "/webhooks/"};
+  for (const char *m : marks) {
+    char *p = strstr(buf, m);
+    if (!p) continue;
+    p += strlen(m);
+    if ((size_t)(p - buf) + 10 >= 256) p = buf + 245;   // room for the marker in every caller's 256 B buffer
+    strcpy(p, "<redacted>");
+    len = strlen(buf);
+  }
+  return len;
+}
+
 void logMsg(const char *fmt, ...) {
   char buf[256];
   va_list a;
@@ -47,7 +63,7 @@ void logMsg(const char *fmt, ...) {
   if ((size_t)len >= sizeof(buf)) len = sizeof(buf) - 1;
   while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r')) buf[--len] = '\0';
   if (len == 0) return;
-  logEmit(buf, (size_t)len);
+  logEmit(buf, redact(buf, (size_t)len));
 }
 
 // A driver line logged from inside logEmit (the USB write, say) would come
@@ -73,7 +89,7 @@ static int logVprintf(const char *fmt, va_list a) {
   if (len > 0) {
     if ((size_t)len >= sizeof(buf)) len = sizeof(buf) - 1;
     while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r')) buf[--len] = '\0';
-    if (len > 0) logEmit(buf, (size_t)len);
+    if (len > 0) logEmit(buf, redact(buf, (size_t)len));
   }
   if (slot >= 0) {
     taskENTER_CRITICAL(&s_inLogMux);

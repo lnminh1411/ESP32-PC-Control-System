@@ -59,12 +59,23 @@ host\pc_stats\build.cmd
 powershell -ExecutionPolicy Bypass -File host\pc_stats\install.ps1
 ```
 
-`build.cmd` needs the .NET 10 SDK. It turns the `HOST_*` settings into
-`Settings.g.cs` first (no other key, so no secret reaches the exe), then
-publishes `build\ESP32-Helper.exe`. `install.ps1` (elevated) copies it to
-`C:\Program Files\ESP32 PC Controller\pc_stats\`, keeps an existing
-`stats.ini` and `agy_quota.ini` unless given `-ForceConfig`, and sets up the
-`ESP32PcStats` service to start automatically and restart on failure.
+`build.cmd` needs the .NET 10 SDK. It turns the `HOST_*` settings, plus
+`DISCORD_SHOT_WEBHOOK` and `LINK_KEY`, into `Settings.g.cs` first (no other
+secret reaches the exe), then publishes `build\ESP32-Helper.exe`.
+`install.ps1` (elevated) copies it to
+`C:\Program Files\ESP32 PC Controller\pc_stats\`, copies the two panel fonts
+into its `fonts` folder, keeps an existing `stats.ini` and `agy_quota.ini`
+unless given `-ForceConfig`, limits the folder to SYSTEM and Administrators,
+and sets up the `ESP32PcStats` service to start automatically and restart on
+failure. The service limits `C:\ProgramData\ESP32PcStats` the same way.
+
+**Trust.** The helper sends no stats and ignores the board's `!` lines until
+the board proves it holds `LINK_KEY`: the helper sends `@auth <nonce>` every
+2 s, the board answers `!auth <HMAC-SHA256 first 16 bytes, hex>`. A rogue
+Espressif USB device can't drive power, lock or screenshots without the key.
+Before writing to the PcHwCtl or LocalAIHost pipe, the helper checks the pipe's
+server process is that service's process (a squatted pipe name gets nothing).
+Fonts load only from `C:\Windows\Fonts` and the install `fonts` folder.
 `uninstall.ps1` removes it again; the log in `C:\ProgramData\ESP32PcStats`
 stays.
 

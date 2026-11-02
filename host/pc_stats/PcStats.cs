@@ -45,6 +45,7 @@ using System.Management;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
+using System.Security.Principal;
 using System.ServiceProcess;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -551,9 +552,10 @@ partial class PcStats : ServiceBase {
           char c = (char)buf[i];
           if (c == '\0') continue;
           if (c == '\n') {
-            if (!dropping && !stale) {
+            if (!dropping) {
               string line = lineBuf.ToString().TrimEnd('\r');
-              if (line.Length > 0) HandleBoardLine(line);
+              // the answer to this link's challenge comes within the first 500 ms
+              if (line.Length > 0 && (!stale || line.StartsWith("!auth ", StringComparison.Ordinal))) HandleBoardLine(line);
             }
             dropping = false;
             lineBuf.Length = 0;
@@ -615,9 +617,49 @@ partial class PcStats : ServiceBase {
   static string currentMacIf = "";
   static DateTime nextMacRefreshUtc = DateTime.MinValue;
 
-  static void HandleBoardLine(string line) {
+  // ---- Board link challenge ----
+  // Any USB device with Espressif's vendor id matches the board's ports. So on
+  // each link the helper sends `@auth <nonce>` and the board answers
+  // `!auth <mac>`, the first 16 bytes of HMAC-SHA256(LINK_KEY, "esp32-link
+  // <nonce>") in hex. Until it has, no stats go out and no board line is acted
+  // on. LINK_KEY empty (settings.h): no challenge.
+  static volatile bool linkAuthed;
+  static volatile string linkNonce = "";
+  static volatile bool linkRefusedLogged;
+
+  static bool LinkTrusted() { return HostSettings.LINK_KEY.Length == 0 || linkAuthed; }
+
+  static void LinkNew() {
+    byte[] n = new byte[16];
+    System.Security.Cryptography.RandomNumberGenerator.Fill(n);
+    linkNonce = Convert.ToHexString(n).ToLowerInvariant();
+    linkAuthed = false;
+    linkRefusedLogged = false;
+  }
+
+  static void LinkAuthCheck(string mac) {
+    string nonce = linkNonce;
+    if (nonce.Length == 0 || HostSettings.LINK_KEY.Length == 0) return;
+    using (var h = new System.Security.Cryptography.HMACSHA256(Utf8NoBom.GetBytes(HostSettings.LINK_KEY))) {
+      byte[] want = h.ComputeHash(Utf8NoBom.GetBytes("esp32-link " + nonce));
+      string wantHex = Convert.ToHexString(want, 0, 16).ToLowerInvariant();
+      bool ok = mac.Length == wantHex.Length &&
+                System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(Encoding.ASCII.GetBytes(mac.ToLowerInvariant()), Encoding.ASCII.GetBytes(wantHex));
+      if (ok && !linkAuthed) { linkAuthed = true; Log("board: link key checked"); }
+      else if (!ok && !linkRefusedLogged) { linkRefusedLogged = true; Log("board: wrong link key answer, not the board or a different LINK_KEY"); }
+    }
+  }
+
+  static void HandleBoardLine(string line) { HandleBoardLine(line, false); }
+
+  static void HandleBoardLine(string line, bool typed) {
     if (string.IsNullOrEmpty(line)) return;
     line = line.Trim();
+    if (line.StartsWith("!auth ", StringComparison.Ordinal)) { LinkAuthCheck(line.Substring(6).Trim()); return; }
+    if (!typed && !LinkTrusted()) {
+      if (!linkRefusedLogged) { linkRefusedLogged = true; Log("board: line before the link key check, ignored"); }
+      return;
+    }
     if (line.StartsWith("!art", StringComparison.OrdinalIgnoreCase)) {
       HandleArtLine(line);
     } else if (line.StartsWith("!txt", StringComparison.OrdinalIgnoreCase)) {
@@ -637,24 +679,31 @@ partial class PcStats : ServiceBase {
     } else if (line.StartsWith("!night", StringComparison.OrdinalIgnoreCase)) {
       HandleNightLine(line);
     } else {
-      Log("board: unrecognized line '" + line + "'");
+      // first word only: a line that lost its start could carry a secret after it
+      int sp = line.IndexOf(' ');
+      Log("board: unrecognized line '" + (sp > 0 ? line.Substring(0, Math.Min(sp, 24)) + " ...'" : line.Substring(0, Math.Min(line.Length, 24)) + "'") + " (" + line.Length + " chars)");
     }
   }
 
-  static readonly Regex ShotCmdRegex = new Regex(@"^!shot\s+([0-9a-fA-F]{1,16})\s+(\S+)$");
+  static readonly Regex ShotCmdRegex = new Regex(@"^!shot\s+([0-9a-fA-F]{1,16})$");
   const int ShotTimeoutMs = 15000;
 
-  // The board asked for a screenshot and handed us the webhook from its
-  // settings.h. PcHwCtl does the rest (docs/ipc.md#screenshot there): its
-  // user-session agent captures, shows the red border, posts to the webhook
-  // and deletes the post later. Its answer comes after the capture. The
-  // webhook stays out of the log.
+  // The board asked for a screenshot. The webhook is settings.h's
+  // DISCORD_SHOT_WEBHOOK, compiled in here (gen_settings.ps1), so it never
+  // crosses USB and the board can't send the desktop anywhere else. PcHwCtl
+  // does the rest (docs/ipc.md#screenshot there): its user-session agent
+  // captures, shows the red border, posts to the webhook and deletes the post
+  // later. Its answer comes after the capture. The webhook stays out of the log.
   static void HandleShotLine(string line) {
     if (line == null) return;
     Match m = ShotCmdRegex.Match(line.Trim());
     if (!m.Success) { Log("shot: unrecognized command"); return; }
     string nonce = m.Groups[1].Value.ToLowerInvariant();
-    string webhook = m.Groups[2].Value;
+    string webhook = HostSettings.SHOT_WEBHOOK;
+    if (!webhook.StartsWith("https://discord.com/api/webhooks/", StringComparison.Ordinal)) {
+      Log("shot: no Discord webhook (DISCORD_SHOT_WEBHOOK in settings.h)");
+      return;
+    }
 
     ThreadPool.QueueUserWorkItem(delegate(object o) {
       Dictionary<string, object> data;
@@ -745,8 +794,55 @@ partial class PcStats : ServiceBase {
       using (var c = new PipeClient(pipeName, readTimeoutMs)) return c.Request(command, out data);
     } catch (System.TimeoutException) {
       return "err " + pipeName + " not running";
+    } catch (UnauthorizedAccessException ex) {
+      Log("pipe: " + ex.Message);
+      return "err " + pipeName + " not trusted";
     } catch (Exception ex) {
       return "err " + ex.GetType().Name;
+    }
+  }
+
+  [DllImport("kernel32.dll", SetLastError = true)]
+  static extern bool GetNamedPipeServerProcessId(SafePipeHandle pipe, out uint processId);
+  [DllImport("advapi32.dll", SetLastError = true)]
+  static extern IntPtr OpenSCManager(string machine, string database, uint access);
+  [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+  static extern IntPtr OpenService(IntPtr scm, string name, uint access);
+  [DllImport("advapi32.dll", SetLastError = true)]
+  static extern bool QueryServiceStatusEx(IntPtr service, int infoLevel, byte[] buffer, int size, out int needed);
+  [DllImport("advapi32.dll")]
+  static extern bool CloseServiceHandle(IntPtr handle);
+
+  // The process id of a running service, 0 when it isn't running
+  static uint ServicePid(string name) {
+    IntPtr scm = OpenSCManager(null, null, 0x0001 /* SC_MANAGER_CONNECT */);
+    if (scm == IntPtr.Zero) return 0;
+    try {
+      IntPtr svc = OpenService(scm, name, 0x0004 /* SERVICE_QUERY_STATUS */);
+      if (svc == IntPtr.Zero) return 0;
+      try {
+        var buf = new byte[36];   // SERVICE_STATUS_PROCESS: dwProcessId at 28
+        int needed;
+        return QueryServiceStatusEx(svc, 0 /* SC_STATUS_PROCESS_INFO */, buf, buf.Length, out needed) ? BitConverter.ToUInt32(buf, 28) : 0;
+      } finally { CloseServiceHandle(svc); }
+    } finally { CloseServiceHandle(scm); }
+  }
+
+  // A pipe name is first come, first served: while PcHwCtl or LocalAIHost
+  // restarts, anything could create one under its name. So the helper only
+  // talks to a pipe the service of that same name serves, and connects
+  // anonymously: a server can't act as SYSTEM with our token.
+  static NamedPipeClientStream ConnectService(string name, int timeoutMs) {
+    var pipe = new NamedPipeClientStream(".", name, PipeDirection.InOut, PipeOptions.Asynchronous, TokenImpersonationLevel.Anonymous);
+    try {
+      pipe.Connect(timeoutMs);
+      uint pid, svcPid = ServicePid(name);
+      if (!GetNamedPipeServerProcessId(pipe.SafePipeHandle, out pid) || pid == 0 || pid != svcPid)
+        throw new UnauthorizedAccessException(name + " pipe is not served by the " + name + " service (pid " + pid + ", service " + svcPid + ")");
+      return pipe;
+    } catch (Exception) {
+      pipe.Dispose();
+      throw;
     }
   }
 
@@ -763,13 +859,7 @@ partial class PcStats : ServiceBase {
     public PipeClient(string pipeName, int readTimeoutMs) {
       name = pipeName;
       timeoutMs = readTimeoutMs;
-      pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
-      try {
-        pipe.Connect(1000);
-      } catch (Exception) {
-        pipe.Dispose();
-        throw;
-      }
+      pipe = ConnectService(pipeName, 1000);
       w = new StreamWriter(pipe, Utf8NoBom) { AutoFlush = true, NewLine = "\n" };
       r = new StreamReader(pipe, Utf8NoBom);
     }
@@ -1157,7 +1247,11 @@ partial class PcStats : ServiceBase {
               lines[i] = r.ReadLine();
               if (lines[i] == null) return;
             }
-            lock (helperLock) { helperFeeds[p[1]] = new HelperFeed { Lines = lines, ReceivedUtc = DateTime.UtcNow }; }
+            lock (helperLock) {
+              // a handful of feeds with short names: no unbounded growth in the SYSTEM process
+              if (p[1].Length <= 32 && (helperFeeds.ContainsKey(p[1]) || helperFeeds.Count < 32))
+                helperFeeds[p[1]] = new HelperFeed { Lines = lines, ReceivedUtc = DateTime.UtcNow };
+            }
           } else if (line.StartsWith("A ")) {
             byte[] art = Convert.FromBase64String(line.Substring(2));
             if (art.Length == 41472) lock (helperLock) { helperArt = art; }
@@ -2298,13 +2392,14 @@ partial class PcStats : ServiceBase {
     string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "ESP32PcStats");
     Directory.CreateDirectory(dir);
     logPath = Path.Combine(dir, "log.txt");
+    if (!consoleMode) SecureDataDir(dir);
     if (consoleMode) {
       var s = new PcStats();
       Console.CancelKeyPress += delegate(object o, ConsoleCancelEventArgs e) { e.Cancel = true; s.stop = true; };
       // board lines typed here ("!mon 1 bright all 50") are handled as if the board sent them
       new Thread(delegate() {
         string l;
-        while ((l = Console.ReadLine()) != null) if (l.StartsWith("!")) HandleBoardLine(l);
+        while ((l = Console.ReadLine()) != null) if (l.StartsWith("!")) HandleBoardLine(l, true);
       }) { IsBackground = true, Name = "stdin" }.Start();
       StartUserHalf();
       s.Run();
@@ -2378,10 +2473,37 @@ partial class PcStats : ServiceBase {
         File.Move(logPath, old);
       }
       File.AppendAllText(logPath, line + Environment.NewLine);
-    } catch (IOException) { }
+    } catch (Exception) { }   // a log that can't be written never takes a reader thread down
+  }
+
+  // C:\ProgramData lets every account create entries in a new folder, and
+  // SYSTEM writes night.on and the log here: SYSTEM and Administrators only,
+  // nothing inherited (the user half runs as the signed-in admin, UAC off)
+  static void SecureDataDir(string dir) {
+    try {
+      var ds = new System.Security.AccessControl.DirectorySecurity();
+      ds.SetAccessRuleProtection(true, false);
+      var all = System.Security.AccessControl.InheritanceFlags.ContainerInherit | System.Security.AccessControl.InheritanceFlags.ObjectInherit;
+      var admins = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+      foreach (SecurityIdentifier sid in new[] { new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null), admins })
+        ds.AddAccessRule(new System.Security.AccessControl.FileSystemAccessRule(sid, System.Security.AccessControl.FileSystemRights.FullControl,
+            all, System.Security.AccessControl.PropagationFlags.None, System.Security.AccessControl.AccessControlType.Allow));
+      ds.SetOwner(admins);
+      new DirectoryInfo(dir).SetAccessControl(ds);
+    } catch (Exception ex) {
+      Log("service: could not lock " + dir + ": " + ex.Message);
+    }
   }
 
   static string Clean(string s) { return (s ?? "").Replace('\t', ' ').Replace('\n', ' ').Replace('\r', ' ').Trim(); }
+
+  // Control characters out (line breaks above all), for anything sent to the board
+  static string LineSafe(string s) {
+    if (s == null) return "";
+    var sb = new StringBuilder(s.Length);
+    foreach (char c in s) sb.Append(char.IsControl(c) || c == '\u2028' || c == '\u2029' ? ' ' : c);
+    return sb.ToString();
+  }
 
   static string FindHid(out SafeFileHandle matchedHandle) {
     matchedHandle = null;
@@ -2739,27 +2861,11 @@ partial class PcStats : ServiceBase {
       string bWin = Path.Combine(winFonts, HostSettings.FONT_BOLD);
       if (File.Exists(bWin)) boldPath = bWin;
 
-      if (regPath == null || boldPath == null) {
-        if (Directory.Exists(@"C:\Users")) {
-          try {
-            string[] userDirs = Directory.GetDirectories(@"C:\Users");
-            for (int i = 0; i < userDirs.Length; i++) {
-              string uFonts = Path.Combine(userDirs[i], @"AppData\Local\Microsoft\Windows\Fonts");
-              if (Directory.Exists(uFonts)) {
-                if (regPath == null) {
-                  string r = Path.Combine(uFonts, HostSettings.FONT_REGULAR);
-                  if (File.Exists(r)) regPath = r;
-                }
-                if (boldPath == null) {
-                  string b = Path.Combine(uFonts, HostSettings.FONT_BOLD);
-                  if (File.Exists(b)) boldPath = b;
-                }
-                if (regPath != null && boldPath != null) break;
-              }
-            }
-          } catch (Exception) { }
-        }
-      }
+      // else the copies install.ps1 put beside the exe: SYSTEM parses these
+      // fonts, so never one from a folder another account can write
+      string ownFonts = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "fonts");
+      if (regPath == null && File.Exists(Path.Combine(ownFonts, HostSettings.FONT_REGULAR))) regPath = Path.Combine(ownFonts, HostSettings.FONT_REGULAR);
+      if (boldPath == null && File.Exists(Path.Combine(ownFonts, HostSettings.FONT_BOLD))) boldPath = Path.Combine(ownFonts, HostSettings.FONT_BOLD);
 
       if (regPath != null) {
         try {
@@ -3445,6 +3551,8 @@ partial class PcStats : ServiceBase {
     NightStart();
     FeedStart();
     ILink link = null;
+    ILink authLink = null;   // the link the current challenge belongs to
+    DateTime nextChallenge = DateTime.MinValue;
     List<StatRule> rules = null;
     List<HttpSource> sources = null;
     ClaudeSource claudeSource = null;
@@ -3672,8 +3780,22 @@ partial class PcStats : ServiceBase {
           }
         }
 
-        // Send to link if connected
-        if (link != null) {
+        // A new link: challenge it, and nothing else goes out until it answers
+        if (link != authLink) {
+          authLink = link;
+          if (link != null) { LinkNew(); nextChallenge = DateTime.MinValue; }
+        }
+        if (link != null && !LinkTrusted()) {
+          if (DateTime.UtcNow >= nextChallenge) {
+            nextChallenge = DateTime.UtcNow.AddSeconds(2);
+            try { link.Write("@auth " + linkNonce + "\n"); }
+            catch (Exception e) {
+              Log("port lost: " + e.Message);
+              try { link.Close(); } catch (Exception) { }
+              link = null;
+            }
+          }
+        } else if (link != null) {
           try {
             var sb = new StringBuilder();
             if (tokens.Count > 0) {
@@ -3691,7 +3813,8 @@ partial class PcStats : ServiceBase {
               }
             }
             for (int i = 0; i < texts.Count; i++) {
-              string val = TruncateUtf8(texts[i].Value, 120);
+              // one line each: a value with a line break would inject board lines
+              string val = TruncateUtf8(LineSafe(texts[i].Value), 120);
               lock (lastSentTextsLock) {
                 lastSentTexts[texts[i].Key] = val;
               }

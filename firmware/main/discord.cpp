@@ -12,6 +12,7 @@
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 #include <math.h>
+#include <mbedtls/platform_util.h>
 #include <nvs.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -266,6 +267,7 @@ static int rest(const char *method, const char *path, const char *body, char *ou
   char auth[128];
   snprintf(auth, sizeof auth, "Bot %s", DISCORD_TOKEN);
   esp_http_client_set_header(client, "Authorization", auth);
+  mbedtls_platform_zeroize(auth, sizeof auth);   // the client keeps its own copy: none left on this stack for a core dump
   esp_http_client_set_header(client, "Content-Type", "application/json");
   esp_http_client_set_header(client, "User-Agent", "DiscordBot (https://github.com/lnminh1411/ESP32-PC-Control-System, 1.0)");
 
@@ -1092,6 +1094,7 @@ static void buildComponents(cJSON *data, PanelView view, bool standing) {
     addButton(r, nightEnabled() ? "Night auto: on" : "Night auto: off", "night", nightEnabled() ? 1 : 2);
     addButton(r, nightEngaged() ? "End night now" : "Start night now", "night_now", nightEngaged() ? 3 : 2);
     addButton(r, nightLowPowerOn() ? "Low power: on" : "Low power: off", "lowpower", nightLowPowerOn() ? 1 : 2);
+    addButton(r, presenceEnabled() ? "Presence: on" : "Presence: off", "presence", presenceEnabled() ? 1 : 2);
     r = addRow(comps);
     addButton(r, "Screenshot", "shot", 2);   // Refresh/Close share this row
   } else if (cat == CAT_RGB) {
@@ -1713,6 +1716,13 @@ static void onInteraction(cJSON *d) {
       ledSettingsSave();
       snprintf(lastPanelResult, sizeof lastPanelResult, "Status LED %s", off ? "off" : "on");
       sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
+    } else if (!strcmp(cid, "presence")) {
+      bool on = !presenceEnabled();
+      char ignore[64];
+      runAndGetFirstLine(on ? "presence on" : "presence off", ignore, sizeof ignore);   // changed in the main loop
+      snprintf(lastPanelResult, sizeof lastPanelResult, "%s",
+               on ? "Presence detection on: desk checks by the camera again" : "Presence detection off: no camera checks; night mode goes by input alone");
+      sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
     } else if (!strcmp(cid, "lowpower")) {
       bool on = !nightLowPowerOn();
       char ignore[64];
@@ -2011,6 +2021,16 @@ static void handleGatewayMessage(const char *jsonStr, size_t len) {
           discordPost(DC_PC, "ESP32 PC Control is online", (netUp() && netIp()[0]) ? netIp() : "Wi-Fi down", 0x57F287);
         }
       } else if (!strcmp(t, "INTERACTION_CREATE")) {
+        // someone else's clicks never reach the queue (where they could crowd
+        // out the owner's) and get no answer: Discord shows "interaction failed"
+        if (data && strcmp(ixUser(data), DISCORD_OWNER_ID) != 0) {
+          static uint32_t loggedMs;
+          if (!loggedMs || nowMs() - loggedMs > 60000) {
+            loggedMs = nowMs() | 1;
+            logMsg("discord: interaction from someone else, ignored");
+          }
+          break;
+        }
         lastInteractionMs = nowMs() | 1;   // the #control panel goes live (CONTROL_PANEL_LIVE_MS)
         if (data) ixEnqueue(data);   // handled in the bot task
       }

@@ -5,7 +5,9 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <math.h>
+#include <mbedtls/base64.h>
 #include <mqtt_client.h>
+#include <sodium.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -49,17 +51,120 @@ static double haversineKm(double lat1, double lon1, double lat2, double lon2) {
 }
 
 // cJSON recurses once per level and this runs on the MQTT task's 4 KB stack.
-// A location is 2 levels deep; a bracket inside a string only counts against it
+// A location is 2 levels deep. Brackets inside strings don't count (a "]]]"
+// string must not buy depth back), and more closers than openers is not JSON.
 static bool jsonShallow(const char *s, int len) {
   int depth = 0;
+  bool inStr = false;
   for (int i = 0; i < len; i++) {
-    if (s[i] == '{' || s[i] == '[') {
+    char c = s[i];
+    if (inStr) {
+      if (c == '\\') i++;
+      else if (c == '"') inStr = false;
+    } else if (c == '"') {
+      inStr = true;
+    } else if (c == '{' || c == '[') {
       if (++depth > 8) return false;
-    } else if (s[i] == '}' || s[i] == ']') {
-      depth--;
+    } else if (c == '}' || c == ']') {
+      if (--depth < 0) return false;
     }
   }
   return true;
+}
+
+// OwnTracks payload encryption: the app's key is its text, zero-padded to 32
+// bytes; a message is {"_type":"encrypted","data":base64(nonce[24] || secretbox)}
+static bool encrypted() { return OWNTRACKS_SECRET[0] != 0; }
+
+static void secretKey(uint8_t key[crypto_secretbox_KEYBYTES]) {
+  memset(key, 0, crypto_secretbox_KEYBYTES);
+  size_t n = strlen(OWNTRACKS_SECRET);
+  memcpy(key, OWNTRACKS_SECRET, n < crypto_secretbox_KEYBYTES ? n : crypto_secretbox_KEYBYTES);
+}
+
+// The plaintext JSON of an encrypted message (heap, caller frees), or null
+static char *decryptData(const char *b64) {
+  size_t b64Len = strlen(b64), rawLen = 0;
+  if (b64Len > 4096) return nullptr;
+  uint8_t *raw = (uint8_t *)malloc(b64Len);
+  if (!raw) return nullptr;
+  char *plain = nullptr;
+  if (mbedtls_base64_decode(raw, b64Len, &rawLen, (const uint8_t *)b64, b64Len) == 0 &&
+      rawLen > crypto_secretbox_NONCEBYTES + crypto_secretbox_MACBYTES) {
+    size_t cLen = rawLen - crypto_secretbox_NONCEBYTES, pLen = cLen - crypto_secretbox_MACBYTES;
+    plain = (char *)malloc(pLen + 1);
+    uint8_t key[crypto_secretbox_KEYBYTES];
+    secretKey(key);
+    if (plain && crypto_secretbox_open_easy((uint8_t *)plain, raw + crypto_secretbox_NONCEBYTES, cLen, raw, key) == 0) {
+      plain[pLen] = 0;
+    } else {
+      free(plain);
+      plain = nullptr;
+    }
+    sodium_memzero(key, sizeof key);
+  }
+  free(raw);
+  return plain;
+}
+
+// {"_type":"encrypted","data":...} for a plaintext message (heap), or null
+static char *encryptJson(const char *json) {
+  size_t pLen = strlen(json), rawLen = crypto_secretbox_NONCEBYTES + crypto_secretbox_MACBYTES + pLen;
+  uint8_t *raw = (uint8_t *)malloc(rawLen);
+  size_t b64Cap = (rawLen + 2) / 3 * 4 + 1, b64Len = 0;
+  char *out = (char *)malloc(b64Cap + 40);
+  if (!raw || !out) { free(raw); free(out); return nullptr; }
+  uint8_t key[crypto_secretbox_KEYBYTES];
+  secretKey(key);
+  randombytes_buf(raw, crypto_secretbox_NONCEBYTES);
+  crypto_secretbox_easy(raw + crypto_secretbox_NONCEBYTES, (const uint8_t *)json, pLen, raw, key);
+  sodium_memzero(key, sizeof key);
+  int n = snprintf(out, b64Cap + 40, "{\"_type\":\"encrypted\",\"data\":\"");
+  mbedtls_base64_encode((uint8_t *)out + n, b64Cap, &b64Len, raw, rawLen);
+  strcpy(out + n + b64Len, "\"}");
+  free(raw);
+  return out;
+}
+
+// A location fix from a parsed message
+static void takeLocation(cJSON *root, esp_mqtt_event_handle_t event) {
+  cJSON *type = cJSON_GetObjectItem(root, "_type");
+  if (!type || !cJSON_IsString(type) || strcmp(type->valuestring, "location")) return;
+  cJSON *jlat = cJSON_GetObjectItem(root, "lat");
+  cJSON *jlon = cJSON_GetObjectItem(root, "lon");
+  cJSON *jtst = cJSON_GetObjectItem(root, "tst");
+  cJSON *jacc = cJSON_GetObjectItem(root, "acc");
+
+  // a real position only: the nowcast's URL builder wraps the longitude
+  // in a loop (an inf never leaves it) and prints every point with %.5f
+  if (!jlat || !jlon || !jtst || !cJSON_IsNumber(jlat) || !cJSON_IsNumber(jlon) || !cJSON_IsNumber(jtst) ||
+      !(fabs(jlat->valuedouble) <= 90.0) || !(fabs(jlon->valuedouble) <= 180.0)) return;   // NaN fails too
+  uint32_t tst = (uint32_t)(jtst->valuedouble > 0.0 ? jtst->valuedouble : 0.0);
+  if (hasLocation && tst < phoneTst) {   // an older fix replayed (a retained or recorded message)
+    logMsg("owntracks: fix older than the last one, ignored");
+    return;
+  }
+  if (locMutex) xSemaphoreTake(locMutex, portMAX_DELAY);
+  phoneLat = jlat->valuedouble;
+  phoneLon = jlon->valuedouble;
+  phoneTst = tst;
+  phoneAcc = (jacc && cJSON_IsNumber(jacc)) ? (uint32_t)jacc->valuedouble : 0;
+  phoneReceivedMs = nowMs();
+  hasLocation = true;
+  // the device's topic: its /cmd subtopic takes reportLocation
+  if (event->topic && event->topic_len > 0 && event->topic_len < (int)sizeof devTopic) {
+    memcpy(devTopic, event->topic, event->topic_len);
+    devTopic[event->topic_len] = 0;
+  }
+  if (locMutex) xSemaphoreGive(locMutex);
+  logMsg("owntracks: location updated (acc %u m)", (unsigned)phoneAcc);
+  if (askPending && devTopic[0]) {   // a joined message's last piece has no topic: never "/cmd"
+    // answered (or moved): take the retained command off the broker
+    char t[96];
+    snprintf(t, sizeof t, "%s/cmd", devTopic);
+    esp_mqtt_client_publish(mqttClient, t, "", 0, 1, 1);
+    askPending = false;
+  }
 }
 
 static void mqttEventHandler(void *, esp_event_base_t, int32_t event_id, void *event_data) {
@@ -101,38 +206,25 @@ static void mqttEventHandler(void *, esp_event_base_t, int32_t event_id, void *e
       if (!root) break;
 
       cJSON *type = cJSON_GetObjectItem(root, "_type");
-      if (type && cJSON_IsString(type) && !strcmp(type->valuestring, "location")) {
-        cJSON *jlat = cJSON_GetObjectItem(root, "lat");
-        cJSON *jlon = cJSON_GetObjectItem(root, "lon");
-        cJSON *jtst = cJSON_GetObjectItem(root, "tst");
-        cJSON *jacc = cJSON_GetObjectItem(root, "acc");
-
-        // a real position only: the nowcast's URL builder wraps the longitude
-        // in a loop (an inf never leaves it) and prints every point with %.5f
-        if (jlat && jlon && jtst && cJSON_IsNumber(jlat) && cJSON_IsNumber(jlon) &&
-            fabs(jlat->valuedouble) <= 90.0 && fabs(jlon->valuedouble) <= 180.0) {
-          if (locMutex) xSemaphoreTake(locMutex, portMAX_DELAY);
-          phoneLat = jlat->valuedouble;
-          phoneLon = jlon->valuedouble;
-          phoneTst = (uint32_t)(jtst->valuedouble > 0.0 ? jtst->valuedouble : 0.0);
-          phoneAcc = (jacc && cJSON_IsNumber(jacc)) ? (uint32_t)jacc->valuedouble : 0;
-          phoneReceivedMs = nowMs();
-          hasLocation = true;
-          // the device's topic: its /cmd subtopic takes reportLocation
-          if (event->topic && event->topic_len > 0 && event->topic_len < (int)sizeof devTopic) {
-            memcpy(devTopic, event->topic, event->topic_len);
-            devTopic[event->topic_len] = 0;
-          }
-          if (locMutex) xSemaphoreGive(locMutex);
-          logMsg("owntracks: location updated (acc %u m)", (unsigned)phoneAcc);
-          if (askPending && devTopic[0]) {   // a joined message's last piece has no topic: never "/cmd"
-            // answered (or moved): take the retained command off the broker
-            char t[96];
-            snprintf(t, sizeof t, "%s/cmd", devTopic);
-            esp_mqtt_client_publish(mqttClient, t, "", 0, 1, 1);
-            askPending = false;
-          }
+      bool isEnc = type && cJSON_IsString(type) && !strcmp(type->valuestring, "encrypted");
+      if (encrypted() && !isEnc) {
+        // with a key set only sealed messages count: anyone who can publish on
+        // the topic could otherwise move "you" (hibernate, away lock)
+        static bool plainLogged;
+        if (!plainLogged && type && cJSON_IsString(type) && !strcmp(type->valuestring, "location")) {
+          plainLogged = true;
+          logMsg("owntracks: unencrypted location ignored (OWNTRACKS_SECRET is set: set the same key in the app)");
         }
+      } else if (isEnc) {
+        cJSON *data = cJSON_GetObjectItem(root, "data");
+        char *plain = encrypted() && data && cJSON_IsString(data) ? decryptData(data->valuestring) : nullptr;
+        cJSON *inner = plain && jsonShallow(plain, strlen(plain)) ? cJSON_Parse(plain) : nullptr;
+        if (inner) takeLocation(inner, event);
+        else if (encrypted()) logMsg("owntracks: encrypted message that the key doesn't open, ignored");
+        cJSON_Delete(inner);
+        free(plain);
+      } else {
+        takeLocation(root, event);
       }
       cJSON_Delete(root);
       break;
@@ -154,6 +246,7 @@ static void mqttEventHandler(void *, esp_event_base_t, int32_t event_id, void *e
 
 void owntracksInit() {
   if (!locMutex) locMutex = xSemaphoreCreateMutex();
+  if (encrypted() && sodium_init() < 0) logMsg("owntracks: libsodium init failed");
 }
 
 void owntracksStart() {
@@ -177,7 +270,9 @@ void owntracksStart() {
   cfg.credentials.authentication.password = MQTT_PASS;
   cfg.network.timeout_ms = 10000;
   cfg.session.keepalive = 120;   // seconds; the phone publishes, the board listens (and asks, owntracksAskIfStale)
-  cfg.task.stack_size = 4096;    // default 6144; peak 2.85 KB with the TLS handshake (bench usage, 2026-10-27)
+  // default 6144; peak 2.85 KB with the TLS handshake (bench usage, 2026-10-27),
+  // plus room for opening an encrypted message (secretbox, base64 on the heap)
+  cfg.task.stack_size = OWNTRACKS_SECRET[0] ? 5120 : 4096;
   cfg.buffer.size = 512;         // default 1024; bigger messages are joined in MQTT_EVENT_DATA
   cfg.buffer.out_size = 256;     // CONNECT, SUBSCRIBE, PINGREQ and the ~130 B reportLocation command
 
@@ -282,7 +377,10 @@ void owntracksAskNow() {
   snprintf(topic, sizeof topic, "%s/cmd", devTopic);
   // queued for the MQTT task: publish writes to the socket here, on the main
   // loop, for up to the network timeout
-  int id = esp_mqtt_client_enqueue(mqttClient, topic, "{\"_type\":\"cmd\",\"action\":\"reportLocation\"}", 0, 1, 1, true);
+  const char *cmd = "{\"_type\":\"cmd\",\"action\":\"reportLocation\"}";
+  char *sealed = encrypted() ? encryptJson(cmd) : nullptr;   // the app with a key set opens it like its own
+  int id = encrypted() && !sealed ? -1 : esp_mqtt_client_enqueue(mqttClient, topic, sealed ? sealed : cmd, 0, 1, 1, true);
+  free(sealed);
   if (id >= 0) askPending = true;
   logMsg("owntracks: fix %lu min old, asked the phone for its location%s", (unsigned long)(owntracksAgeSec() / 60),
          id < 0 ? " (publish failed)" : "");

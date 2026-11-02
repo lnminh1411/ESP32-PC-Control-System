@@ -106,6 +106,32 @@ if ($ForceConfig -or -not (Test-Path -LiteralPath $targetAgyIni)) {
   Write-Host "Preserved existing agy_quota.ini in $installDir (use -ForceConfig to overwrite)"
 }
 
+# The text fonts beside the exe: the SYSTEM service parses them, so it never
+# looks in a folder another account can write (C:\Windows\Fonts first, then
+# the installing user's own fonts)
+$gen = Get-Content -LiteralPath (Join-Path $scriptDir "Settings.g.cs") -Raw
+$fontDir = Join-Path $installDir "fonts"
+New-Item -ItemType Directory -Path $fontDir -Force | Out-Null
+foreach ($key in "FONT_REGULAR", "FONT_BOLD") {
+  if ($gen -match "$key = `"([^`"]+)`"") {
+    $name = $Matches[1]
+    $src = @("C:\Windows\Fonts\$name", "$env:LOCALAPPDATA\Microsoft\Windows\Fonts\$name") | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if ($src) { Copy-Item -LiteralPath $src -Destination $fontDir -Force }
+    else { Write-Host "Font $name not found: the board's PC text falls back to the default font" }
+  }
+}
+
+# Install dir: SYSTEM and Administrators only. The exe carries the screenshot
+# webhook and the board link key (gen_settings.ps1), the ini files paths and
+# accounts. Nothing inherited from the creating user, so it holds if UAC is
+# ever turned back on.
+Remove-Item -LiteralPath "$targetIni.old" -Force -ErrorAction SilentlyContinue
+# The folder alone gets the protected list; its files go back to inheriting it
+# (/inheritance:r with /T would leave every file an empty list, nobody in).
+& icacls.exe $installDir /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" /C /Q | Out-Null
+& icacls.exe "$installDir\*" /reset /T /C /Q | Out-Null
+& icacls.exe $installDir /setowner "*S-1-5-32-544" /T /C /Q | Out-Null
+
 # Create service "ESP32PcStats" if missing; an existing one is pointed at the new exe
 $binPath = "`"$targetExe`""
 $displayName = "ESP32 PC Controller - Helper"

@@ -7,3 +7,5 @@ dependencies:
     override_path: "../vendor/esp_tinyusb"
   espressif/mdns: "*"
   espressif/esp_websocket_client: "*"
+  # OwnTracks payload encryption (secretbox, XSalsa20-Poly1305): owntracks.cpp
+  espressif/libsodium: "1.0.22~1"

@@ -9,6 +9,7 @@
 #include "net.h"
 #include "pcstats.h"
 #include "settings_or_example.h"
+#include "sys.h"
 
 static int32_t tzMin;          // local offset from UTC in minutes
 static bool tzLoaded;
@@ -64,10 +65,16 @@ void boardTimeOnSample() {
   double epoch = pcStat("pc.epoch"), tz = pcStat("pc.tz_min");
   if (isnan(epoch) || epoch < 1700000000.0) return;
   loadTz();
-  if (!isnan(tz)) {
+  if (!isnan(tz) && tz >= -840 && tz <= 840) {   // UTC-14..+14: anything else isn't a time zone
     pcTzProvided = true;
-    if ((int32_t)tz != tzMin) {   // kept for when the PC is off after a reboot
-      tzMin = (int32_t)tz;
+    // kept for when the PC is off after a reboot; at most one flash write a
+    // minute, so a PC process flipping the value can't wear the NVS sectors out
+    static bool dirty;
+    static uint32_t savedMs;
+    if ((int32_t)tz != tzMin) { tzMin = (int32_t)tz; dirty = true; }
+    if (dirty && (!savedMs || nowMs() - savedMs >= 60000)) {
+      dirty = false;
+      savedMs = nowMs() | 1;
       nvs_handle_t h;
       if (nvs_open("time", NVS_READWRITE, &h) == ESP_OK) {
         nvs_set_i32(h, "tz_min", tzMin);

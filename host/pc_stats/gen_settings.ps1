@@ -2,8 +2,8 @@
 # constants of class HostSettings (prefix dropped: HOST_NIGHT_CORES ->
 # HostSettings.NIGHT_CORES). Defaults come from settings_or_example.h, then
 # settings.h (or settings_example.h when there is none) overrides them, the
-# same way the firmware build picks its values. Only HOST_* lines are read,
-# so no secret reaches the exe. Run by build.cmd before dotnet publish.
+# same way the firmware build picks its values. Only HOST_* lines and the two
+# secrets named below are read. Run by build.cmd before dotnet publish.
 $ErrorActionPreference = 'Stop'
 $main = Join-Path $PSScriptRoot '..\..\firmware\main'
 $defaults = Join-Path $main 'settings_or_example.h'
@@ -11,12 +11,18 @@ $settings = Join-Path $main 'settings.h'
 if (-not (Test-Path $settings)) { $settings = Join-Path $main 'settings_example.h' }
 
 # #define HOST_NAME value   // comment   (value: a "C string", a number, true/false)
-$re = '^\s*#define\s+HOST_([A-Z0-9_]+)\s+("(?:[^"\\]|\\.)*"|[^/\s]+)'
+# Besides HOST_*, the two secrets the helper itself needs, under its own names:
+# the screenshot webhook (kept off USB) and the board link key. The install dir
+# is SYSTEM and Administrators only (install.ps1).
+$re = '^\s*#define\s+(?:HOST_([A-Z0-9_]+)|(DISCORD_SHOT_WEBHOOK|LINK_KEY))\s+("(?:[^"\\]|\\.)*"|[^/\s]+)'
+$rename = @{ 'DISCORD_SHOT_WEBHOOK' = 'SHOT_WEBHOOK'; 'LINK_KEY' = 'LINK_KEY' }
 $values = [ordered]@{}
 foreach ($file in @($defaults, $settings)) {
   foreach ($line in [IO.File]::ReadAllLines($file)) {
     $m = [regex]::Match($line, $re)
-    if ($m.Success) { $values[$m.Groups[1].Value] = $m.Groups[2].Value }
+    if (-not $m.Success) { continue }
+    $name = if ($m.Groups[1].Success) { $m.Groups[1].Value } else { $rename[$m.Groups[2].Value] }
+    $values[$name] = $m.Groups[3].Value
   }
 }
 

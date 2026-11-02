@@ -141,7 +141,10 @@ bool owmFetchMinutely(double lat, double lon, char *buf, size_t cap, OwmMinutely
       m.dt0 = cJSON_IsNumber(dt) ? (uint32_t)dt->valuedouble : m.fetchedUnix;
       cJSON *al = cJSON_GetObjectItem(rec, "alerts"), *id;
       cJSON_ArrayForEach(id, al) {
-        if (m.nAlerts < 4 && cJSON_IsString(id))
+        // the id goes into a URL with the key: letters, digits, - and _ only,
+        // so it can't break the URL (whose error line would carry the key)
+        if (m.nAlerts < 4 && cJSON_IsString(id) && id->valuestring[0] &&
+            strspn(id->valuestring, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_") == strlen(id->valuestring))
           snprintf(m.alerts[m.nAlerts++], sizeof m.alerts[0], "%s", id->valuestring);
       }
     }

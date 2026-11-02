@@ -216,7 +216,7 @@ python scripts/layout_upload.py firmware/layouts/example.json --port COM12
 ```bash
 python scripts/layout_upload.py firmware/layouts/example.json --host esp32-pc-control.local
 ```
-*(The `OTA_PASS` password is read automatically from `settings.h` or specified with `--password`)*.
+*(The `OTA_PASS` password comes from the `OTA_PASS` environment variable, else from `settings.h`. It crosses your LAN unencrypted, so `--port` over USB is the safer path; five wrong passwords lock the server for 30 s.)*
 
 ---
 

@@ -50,9 +50,17 @@ static void hibFollow() {
   double v = pcStat("pc.hib");
   if (isnan(v)) return;
   int8_t hib = v >= 0.5 ? 1 : 0;
-  if (hib == s_hib) return;
-  logMsg("power: hibernation on the PC is %s", hib ? "on" : "off");
-  s_hib = hib;
+  static bool dirty;
+  static uint32_t savedMs;
+  if (hib != s_hib) {
+    logMsg("power: hibernation on the PC is %s", hib ? "on" : "off");
+    s_hib = hib;
+    dirty = true;
+  }
+  // at most one flash write a minute (a flipping value can't wear NVS out)
+  if (!dirty || (savedMs && nowMs() - savedMs < 60000)) return;
+  dirty = false;
+  savedMs = nowMs() | 1;
   nvs_handle_t h;
   if (nvs_open("power", NVS_READWRITE, &h) == ESP_OK) {
     nvs_set_i8(h, "hib", s_hib);
@@ -214,11 +222,11 @@ const char *screenshotRequest() {
   uint32_t r = esp_random();
   char nonce[16];
   snprintf(nonce, sizeof nonce, "%lx", (unsigned long)r);
-  // !shot <nonce> <webhook>: the host hands both to the user-session helper,
-  // which captures, posts to the webhook, and auto-deletes after 5 min
-  char line[256];
-  int n = snprintf(line, sizeof line, "!shot %s %s\n", nonce, DISCORD_SHOT_WEBHOOK);
-  if (n <= 0 || n >= (int)sizeof line) return "webhook URL too long";
+  // !shot <nonce>: the helper has the webhook (compiled in from settings.h), so
+  // it never crosses USB, where another PC process could read it off HID.
+  // PcHwCtl captures, posts and auto-deletes after 5 min
+  char line[32];
+  snprintf(line, sizeof line, "!shot %s\n", nonce);
   if (!usbPcSendLine(line)) return "USB send failed";
   logMsg("shot: screenshot requested (nonce %s)", nonce);
   return nullptr;

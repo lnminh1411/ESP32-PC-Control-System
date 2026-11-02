@@ -387,8 +387,16 @@ static void drawVpn(LGFX_Sprite &c, int x, int y) {
   }
   const char *kind = pcText("pc.vpn"), *stack = pcText("pc.vpn_stack"), *loc = pcText("pc.exit_loc");
   if (strlen(loc) != 2) loc = "";   // "-" while PcHwCtl's trace has no answer
+  static bool homeDirty;
+  static uint32_t homeSavedMs;
   if (!strcmp(kind, "none") && loc[0] && strlen(loc) < sizeof home && strcmp(loc, home)) {
     snprintf(home, sizeof home, "%s", loc);
+    homeDirty = true;
+  }
+  // at most one flash write a minute (a flipping value can't wear NVS out)
+  if (homeDirty && (!homeSavedMs || nowMs() - homeSavedMs >= 60000)) {
+    homeDirty = false;
+    homeSavedMs = nowMs() | 1;
     nvs_handle_t h;
     if (nvs_open("screens", NVS_READWRITE, &h) == ESP_OK) {
       nvs_set_str(h, "vpn_home", home);

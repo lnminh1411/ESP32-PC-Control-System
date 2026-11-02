@@ -233,7 +233,9 @@ partial class PcStats {
   // ---- night ----
 
   static void NightEngage() {
-    if (File.Exists(OldLassoBackup)) {
+    // Process Lasso's folder lets any account create files: one not owned by an
+    // admin is not an older helper's backup
+    if (File.Exists(OldLassoBackup) && AdminOwned(OldLassoBackup)) {
       // saving that night config as "day" would lose the real one
       if (!oldBackupLogged) Log("night: " + OldLassoBackup + " is the original config an older helper left mid-night; copy it back over prolasso.ini, delete it, then night mode works");
       oldBackupLogged = true;
@@ -387,12 +389,24 @@ partial class PcStats {
       if (kv.Value != null) sb.Append("pin ").Append(kv.Key).Append('\t').Append(kv.Value).Append('\n');
     foreach (KeyValuePair<string, string[]> kv in nightDayRules)
       sb.Append("day ").Append(kv.Key).Append('\t').Append(kv.Value[0]).Append('\t').Append(kv.Value[1]).Append('\n');
+    // SYSTEM writes here: never through a link someone planted (SecureDataDir
+    // keeps others out of the folder; this is the second lock)
+    if (new FileInfo(NightMarker).LinkTarget != null) {
+      Log("night: " + NightMarker + " is a link, deleted, not followed");
+      File.Delete(NightMarker);
+    }
     File.WriteAllText(NightMarker, sb.ToString());
   }
 
   static void NightLoad() {
     nightOn = File.Exists(NightMarker);
     if (!nightOn) return;
+    if (!AdminOwned(NightMarker)) {
+      Log("night: " + NightMarker + " not written by the helper, ignored and deleted");
+      try { File.Delete(NightMarker); } catch (Exception) { }
+      nightOn = false;
+      return;
+    }
     foreach (string line in File.ReadAllLines(NightMarker)) {
       string[] f = line.Length > 4 ? line.Substring(4).Split('\t') : new string[0];
       if (line.StartsWith("pin ") && f.Length == 2) nightPinned[f[0]] = f[1];
@@ -401,7 +415,21 @@ partial class PcStats {
     Log("night: engaged before this start, " + nightPinned.Count + " exes pinned");
   }
 
-  static bool AffName(string name) { return name.Length > 0 && name.IndexOfAny(new[] { ' ', '\t', ',', ';', '=', '(' }) < 0; }
+  static readonly Regex AffNameRegex = new Regex(@"^[\w.+-]+$");
+  static bool AffName(string name) { return AffNameRegex.IsMatch(name); }
+
+  // Owned by SYSTEM or the Administrators group: written by the helper or an
+  // admin, not planted by another account
+  static bool AdminOwned(string path) {
+    try {
+      var owner = (System.Security.Principal.SecurityIdentifier)new FileInfo(path).GetAccessControl()
+          .GetOwner(typeof(System.Security.Principal.SecurityIdentifier));
+      return owner.IsWellKnown(System.Security.Principal.WellKnownSidType.LocalSystemSid) ||
+             owner.IsWellKnown(System.Security.Principal.WellKnownSidType.BuiltinAdministratorsSid);
+    } catch (Exception) {
+      return false;
+    }
+  }
 
   static int Changed(Dictionary<string, object> data) {
     object v;

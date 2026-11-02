@@ -61,8 +61,11 @@ partial class PcStats {
   // Connects, subscribes and reads blocks until the pipe drops or goes quiet.
   // Returns why it stopped.
   static string FeedSession(ref bool gotBlock) {
-    using (var pipe = new NamedPipeClientStream(".", HostSettings.HWCTL_PIPE, PipeDirection.InOut, PipeOptions.Asynchronous)) {
-      try { pipe.Connect(1000); } catch (TimeoutException) { return HostSettings.HWCTL_PIPE + " not running"; }
+    NamedPipeClientStream connected;
+    try { connected = ConnectService(HostSettings.HWCTL_PIPE, 1000); }
+    catch (TimeoutException) { return HostSettings.HWCTL_PIPE + " not running"; }
+    catch (UnauthorizedAccessException ex) { return ex.Message; }
+    using (var pipe = connected) {
       var w = new StreamWriter(pipe, Utf8NoBom) { AutoFlush = true, NewLine = "\n" };
       var r = new StreamReader(pipe, Utf8NoBom);
       w.WriteLine("subscribe sensors");
