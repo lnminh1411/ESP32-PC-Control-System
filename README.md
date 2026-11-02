@@ -19,6 +19,16 @@ commands back to the PC.
 
 </td></tr></table>
 
+## Companion projects
+
+This is the main project; the others work with it.
+
+| Project | Role for this board |
+|---|---|
+| [PC Hardware Control Service](https://github.com/lnminh1411/PC-Hardware-Control-Service) (PcHwCtl) | Windows service the helper calls over the `PcHwCtl` pipe: sensor feed, fans and RGB, monitors, power actions, Process Lasso night config, webcam presence and screenshots |
+| [Local LLM stack](https://github.com/lnminh1411/local-llm-stack) | Local AI stack. Its status shows on the panels, and the Discord Local Agent tab controls it through the helper's `!ai` relay |
+| [ESP32 Human Presence Radar](https://github.com/lnminh1411/ESP32-Human-Presence-Radar) | Add-on presence board (mmWave radar and ToF) for the presence rules (AFK, away, intruder lock, night). New; the link to this board is in development |
+
 ![All screen faces, captured from the board](docs/images/screens.png)
 
 *Every face, captured from the board with `shot`. The stats are made up; the
