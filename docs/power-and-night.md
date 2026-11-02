@@ -64,6 +64,17 @@ normal faces, status LED capped at 20 %. Displays stay on, the PC never sleeps,
 and input does not end it. It survives a board restart. On and off are posted
 to #pc-announcement and Pushover; a night that ends while it is on leaves it on.
 
+## Evening dim
+
+From 21:00 (`MON_DIM_START_HOUR`) until the night window closes (06:00,
+`NIGHT_END_HOUR`), every PC monitor that is on goes 1 % darker each minute
+(`MON_DIM_STEP_PCT`), from the brightness it reports over DDC/CI, down to 0.
+Raised by hand, it goes down again from there. At 06:00 all of them go to 20 %
+(`MON_MORNING_PCT`), once after each evening that dimmed them: owed in NVS
+until PcHwCtl answers ok, so a PC that is off or asleep at 06:00 gets it when
+it is back, and a board restart later in the day changes nothing.
+`MON_DIM_ENABLED 0` turns both off. It runs whether night mode is on or not.
+
 ## Guards against false triggers
 
 - **Wake check.** Input during the night ends it at once: the PC's displays

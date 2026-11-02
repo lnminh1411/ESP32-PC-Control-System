@@ -190,6 +190,10 @@
 // ---- Night mode (board side; night.cpp) ----
 #define NIGHT_START_HOUR 22                       // local hour the night window opens
 #define NIGHT_END_HOUR 6                          // local hour it closes
+#define MON_DIM_ENABLED 1                         // PC monitors dim in the evening, back up at NIGHT_END_HOUR (0 = off)
+#define MON_DIM_START_HOUR 21                     // local hour the evening dim starts
+#define MON_DIM_STEP_PCT 1                        // brightness points off each monitor every minute, down to 0
+#define MON_MORNING_PCT 20                        // brightness of every monitor at NIGHT_END_HOUR, once a day
 #define NIGHT_IDLE_ENGAGE_S (5 * 60)              // s without keyboard/mouse input on the PC before it engages in the window
 #define NIGHT_PANEL_PCT 10                        // board panel backlight % while engaged
 #define NIGHT_STATUS_LED_PCT 20                   // status LED cap % while engaged

@@ -357,6 +357,18 @@
 #ifndef NIGHT_END_HOUR
 #define NIGHT_END_HOUR 6                          // local hour it closes
 #endif
+#ifndef MON_DIM_ENABLED
+#define MON_DIM_ENABLED 1                         // PC monitors dim in the evening, back up at NIGHT_END_HOUR (0 = off)
+#endif
+#ifndef MON_DIM_START_HOUR
+#define MON_DIM_START_HOUR 21                     // local hour the evening dim starts
+#endif
+#ifndef MON_DIM_STEP_PCT
+#define MON_DIM_STEP_PCT 1                        // brightness points off each monitor every minute, down to 0
+#endif
+#ifndef MON_MORNING_PCT
+#define MON_MORNING_PCT 20                        // brightness of every monitor at NIGHT_END_HOUR, once a day
+#endif
 #ifndef NIGHT_IDLE_ENGAGE_S
 #define NIGHT_IDLE_ENGAGE_S (5 * 60)              // s without keyboard/mouse input on the PC before it engages in the window
 #endif

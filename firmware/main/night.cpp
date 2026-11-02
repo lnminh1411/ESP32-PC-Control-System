@@ -530,6 +530,84 @@ static void reengage() {
   logMsg("night: back on after a false wake (displays %s)", err ? err : "off");
 }
 
+// PC monitors in the evening: from MON_DIM_START_HOUR to the night's end,
+// each monitor that is on goes MON_DIM_STEP_PCT down every minute from what it
+// reports, to 0 (raised by hand, it goes down again from there). After an
+// evening that dimmed them, at the night's end all go to MON_MORNING_PCT: owed
+// (NVS "night"/"mowed") until the PC answers ok, so a PC off at 06:00 gets it
+// when it is back, and a board restart later in the day changes nothing.
+static void saveMornOwed(uint8_t owed) {
+  nvs_handle_t h;
+  if (nvs_open("night", NVS_READWRITE, &h) != ESP_OK) return;
+  nvs_set_u8(h, "mowed", owed);
+  nvs_commit(h);
+  nvs_close(h);
+}
+
+static void eveningDim(uint32_t now) {
+  if (!MON_DIM_ENABLED) return;
+  static uint32_t stepMs, mornId, mornSentMs;
+  static int8_t owed = -1;   // -1: NVS not read yet
+  if (owed < 0) {
+    uint8_t v = 0;
+    nvs_handle_t h;
+    if (nvs_open("night", NVS_READONLY, &h) == ESP_OK) {
+      nvs_get_u8(h, "mowed", &v);
+      nvs_close(h);
+    }
+    owed = v ? 1 : 0;
+  }
+  struct tm t;
+  if (!boardLocalTime(&t) || !pcReachable()) return;
+  bool evening = t.tm_hour >= MON_DIM_START_HOUR || t.tm_hour < END_HOUR;
+  if (evening) {
+    if (!owed) {
+      owed = 1;
+      saveMornOwed(1);
+      logMsg("night: evening, PC monitors dim %d %% a minute", MON_DIM_STEP_PCT);
+    }
+    if (stepMs && now - stepMs < 60000) return;
+    stepMs = now | 1;
+    int n = (int)pcStat("mon.count");
+    for (int i = 1; i <= n && i <= 8; i++) {
+      char key[20];
+      snprintf(key, sizeof key, "mon.%d.power", i);
+      if (pcStat(key) < 1) continue;
+      snprintf(key, sizeof key, "mon.%d.bright", i);
+      float b = pcStat(key);
+      if (isnan(b) || b <= 0) continue;
+      int to = (int)lroundf(b) - MON_DIM_STEP_PCT;
+      char cmd[24];
+      uint32_t id;
+      snprintf(cmd, sizeof cmd, "bright %d %d", i, to < 0 ? 0 : to);
+      const char *err = monSend(cmd, &id);
+      if (err) logMsg("night: evening dim, %s: %s", cmd, err);
+    }
+    return;
+  }
+  if (!owed) return;
+  if (mornId) {
+    char r[48];
+    if (monReplyFor(mornId, r, sizeof r)) {
+      mornId = 0;
+      if (!strncmp(r, "ok", 2)) {
+        owed = 0;
+        saveMornOwed(0);
+        logMsg("night: morning, PC monitors at %d %%", MON_MORNING_PCT);
+        return;
+      }
+      logMsg("night: morning brightness: %s, again in 30 s", r);
+    } else if (now - mornSentMs < 30000) {
+      return;   // waiting for the answer
+    }
+  }
+  if (mornSentMs && now - mornSentMs < 30000) return;
+  mornSentMs = now | 1;
+  char cmd[24];
+  snprintf(cmd, sizeof cmd, "bright all %d", MON_MORNING_PCT);
+  if (monSend(cmd, &mornId)) mornId = 0;
+}
+
 void nightPoll() {
   static uint32_t lastMs;
   uint32_t now = nowMs();
@@ -555,6 +633,7 @@ void nightPoll() {
   }
   if (!engaged && !lowDims()) rgbRestoreTry(true);   // owed from a morning or a restart
   monOnTry(now);
+  eveningDim(now);
   presenceWatch(engaged || guardUntilMs || dueMs);
 
   // Wake check: the night went off at the first input; a real return
