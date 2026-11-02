@@ -466,6 +466,9 @@
 #ifndef WEATHER_RAIN_SURE_MIN
 #define WEATHER_RAIN_SURE_MIN 30                  // rain one source alone sees: a warning at this ETA or closer (else a quiet watch)
 #endif
+#ifndef WEATHER_OM_RADAR_KM
+#define WEATHER_OM_RADAR_KM 20                    // Open-Meteo alone warns only with a radar echo within 5 km, or moving in within this; else a watch
+#endif
 #ifndef WEATHER_RAIN_SURE_MMH
 #define WEATHER_RAIN_SURE_MMH 2.0f                // ...or at this mm/h and up, whatever the other source says
 #endif

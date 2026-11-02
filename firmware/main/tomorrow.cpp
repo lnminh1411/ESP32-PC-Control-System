@@ -98,7 +98,9 @@ static bool tioGet(const char *url, char *buf, size_t cap) {
   esp_err_t err = esp_http_client_perform(c);
   int status = esp_http_client_get_status_code(c);
   esp_http_client_cleanup(c);
-  if (err != ESP_OK) {
+  // a 401 without a WWW-Authenticate header the client knows comes back as
+  // ESP_ERR_NOT_SUPPORTED: the status still says what happened
+  if (err != ESP_OK && status != 401) {
     snprintf(lastErr, sizeof lastErr, "%s", esp_err_to_name(err));
     return false;
   }
@@ -108,7 +110,7 @@ static bool tioGet(const char *url, char *buf, size_t cap) {
   if (callsToday % 5 == 0) tioSaveCount();   // a reboot can't lose enough to pass the real 25 an hour
   uint32_t now = (uint32_t)time(nullptr);
   if (status == 401) {
-    snprintf(lastErr, sizeof lastErr, "key rejected (401)");
+    snprintf(lastErr, sizeof lastErr, "key rejected (401): TOMORROW_API_KEY in settings.h");
     backoffUntil = now + 30 * 60;
     return false;
   }

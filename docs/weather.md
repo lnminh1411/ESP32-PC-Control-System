@@ -358,7 +358,7 @@ A rain source next to Open-Meteo and Tomorrow.io (11d): `timeline/1min` gives pr
 
 **Cadence and budget**: one call every 2 min; every 90 s while rain is expected or falling at that place, or a weather alert is in force. At most **960 calls per UTC day**, counted on the board (NVS `o_day`, `o_calls`, saved every 10 calls and with the Open-Meteo counters). Paced: no more than the day's share so far plus 60, so a rainy stretch can't spend the rest of the day's calls (the UTC day ends at 07:00 local, right after an early-morning shower). At 960 it stops until 00:00 UTC.
 
-**Empty answers**: OpenWeather sometimes answers 200 with no minutes (`"data": []`) for a few minutes at a time. A failed answer is retried once after 30 s, and for up to 15 min the last good hour still counts while its minutes reach 30 min ahead, so a blank spell doesn't read as dry. A rejected key (401) pauses it for 30 min, a rate limit (429) for 15. The key is in the URL, so URLs are never logged.
+**Empty answers**: OpenWeather often answers 200 with no minutes (`"data": []`, about 90 bytes), for this place most of the time in 2026-11; the error line counts them (`N of M since boot`) and says why (not JSON, no data field, data empty, or OpenWeather's own message). A failed answer is retried once after 30 s, and for up to 15 min the last good hour still counts while its minutes reach 30 min ahead, so a blank spell doesn't read as dry. A rejected key (401) pauses it for 30 min, a rate limit (429) for 15. The key is in the URL, so URLs are never logged.
 
 **Merging** (`owmRainSummary` in owm.cpp, `mergeRain` in weather.cpp): rain counts from 0.3 mm/h (`OWM_RAIN_MMH`), Open-Meteo's nowcast threshold. A source counts as *fresh and dry* when its last answer saw no rain: OpenWeather for 5 min after a fetch (its 60 minutes), Tomorrow.io for 8 min (its 60 minutes), Open-Meteo for 20 min after a nowcast (its next 60 minutes).
 
@@ -396,9 +396,18 @@ runs, and on 10-29 neither saw the drizzle at 05:00. The radar sees rain that is
 - **Merging**: rain on the radar at the place makes it *raining* whatever the models say:
   never a watch, the start at the frame's time, the intensity the higher one. The post says
   `On the radar now (the forecasts missed it)` or `..., and in Open-Meteo`. A dry radar
-  doesn't cancel a model's warning (the models look ahead, the radar doesn't).
+  doesn't cancel a warning from OpenWeather or Tomorrow.io, or from two sources (the
+  models look ahead, the radar doesn't).
+- **Open-Meteo alone needs the radar** (when it is fresh): a lone Open-Meteo warning, or
+  "raining now", with the radar dry at the place is only a watch, unless an echo is within
+  5 km or the nearest echo came 2+ km closer since the last frame and is within 20 km
+  (`WEATHER_OM_RADAR_KM`). Nine in ten of its lone warnings were wrong (2026-11), and a
+  standing echo (clutter at 14 km for hours) is not rain moving in. Rain that does come
+  shows on the radar and warns then. The log says `Open-Meteo alone sees rain, radar dry
+  (...): a watch`. A stale radar leaves the old rules.
 - `weather show` prints the place, the frame, the strongest echo at the place and the
-  nearest echo's distance; the log notes when the place turns wet or dry on the radar.
+  nearest echo's distance (`(moving in)` when it came closer); the log notes when the place
+  turns wet or dry on the radar.
 
 ## 11d. Tomorrow.io
 

@@ -119,7 +119,7 @@ enum ErrMask : uint16_t {
   ERR_TOMORROW    = 1 << 12,
 };
 static uint16_t loggedErrors;
-static char lastError[96];               // shown by `weather show`
+static char lastError[160];              // shown by `weather show`
 static esp_err_t lastHttpErr;
 static volatile bool homeChanged;        // new home: poll right away
 static volatile bool testAlertPending;   // sent from the weather task: HTTPS must not block the main loop
@@ -839,6 +839,7 @@ static void mergeModels(RainAlert *a, bool phone, uint8_t omHeld, const MinuteSr
 static RadarObs radarLast;
 static bool radarOnPhone;
 static bool radarWasWet;   // for the log line when the place turns wet or dry
+static bool radarApproaching;   // the nearest echo came 2+ km closer since the last frame
 static bool radarFresh(bool phone, uint32_t now) {
   return radarLast.valid && radarOnPhone == phone && now - radarLast.fetchedUnix < 20 * 60 &&
          now - radarLast.frameUnix < RADAR_MAX_AGE_S;
@@ -846,15 +847,34 @@ static bool radarFresh(bool phone, uint32_t now) {
 
 // The models' call, then the radar's: rain on the radar at the place is
 // falling now, so it is a warning whatever the models say (they missed the
-// 05:00 drizzle of 10-29)
+// 05:00 drizzle of 10-29). Open-Meteo alone, with the radar dry at the place,
+// is a watch unless an echo is within 5 km or moving in within
+// WEATHER_OM_RADAR_KM: its 15-min field is interpolated from hourly runs here,
+// and nine in ten of its lone warnings were wrong (2026-11). Rain that does
+// come shows on the radar and warns then.
 static void mergeRain(RainAlert *a, bool phone, uint8_t omHeld, const MinuteSrc &owm, const MinuteSrc &tio) {
+  static bool omVetoed[2];
   mergeModels(a, phone, omHeld, owm, tio);
   uint32_t now = (uint32_t)time(nullptr);
   if (!radarFresh(phone, now)) return;
   if (!radarRainingHere(radarLast)) {
     a->dry |= RAIN_SRC_RADAR;
+    int near = radarLast.nearKm;
+    bool backed = near >= 0 && (near <= 5 || (radarApproaching && near <= WEATHER_OM_RADAR_KM));
+    bool veto = a->src == RAIN_SRC_OPEN_METEO && (a->active || a->raining) && !backed;
+    if (veto != omVetoed[phone]) {
+      omVetoed[phone] = veto;
+      char what[40] = "no echo on the tile";
+      if (near >= 0) snprintf(what, sizeof what, "nearest echo %d km, %s", near, radarApproaching ? "moving in" : "not moving in");
+      if (veto) logMsg("weather: %s: Open-Meteo alone sees rain, radar dry (%s): a watch", phone ? "phone" : "home", what);
+    }
+    if (veto) {
+      a->watch = true;
+      a->active = a->raining = false;
+    }
     return;
   }
+  omVetoed[phone] = false;
   a->src |= RAIN_SRC_RADAR;
   if (!a->raining) {
     a->startUnix = radarLast.frameUnix;
@@ -1716,7 +1736,7 @@ static void owmTick(char *buf, size_t cap, bool force, uint32_t *lastMs, uint32_
   OwmMinutely m;
   static bool retried;   // one quick retry per failure spell
   if (!owmFetchMinutely(lat, lon, buf, cap, &m)) {
-    char err[96];
+    char err[160];
     snprintf(err, sizeof err, "weather: OpenWeather: %s", owmLastError());
     logErrorOnce(ERR_OWM, err);
     owmFailUnix = (uint32_t)time(nullptr);
@@ -1765,6 +1785,11 @@ static void radarTick(char *buf, size_t cap, bool force, uint32_t *lastMs, uint3
   }
   clearError(ERR_RADAR);
   bool moved = onPhone != radarOnPhone;
+  // the nearest echo closer than on the last frame: rain moving in, not a
+  // standing echo (ground clutter sat at 14 km for hours, 2026-11-02)
+  if (moved || !radarLast.valid) radarApproaching = false;
+  else if (o.frameUnix != radarLast.frameUnix)
+    radarApproaching = o.nearKm >= 0 && radarLast.nearKm >= 0 && o.nearKm <= radarLast.nearKm - 2;
   radarLast = o;
   radarOnPhone = onPhone;
   bool wet = radarRainingHere(o);
@@ -2293,9 +2318,10 @@ void weatherCommand(const char *a1, const char *a2) {
       fmtClock(when, sizeof when, radarLast.fetchedUnix, false);
       fmtClock(frame, sizeof frame, radarLast.frameUnix, false);
       if (radarLast.nearKm >= 0) snprintf(nearS, sizeof nearS, "%d km", radarLast.nearKm);
-      logMsg("weather: radar: %s, last %s (frame %s): %s, here %d dBZ on %u px, nearest echo %s%s%s",
+      logMsg("weather: radar: %s, last %s (frame %s): %s, here %d dBZ on %u px, nearest echo %s%s%s%s",
              radarOnPhone ? "phone" : "home", when, frame, radarRainingHere(radarLast) ? "raining" : "dry",
              radarLast.dbzHere < -100 ? 0 : radarLast.dbzHere, (unsigned)radarLast.pxHere, nearS,
+             radarApproaching ? " (moving in)" : "",
              radarLastError()[0] ? " | " : "", radarLastError());
     }
     logMsg("weather: rain seen by: home %s, phone %s", rainSrcName(rainHome), rainSrcName(rainPhone));

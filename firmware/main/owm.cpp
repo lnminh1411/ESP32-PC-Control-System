@@ -15,7 +15,7 @@
 static uint32_t callDay;              // UTC day of callsToday
 static uint32_t callsToday;
 static uint32_t backoffUntil;         // UTC: a rejected key or a rate limit pauses calls
-static char lastErr[64];
+static char lastErr[128];
 
 bool owmEnabled() { return OWM_API_KEY[0] != 0; }
 uint32_t owmCallsToday() { return callsToday; }
@@ -89,7 +89,9 @@ static bool owmGet(const char *url, char *buf, size_t cap) {
   esp_err_t err = esp_http_client_perform(c);
   int status = esp_http_client_get_status_code(c);
   esp_http_client_cleanup(c);
-  if (err != ESP_OK) {
+  // a 401 without a WWW-Authenticate header the client knows comes back as
+  // ESP_ERR_NOT_SUPPORTED: the status still says what happened
+  if (err != ESP_OK && status != 401) {
     snprintf(lastErr, sizeof lastErr, "%s", esp_err_to_name(err));
     return false;
   }
@@ -122,10 +124,18 @@ bool owmFetchMinutely(double lat, double lon, char *buf, size_t cap, OwmMinutely
            lat, lon, OWM_API_KEY);
   if (!owmGet(url, buf, cap)) return false;
 
+  static uint32_t answers, blanks;   // since boot, for the error line
+  answers++;
   cJSON *root = cJSON_Parse(buf);
   cJSON *data = root ? cJSON_GetObjectItem(root, "data") : nullptr;
   if (!cJSON_IsArray(data) || !cJSON_GetArraySize(data)) {
-    snprintf(lastErr, sizeof lastErr, "no minutes in the answer");
+    // why, without the body: it starts with the place's lat and lon
+    cJSON *msg = root ? cJSON_GetObjectItem(root, "message") : nullptr;
+    const char *what = !root ? "not JSON (cut short?)" : cJSON_IsString(msg) ? msg->valuestring
+                       : !data ? "no data field" : "data empty";
+    blanks++;
+    snprintf(lastErr, sizeof lastErr, "no minutes in the answer (%u bytes, %.60s; %lu of %lu since boot)",
+             (unsigned)strlen(buf), what, (unsigned long)blanks, (unsigned long)answers);
     cJSON_Delete(root);
     return false;
   }
