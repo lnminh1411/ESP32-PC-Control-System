@@ -168,7 +168,7 @@
 #define VIEW_BUS_BUDGET_PCT 95                    // share of the SPI bus the panels may use (`fps budget` changes it)
 #define VIEW_MIN_FRAME_MS 50                      // canvas faces: at most 20 fps
 #define VIEW_GIF_MIN_FRAME_MS 16                  // GIF face: at most ~60 fps (GIF frame times still apply)
-#define GIF_SWITCH_S 15                           // firmware/gifs/gifs.json with several GIFs: each loops this long, in random order, no GIF twice in a row
+#define GIF_SWITCH_S 30                           // firmware/gifs/gifs.json with several GIFs: each loops this long, in random order, no GIF twice in a row
 #define VIEW_METRICS_PAGE_MS 5000                 // metrics face pages through overflow cards this often
 
 // ---- PC shutdown / restart announcements (pc_going.cpp) ----

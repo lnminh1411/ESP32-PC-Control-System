@@ -47,8 +47,9 @@ cover art, in place of the made-up one.
 The GIFs have their own 6 MB `gifs` partition. Their sources are in
 `firmware/gifs/`, and `firmware/gifs/gifs.json` lists them (`every` keeps
 every Nth frame, up to 12 GIFs and 512 frames in all; the partition is the
-real limit, about 13 KB a frame). The board plays them in shuffled rounds:
-every GIF once, none twice in a row. After changing either, regenerate the
+real limit, about 13 KB a frame). The board plays them in random cycles:
+it keeps a list of what played, so every GIF comes once a cycle, and a GIF stays
+away for at least half the GIFs when a new cycle starts. After changing either, regenerate the
 pack and flash with `idf_flash.py` (`idf.py flash` writes the partition,
 `app-flash` does not):
 

@@ -321,7 +321,7 @@
 #define VIEW_GIF_MIN_FRAME_MS 16                  // GIF face: at most ~60 fps (GIF frame times still apply)
 #endif
 #ifndef GIF_SWITCH_S
-#define GIF_SWITCH_S 15                           // firmware/gifs/gifs.json with several GIFs: each loops this long, in random order, no GIF twice in a row
+#define GIF_SWITCH_S 30                           // firmware/gifs/gifs.json with several GIFs: each loops this long, in random order, no GIF twice in a row
 #endif
 #ifndef VIEW_METRICS_PAGE_MS
 #define VIEW_METRICS_PAGE_MS 5000                 // metrics face pages through overflow cards this often

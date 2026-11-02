@@ -2,7 +2,7 @@
 // sources in firmware/gifs/) stays compressed there, memory-mapped; each frame is decoded
 // as it plays (display.cpp's gifdec task, core 1). Each GIF is a segment with
 // its own palette of RGB444 colours: segments loop on their own and take
-// turns in shuffled rounds, GIF_SWITCH_S each. A frame is 8-bit palette indices: a key frame
+// turns in random cycles, GIF_SWITCH_S each, every GIF once a cycle. A frame is 8-bit palette indices: a key frame
 // (each GIF's first) holds the whole screen, any other only the pixels of its
 // dirty rects against the frame before it in the segment's loop, and most of those
 // come from that frame: each 8x8 block has a shift into it, and a GIF_SKIP pixel
@@ -69,7 +69,8 @@ bool gifBuildFrame(uint8_t *cur, uint8_t *raw, uint16_t f);
 uint8_t gifSegOf(uint16_t f);
 uint16_t gifPrevFrame(uint16_t f);              // the frame before f in its segment's loop
 // The frame after idx: its segment loops until that loop ends past the
-// segment's turn (GIF_SWITCH_S, one clock for every panel), then the next
-// segment starts, in shuffled rounds with no GIF twice in a row. slot/nSlots spread panels over a segment (start frame).
+// segment's turn (GIF_SWITCH_S, shared by every panel), then the next segment
+// starts. A played list keeps every GIF to once a cycle, and a GIF stays away
+// for at least half the GIFs across cycles. Main task. slot/nSlots spread panels over a segment (start frame).
 uint16_t gifNextFrame(uint16_t idx, uint32_t nowMs);
 uint16_t gifStartFrame(int slot, int nSlots, uint32_t nowMs);

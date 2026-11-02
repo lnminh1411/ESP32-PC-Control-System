@@ -15,7 +15,10 @@ Gif gif;
 static wl_handle_t s_wl_handle = WL_INVALID_HANDLE;
 
 static const uint8_t *s_packEnd;   // end of the mapped gifs partition
-static uint32_t s_seed;            // turn order, new each boot
+static uint16_t s_played;          // GIFs shown this cycle, one bit each
+static uint8_t s_recent[MAX_GIF_SEGS];   // the last picks, newest first
+static uint8_t s_nRecent, s_seg;   // s_seg: whose turn it is
+static uint32_t s_turnEnd;         // ms
 
 // Frame tables in PSRAM (76 B a frame); the player reads a few rects per
 // frame, nothing it would notice
@@ -174,7 +177,6 @@ bool gifLoad() {
     esp_partition_munmap(mapH);
     return false;
   }
-  s_seed = esp_random();
   gif.bytes = sizeof(GifTables);
   gif.packBytes = p - start;
   gif.nSeg = nGif;
@@ -265,33 +267,32 @@ uint16_t gifPrevFrame(uint16_t f) {
   return f == gif.segStart[s] ? gif.segStart[s + 1] - 1 : f - 1;
 }
 
-// Every GIF once in a shuffled round, then a new shuffle
-static void roundOrder(uint32_t round, uint8_t *order) {
-  uint32_t x = (round + 1) * 2654435761u ^ s_seed;
-  for (uint8_t i = 0; i < gif.nSeg; i++) order[i] = i;
-  for (uint8_t i = gif.nSeg - 1; i > 0; i--) {
-    x = x * 1664525u + 1013904223u;
-    uint8_t j = (x >> 16) % (i + 1), t = order[i];
-    order[i] = order[j];
-    order[j] = t;
-  }
+// A GIF not shown this cycle, and when a new cycle starts not one of the last
+// half of the GIFs either: the end of one cycle and the start of the next could
+// otherwise go A, D, A. Those bans leave nGif - nGif / 2 GIFs at the very least.
+static uint8_t pickSeg() {
+  uint16_t ban = s_played;
+  for (uint8_t i = 0; i < s_nRecent && i < gif.nSeg / 2; i++) ban |= 1u << s_recent[i];
+  uint8_t open = 0;
+  for (uint8_t s = 0; s < gif.nSeg; s++) open += !(ban >> s & 1);
+  uint8_t n = esp_random() % open, s = 0;
+  while ((ban >> s & 1) || n--) s++;
+  s_played |= 1u << s;
+  if (s_played == (1u << gif.nSeg) - 1) s_played = 0;
+  memmove(s_recent + 1, s_recent, sizeof s_recent - 1);
+  s_recent[0] = s;
+  if (s_nRecent < MAX_GIF_SEGS) s_nRecent++;
+  return s;
 }
 
-// Whose turn it is. From the clock alone, so every panel agrees. A round never
-// starts with the GIF the last one ended on (swapping 0 and 1 leaves the last
-// place alone, which is what the next round compares with).
+// Whose turn it is, for every panel. A GIF plays GIF_SWITCH_S from its pick, plus
+// the rest of the loop that passes that, so a long loop never costs a GIF its turn.
 static uint8_t segDue(uint32_t nowMs) {
-  if (gif.nSeg < 2) return 0;
-  uint32_t turn = nowMs / (GIF_SWITCH_S * 1000UL);
-  if (gif.nSeg == 2) return turn % 2;
-  uint32_t round = turn / gif.nSeg;
-  uint8_t order[MAX_GIF_SEGS], last[MAX_GIF_SEGS];
-  roundOrder(round, order);
-  if (round) {
-    roundOrder(round - 1, last);
-    if (order[0] == last[gif.nSeg - 1]) { order[0] = order[1]; order[1] = last[gif.nSeg - 1]; }
+  if (!s_nRecent || (int32_t)(nowMs - s_turnEnd) >= 0) {
+    s_seg = pickSeg();
+    s_turnEnd = nowMs + GIF_SWITCH_S * 1000UL;
   }
-  return order[turn % gif.nSeg];
+  return s_seg;
 }
 
 uint16_t gifNextFrame(uint16_t idx, uint32_t nowMs) {
