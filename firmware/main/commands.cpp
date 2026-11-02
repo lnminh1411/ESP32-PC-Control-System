@@ -484,7 +484,7 @@ static const Command COMMANDS[] = {
   {"ai",      "<status | model ... | restart <name> | ...>  (LocalAIHost via the PC)", cmdAi},
   {"mon",     "<bright <n|all> <0-100> | power all on|off>  (PC monitors: DDC/CI brightness, Windows display off)", cmdMon},
   {"night",   "[on|off|start|end|low on|low off|status]  (night mode: on/off = the automatic one; start/end = now; low = low power mode)", cmdNight},
-  {"presence", "[away on|off|auto | seen yes|no|unknown | dry on|off]  (desk presence; the options are tests, dry logs instead of acting)", cmdPresence},
+  {"presence", "[on | off | away on|off|auto | seen yes|no|unknown | dry on|off]  (desk presence on/off, saved; the rest are tests, dry logs instead of acting)", cmdPresence},
   {"screenshot", "  (secret PC screenshot to #logging, 5 min)", cmdScreenshot},
   {"led",     "<auto|on|off|sweep|0-100>",           cmdLed},
   {"pcsim",   "<on|off|auto>  (test: pretend the PC is on/off)", cmdPcSim},

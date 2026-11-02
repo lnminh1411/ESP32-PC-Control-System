@@ -1,6 +1,7 @@
 #include "presence.h"
 
 #include <math.h>
+#include <nvs.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -39,6 +40,9 @@ static bool lowByDesk;                   // low power mode is on because nobody 
 static bool awayInput;                   // input while away: displays back until it stops
 static bool offSent;                     // our displays off (DDC, away) went out
 static uint32_t offAtMs, offTryMs;       // input newer than offAtMs gives them back
+
+static volatile bool enabled = true;     // the camera checks and what follows from them (saved, PC Control button)
+static bool enabledLoaded;
 
 static int yesRun;                       // someone seen while away, in a row (unknown doesn't end it)
 static uint32_t alertedMs, alertPendingMs;
@@ -238,11 +242,45 @@ static void displaysFollow(uint32_t now) {
   if (!offAtMs) offAtMs = now;
 }
 
+static void loadEnabled() {
+  enabledLoaded = true;
+  nvs_handle_t h;
+  uint8_t v;
+  if (nvs_open("presence", NVS_READONLY, &h) != ESP_OK) return;
+  if (nvs_get_u8(h, "on", &v) == ESP_OK) enabled = v != 0;
+  nvs_close(h);
+}
+
+void presenceSetEnabled(bool on) {
+  if (!enabledLoaded) loadEnabled();
+  if (on == enabled) return;
+  enabled = on;
+  nvs_handle_t h;
+  if (nvs_open("presence", NVS_READWRITE, &h) == ESP_OK) {
+    nvs_set_u8(h, "on", on ? 1 : 0);
+    nvs_commit(h);
+    nvs_close(h);
+  }
+  // off: no answer stands; the desk rule gives the displays back
+  seen = PRES_UNKNOWN;
+  nobodyRun = yesRun = 0;
+  alertPendingMs = 0;
+  if (!on) deskBack("with presence detection off");
+  sentEvery = -1;   // the new cadence (or none) goes to the helper now
+  logMsg("presence: detection %s", on ? "on" : "off");
+}
+
+bool presenceEnabled() {
+  if (!enabledLoaded) loadEnabled();
+  return enabled;
+}
+
 void presencePoll() {
   static uint32_t lastMs;
   uint32_t now = nowMs();
   if (now - lastMs < 1000) return;
   lastMs = now;
+  if (!enabledLoaded) loadEnabled();
 
   phoneFollow();
   alertFollow(now);
@@ -253,9 +291,10 @@ void presencePoll() {
     displaysFollow(now);
     return;
   }
-  readCheck();
+  if (enabled) readCheck();
   displaysFollow(now);
-  int every = away || watching ? PRESENCE_FAST_S : PRESENCE_DAY_S;
+  // off: `!pres 0`, the helper stops asking the camera
+  int every = !enabled ? 0 : away || watching ? PRESENCE_FAST_S : PRESENCE_DAY_S;
   if (every == sentEvery && now - sentMs < 30000) return;
   char line[24];
   snprintf(line, sizeof line, "!pres %d\n", every);
@@ -266,15 +305,16 @@ void presencePoll() {
 }
 
 void presenceWatch(bool on) { watching = on; }
-void presenceCheckNow() { usbPcSendLine("!pres now\n"); }
+void presenceCheckNow() { if (enabled) usbPcSendLine("!pres now\n"); }
 uint32_t presenceChecks() { return checks; }
-int presenceSeen() { return seen; }
-bool presenceNobody() { return nobodyRun >= 2 && nowMs() - checkedMs < 30000; }
+int presenceSeen() { return enabled ? seen : PRES_UNKNOWN; }
+bool presenceNobody() { return enabled && nobodyRun >= 2 && nowMs() - checkedMs < 30000; }
 bool presenceAway() { return away; }
 bool presenceDisplaysOff() { return away && !awayInput; }
 bool presenceDry() { return dry; }
 
 void presenceStatus(char *buf, uint32_t size) {
+  if (!enabled) { snprintf(buf, size, "off"); return; }
   if (pcState() != PC_ON) { snprintf(buf, size, "PC not on"); return; }
   if (!checkedMs) { snprintf(buf, size, "no check yet"); return; }
   char what[40], ago[16];
@@ -288,6 +328,10 @@ void presenceStatus(char *buf, uint32_t size) {
 }
 
 void presenceConsole(const char *a1, const char *a2) {
+  if (a1 && !a2 && (!strcmp(a1, "on") || !strcmp(a1, "off"))) {
+    presenceSetEnabled(!strcmp(a1, "on"));
+    return;
+  }
   if (a1 && a2 && !strcmp(a1, "away")) {
     simAway = !strcmp(a2, "on") ? 1 : !strcmp(a2, "off") ? 0 : -1;
   } else if (a1 && a2 && !strcmp(a1, "seen")) {
@@ -295,7 +339,7 @@ void presenceConsole(const char *a1, const char *a2) {
   } else if (a1 && a2 && !strcmp(a1, "dry")) {
     dry = !strcmp(a2, "on");
   } else if (a1) {
-    logMsg("presence: usage presence [away on|off|auto | seen yes|no|unknown | dry on|off]");
+    logMsg("presence: usage presence [on | off | away on|off|auto | seen yes|no|unknown | dry on|off]");
     return;
   }
   char st[96];

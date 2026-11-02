@@ -29,6 +29,12 @@ enum { PRES_UNKNOWN = -1, PRES_NOBODY = 0, PRES_SOMEONE = 1 };
 
 void presencePoll();                 // main loop
 void presenceWatch(bool on);         // night mode: a check every PRESENCE_FAST_S
+// Detection on or off (saved; PC Control button, console `presence on|off`).
+// Off: no camera checks, no answer counts (presenceSeen unknown, presenceNobody
+// false), so night mode falls back to input alone and the desk and intruder
+// rules rest. The phone-away displays-off doesn't need the camera and stays.
+void presenceSetEnabled(bool on);
+bool presenceEnabled();
 void presenceCheckNow();             // one check now, whatever the cadence
 uint32_t presenceChecks();           // checks answered so far: a change means a new answer
 int presenceSeen();                  // the last answer, PRES_*

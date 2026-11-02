@@ -113,6 +113,11 @@ checks one at a time and reports `pc.present` ("<n> <yes|no|unknown> <why>
 anything, and never counts as nobody. The PC Control tab shows the last answer
 in its Presence field.
 
+**Presence on/off** (PC Control button, console `presence on|off`, kept in NVS,
+on by default) stops the camera checks. While off no answer counts: night mode
+goes by input alone, and the desk and intruder rules rest. The phone-away
+displays-off doesn't use the camera and still applies.
+
 | When | Check | Rule |
 |---|---|---|
 | Night window, Night auto on, 5 idle minutes over | every 10 s | Someone there: the night holds off, displays on. After 30 min (`NIGHT_DESK_HOLD_S`), still idle and nothing blocking sleep: night engages, displays off. Nobody (two checks in a row): night engages and the PC sleeps at once, or only the displays go off while something blocks sleep, and it sleeps when that clears. Can't tell: the night engages as it always did, sleep 1 h after the last input |
