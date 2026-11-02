@@ -930,6 +930,12 @@ partial class PcStats : ServiceBase {
     var commands = new List<string>();
     if (verb == "bright") {
       commands.Add("display bright " + target + " " + arg);
+    } else if (arg == "off" && SleepPending()) {
+      // night mode turns the displays off as it puts the PC to sleep: they stay
+      // on, so they come back with the signal (MonWakeDelayMs)
+      SetMonReply(id, "ok");
+      Log("mon: #" + id + " power " + target + " off skipped, PC going to sleep");
+      return;
     } else if (arg == "off") {
       commands.Add("display power " + target + " off");
       if (target == "all") commands.Add("display sleep");
@@ -961,24 +967,15 @@ partial class PcStats : ServiceBase {
 
   // A monitor night mode powered off (DDC/CI) stays off after the wake until
   // PcHwCtl's user-session agent is back, 20-30 s into the sign-in screen. So
-  // a sleep or hibernate with one off starts MonWakeDelayMs later, and the
-  // monitors go on in the meantime: they then come back with the signal.
+  // every sleep or hibernate starts MonWakeDelayMs later and the monitors go on
+  // in the meantime: they then come back with the signal. Night mode can send
+  // its displays-off in the same second as the sleep, either side of it: the
+  // on runs after any off already under way (monPipeLock), and an off that
+  // arrives until the PC is down is skipped (SleepPending).
   const int MonWakeDelayMs = 8000;
+  static long sleepPendingUntilTicks;   // UTC ticks; 0 = none
 
-  static bool AnyMonitorOff() {
-    Dictionary<string, object> data;
-    if (PipeRequest(HostSettings.HWCTL_PIPE, "display list", DisplayTimeoutMs, out data) != "ok" || data == null) return false;
-    object mons;
-    var list = data.TryGetValue("monitors", out mons) ? mons as List<object> : null;
-    if (list == null) return false;
-    foreach (object m in list) {
-      var d = m as Dictionary<string, object>;
-      object p;
-      // VCP 0xD6: 1 on, 4 standby, 5 off; 0 = not read
-      if (d != null && d.TryGetValue("power", out p) && p != null && Convert.ToInt32(p, CultureInfo.InvariantCulture) > 1) return true;
-    }
-    return false;
-  }
+  static bool SleepPending() { return DateTime.UtcNow.Ticks < Interlocked.Read(ref sleepPendingUntilTicks); }
 
   static void SetMonReply(string id, string reply) {
     lock (monLock) {
@@ -1220,9 +1217,11 @@ partial class PcStats : ServiceBase {
     }
 
     Log("power: " + action + " requested by the board");
+    bool monsFirst = action == "sleep" || action == "hibernate";
+    if (monsFirst) Interlocked.Exchange(ref sleepPendingUntilTicks, DateTime.UtcNow.AddMilliseconds(MonWakeDelayMs + 30000).Ticks);
     ThreadPool.QueueUserWorkItem(delegate(object o) {
-      bool monsFirst = (action == "sleep" || action == "hibernate") && AnyMonitorOff();
       string r = SendToPcHwCtl("power do " + action + " " + (monsFirst ? MonWakeDelayMs : 1500));
+      if (r != "ok" && monsFirst) Interlocked.Exchange(ref sleepPendingUntilTicks, 0);
       string ack;
       if (r == "ok") {
         ack = action + " " + nonce;
