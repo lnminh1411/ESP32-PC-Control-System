@@ -101,11 +101,28 @@ static class AgyUsage {
     if (!File.Exists(exe)) return false;
     Directory.CreateDirectory(Workspace);
 
+    // agy starts its background updater when last_check.timestamp is over 15
+    // min old, and the updater runs `agy --version` with no console: Windows
+    // gives it a Terminal window that takes focus for half a second (seen
+    // 2026-11-02; AGY_CLI_DISABLE_AUTO_UPDATE doesn't stop it). So the file
+    // looks fresh for this run, and gets its old time back after: your own agy
+    // runs still check for updates.
+    string stamp = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), @".gemini\antigravity-cli\last_check.timestamp");
+    DateTime oldStamp = DateTime.MinValue, ourStamp = DateTime.UtcNow;
+    try {
+      if (File.Exists(stamp)) {
+        oldStamp = File.GetLastWriteTimeUtc(stamp);
+        File.SetLastWriteTimeUtc(stamp, ourStamp);
+      }
+    } catch (Exception) { oldStamp = DateTime.MinValue; }
+
     string text;
     try {
       text = RunUsage(exe);
     } finally {
       try { DropHistory(); } catch (Exception) { }
+      // only if nobody wrote it since (an agy of yours that checked keeps its time)
+      try { if (oldStamp != DateTime.MinValue && File.GetLastWriteTimeUtc(stamp) == ourStamp) File.SetLastWriteTimeUtc(stamp, oldStamp); } catch (Exception) { }
     }
     LastText = text;
     if (text == null) return false;
@@ -153,9 +170,6 @@ static class AgyUsage {
     try {
       if (!InitializeProcThreadAttributeList(attrs, 1, 0, ref attrSize)) return null;
       if (!UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, hpc, (IntPtr)IntPtr.Size, IntPtr.Zero, IntPtr.Zero)) return null;
-      // agy's background updater runs `agy --version` with no console, and Windows gives it
-      // a Terminal window that steals focus for half a second; the helper's runs skip it.
-      Environment.SetEnvironmentVariable("AGY_CLI_DISABLE_AUTO_UPDATE", "1");
       STARTUPINFOEX si = new STARTUPINFOEX();
       si.StartupInfo.cb = Marshal.SizeOf(typeof(STARTUPINFOEX));
       si.lpAttributeList = attrs;
