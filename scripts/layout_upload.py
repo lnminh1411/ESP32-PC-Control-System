@@ -126,8 +126,7 @@ def upload_http(host, password, data_bytes):
     # the board serves plain HTTP only: an https:// target would quietly send
     # the password in the clear, so refuse it rather than downgrade
     if host.startswith("https://"):
-        sys.stderr.write("Error: the board has no HTTPS; use --host <name> (plain HTTP on your LAN) or --port (USB)
-")
+        sys.stderr.write("Error: the board has no HTTPS; use --host <name> (plain HTTP on your LAN) or --port (USB)\n")
         sys.exit(1)
     if host.startswith("http://"):
         parsed = urllib.parse.urlparse(host)
