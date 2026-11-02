@@ -135,15 +135,15 @@ reasons behind it:
 All five opto pins are initialised the same way, implemented in
 [`../firmware/main/optos.cpp`](../firmware/main/optos.cpp):
 pre-stage the output latch LOW with `gpio_set_level(pin, 0)` while the pin
-is still Hi-Z, then `pinMode(pin, OUTPUT)`. The pin goes Hi-Z (held low by
-the 10k) -> driven LOW, with no window where it can drive HIGH. Use
-`gpio_set_level`, not `digitalWrite`: on arduino-esp32 3.x, `digitalWrite`
-on a pin not yet claimed by `pinMode` is a no-op.
+is still Hi-Z, then switch it to an output with `gpio_config`. The pin goes
+Hi-Z (held low by the 10k) -> driven LOW, with no window where it can drive
+HIGH. `optosInit()` is the first thing `app_main` runs. Pulses are ended by
+one-shot `esp_timer`s.
 
 - Reset is a short pulse only (HIGH 200 ms, then LOW). Holding it HIGH keeps
   the PC in reset; it never powers it off.
-- Never pulse reset from `setup()`: the ESP is powered from the PC's USB, so
-  a reset at boot could loop forever.
+- Never pulse reset at boot: the ESP is powered from the PC's USB, so a
+  reset at boot could loop forever.
 - Never use `INPUT_PULLUP` on an opto GPIO: the ~45k internal pull-up
   against the 10k pull-down lands near the opto LED's turn-on voltage.
 - The board has no hardware interlock between door buttons; the

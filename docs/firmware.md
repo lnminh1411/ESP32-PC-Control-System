@@ -1,8 +1,9 @@
 # Firmware
 
 `firmware/` is plain ESP-IDF 5.5.6 with LovyanGFX (a git submodule
-behind a wrapper component) for drawing. Each panel draws into a PSRAM
-sprite; the transport underneath is esp_lcd with RGB444 on the wire.
+behind a wrapper component) for drawing. Each panel draws into a sprite
+(PSRAM for panel 1; internal RAM for panels 2 and 3 when it fits); the
+transport underneath is esp_lcd with RGB444 on the wire.
 Building and flashing: [build-and-flash.md](build-and-flash.md). Settings:
 [settings.md](settings.md).
 
@@ -12,20 +13,21 @@ Building and flashing: [build-and-flash.md](build-and-flash.md). Settings:
 |---|---|
 | `config.h`, `display_config.h` | Pins, timings, panel table |
 | `display` | Panel init, flush task on core 0, dirty-rectangle engine, RGB444 push over SPI + DMA, backlights, SPI budget |
-| `views` | What each panel shows (`pc`, `media`, `ai`, `gif`, `dash`, test views), saved in NVS |
+| `views` | What each panel shows (`pc`, `media`, `ai`, `gif`, `dash`, and the `status`, `stats` and `metrics` pages), saved in NVS; the dynamic FPS engine |
 | `screens` | The faces ([screens.md](screens.md)) and which one each view picks |
 | `layout` | JSON dashboard pages from `/ffat/layout.json` ([layouts.md](layouts.md)) |
 | `pcstats`, `textimg`, `art` | Stats the PC sends; PC-rendered text bitmaps; cover art |
 | `pcwarn` | PC usage warnings: 2 s averages against limits saved in NVS |
 | `pc_state`, `pc_going` | PC power state from USB events; restart/update detection; status LED |
-| `optos`, `power`, `wol` | Door presses and the reset pulse; USB power commands; Wake-on-LAN (3 bursts to ports 9 and 7, MAC learned from the PC helper) |
+| `optos`, `power`, `wol` | Door presses and the reset pulse; power and screenshot requests to the PC helper (`!power`, `!shot`), with the HID System Control fallback; wake (USB remote wakeup and Wake-on-LAN: 3 bursts to ports 9 and 7, MAC learned from the PC helper) |
 | `night` | Night mode and low power mode ([power-and-night.md](power-and-night.md)) |
+| `presence` | Desk presence rules on PcHwCtl's camera check (`!pres`, `pc.present`): day displays-off, away, intruder alert ([power-and-night.md](power-and-night.md)) |
 | `hwctl`, `aictl`, `monctl` | `!hw`, `!ai` and `!mon` relays through the PC helper: case RGB and fans (PcHwCtl), the local AI stack (LocalAIHost), monitors (PcHwCtl) |
-| `weather`, `nowcast`, `owm`, `cyclone`, `owntracks`, `pushover` | Open-Meteo forecast and AQI, rain nowcast and warnings, OpenWeather One Call 4.0 minute-by-minute rain and alerts, GDACS typhoon tracking, phone location over MQTT, Pushover copies of the PC and weather announcements ([weather.md](weather.md)) |
+| `weather`, `nowcast`, `owm`, `tomorrow`, `radar`, `cyclone`, `owntracks`, `pushover` | Open-Meteo forecast and AQI, rain nowcast and warnings, OpenWeather One Call 4.0 minute-by-minute rain and alerts, Tomorrow.io minute rain, RainViewer radar, GDACS typhoon tracking, phone location over MQTT, Pushover copies of the PC and weather announcements ([weather.md](weather.md)) |
 | `board_time` | Wall clock: SNTP over Wi-Fi, else the time the PC sends |
 | `net`, `discord` | Wi-Fi (TX power capped, self-healing rejoin), mDNS, HTTP server (`/layout`, `/bench`); Discord bot with an `/actions` panel and a standing #control panel ([discord.md](discord.md)) |
 | `gif_store` | GIFs in their own flash partition (`gifs.bin`, from `scripts/gif_pack.py`), played in random cycles from a played list: palette frames, each storing only its dirty rects, predicted from the frame before by shifted blocks, kept LZ4-compressed in flash and decoded as they play |
-| `commands`, `console`, `usb`, `host_uart`, `log` | The text command set ([console.md](console.md)); USB CDC, CH343 UART (3 Mbaud), WinUSB bulk and vendor-HID transports; the log fan-out (UART, CDC, Discord #logging) |
+| `commands`, `console`, `usb`, `host_uart`, `log` | The text command set ([console.md](console.md)) and the answer to the helper's `@auth` link challenge; USB CDC, CH343 UART (3 Mbaud), WinUSB bulk and vendor-HID transports; the log fan-out (UART, CDC, Discord #logging) |
 | `sys`, `bench` | Reset reason and core dump summary at boot, brownout settle, PSRAM ECC log; `bench` tests |
 
 ## Display pipeline
@@ -75,10 +77,11 @@ Building and flashing: [build-and-flash.md](build-and-flash.md). Settings:
 |---|---|---|---|
 | main | 1 | 10 KB | Draws the faces; console, USB, power, night and the rest of the main loop (20 s task watchdog) |
 | `flush` | 0 | 4 KB | Diffs each canvas against the glass, sends the dirty rectangles |
-| `gifdec` | 2 | 3 KB | Decodes each GIF frame's rects from flash into the panel's buffers, then hands it to `flush`, which packs them to RGB444 as it sends (above main: about 26-30% of core 1 for a 20 fps GIF) |
+| `gifdec` | 1 | 3 KB | Decodes each GIF frame's rects from flash into the panel's buffers, then hands it to `flush`, which packs them to RGB444 as it sends (priority 2, above main: about 26-30% of core 1 for a 20 fps GIF) |
 | `led` | 0 | 2 KB | Status LED patterns |
 | `discord` | 0 | 10 KB | Discord gateway and REST |
-| `weather` | 0 | 9 KB | Open-Meteo, OpenWeather, GDACS; the Pushover queue |
+| `weather` | 0 | 9 KB | Open-Meteo, OpenWeather, Tomorrow.io, RainViewer, GDACS; the Pushover queue |
+| TinyUSB | 0 | 4 KB | USB device stack: CDC, HID and WinUSB receive with backpressure, USB events |
 
 ## ESP-IDF configuration
 

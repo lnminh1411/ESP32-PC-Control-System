@@ -51,7 +51,11 @@ layout is real. What each panel shows and when: [docs/screens.md](docs/screens.m
   user-session half, in [`host/pc_stats/`](host/pc_stats/)
   ([docs/helper.md](docs/helper.md)).
 - **PcHwCtl:** a separate repo on the PC that owns sensors, power actions,
-  RGB, fans and monitors; the helper talks to it.
+  RGB, fans, monitors, Process Lasso rules, the desk camera check and
+  screenshots; the helper talks to it over its named pipe.
+- **LocalAIHost:** a separate repo on the PC that hosts the local language
+  model; the helper relays the board's local AI commands to it and polls its
+  status hub.
 - **Case:** a 3D-printed block, lid and display mask in
   [`enclosure/`](enclosure/).
 
@@ -94,7 +98,9 @@ layout is real. What each panel shows and when: [docs/screens.md](docs/screens.m
 | [build-and-flash.md](docs/build-and-flash.md) | Building, flashing, uploads, screenshots, CI |
 | [layouts.md](docs/layouts.md) | JSON dashboard layouts |
 | [benchmark.md](docs/benchmark.md) | Memory and speed measurements |
+| [security.md](docs/security.md) | Accepted risks, where secrets live, what to check if an attack is suspected |
 | [pc-power-detection.md](docs/pc-power-detection.md), [recovery-and-physical-access.md](docs/recovery-and-physical-access.md) | Design notes |
+| [documentations_summary.md](docs/documentations_summary.md) | Every doc in the repo in one list |
 
 ## Repository layout
 

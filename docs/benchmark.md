@@ -266,7 +266,7 @@ on panel 1:
 
 ## Internal RAM pass, 2026-11-01
 
-OTA went first (one 10 MB factory app slot, no rollback). Then:
+OTA went first (a single factory app slot, now 8.9 MB, no rollback). Then:
 
 - The heap-corruption hunt's debug code came out: the `heapguard` task, its
   buffers and comprehensive heap poisoning (local `sdkconfig` only).

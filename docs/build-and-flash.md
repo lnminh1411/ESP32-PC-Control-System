@@ -13,7 +13,9 @@ firmware/idf.cmd build
 python scripts/idf_flash.py --no-build
 ```
 
-`idf_flash.py` stops the PC stats service, reboots the board into the ROM
+USB is the only way to update the firmware (there is no OTA).
+`idf_flash.py` stops the PC stats service (asking for elevation only when it
+is not already stopped), reboots the board into the ROM
 with a 1200-baud touch on the app's CDC port (`--port`, default COM12),
 flashes over the ROM's USB-Serial-JTAG port and starts the service again.
 It writes only what changed: esptool's `verify_flash` compares the board's

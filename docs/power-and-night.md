@@ -8,8 +8,8 @@ The console side is in [console.md](console.md), the buttons in
 
 | Action | Path |
 |---|---|
-| Power on from shutdown | Wake-on-LAN magic packet on the home network (`wake`) |
-| Shutdown / sleep / hibernate / restart / lock | `power <sleep\|hibernate\|restart\|shutdown\|lock>`: the board sends `!power <action> <nonce>` over the USB link, the PC helper hands it to PcHwCtl, which accepts or declines at once and acts 1.5 s later. With no answer from the helper in 3 s, sleep and shutdown fall back to HID System Control keys |
+| Power on from shutdown, wake from sleep | `wake`: USB remote wakeup when the USB link is suspended, plus a Wake-on-LAN magic packet on the home network when Wi-Fi is up; either one counts. There is no power-button opto |
+| Shutdown / sleep / hibernate / restart / lock | `power <sleep\|hibernate\|restart\|shutdown\|lock>`: the board sends `!power <action> <nonce>` over the USB link, the PC helper hands it to PcHwCtl, which accepts or declines at once and acts 1.5 s later (8 s for sleep and hibernate, see [Sleep and hibernate](#sleep-and-hibernate)). With no answer from the helper in 3 s, sleep and shutdown fall back to HID System Control keys |
 | Hard reset of a hung PC | RST opto (`reset` command: this resets the PC, not the board) |
 | Power cut | BIOS "Always Power On after AC loss" boots the PC when power returns |
 
@@ -26,8 +26,8 @@ the AC-loss setting brings the PC back up. See
 [recovery-and-physical-access.md](recovery-and-physical-access.md).
 
 Every power action (sleep, hibernate, restart, shutdown, lock) is PcHwCtl's
-job: the PC service only forwards it (`power do <action> 1500`) and acks the
-board. PcHwCtl can decline ("Hibernation is off.", "Windows is installing
+job: the PC service only forwards it (`power do <action> 1500`, or 8000 for
+sleep and hibernate) and acks the board. PcHwCtl can decline ("Hibernation is off.", "Windows is installing
 updates.", ...), and the board posts the reason to Discord. With PcHwCtl not
 running the answer is "PcHwCtl offline, use Reset": nothing on the PC can act
 then, and PC reset (behind its confirm) is what is left. Lock needs this path
@@ -97,7 +97,9 @@ calculation, and the foreground full-screen app (a game can be light on CPU).
 The check runs all night: a pinned exe that turns heavy gets its day rule back
 and leaves efficiency mode, and an exe left alone is pinned once it stays
 under 0.3 cores for 5 minutes. When the night ends, `lasso load day` puts the
-normal config back and `eco off all` lifts efficiency mode. If the board stops
+normal config back and `eco off all` lifts efficiency mode (a failed `lasso
+load day` is retried every 10 s). The PC service only reads `prolasso.ini`
+(for the ProBalance exclusions); PcHwCtl writes the rules. If the board stops
 confirming the night for 5 minutes, the service does that by itself.
 
 ## Presence at the desk

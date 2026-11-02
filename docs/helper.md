@@ -13,10 +13,11 @@ processes:
 
 - **The Windows service** (SYSTEM, session 0): reads PcHwCtl's sensor feed
   and state file and Windows performance counters, forwards the board's power,
-  RGB, fan, monitor and night mode commands to PcHwCtl, polls the local AI
-  status hub and Claude's usage, and streams everything to the board over a
-  WinUSB bulk pipe (no driver install; vendor HID as the fallback; the COM
-  port stays free either way). It also renders
+  screenshot, presence, RGB, fan, monitor and night mode commands to PcHwCtl
+  and its local AI commands to LocalAIHost, polls the local AI status hub and
+  Claude's usage, and streams everything to the board over a WinUSB bulk pipe
+  (no driver install; vendor HID, then CDC serial as fallbacks; the COM port
+  stays free unless serial is in use). It also renders
   non-Latin text for the board and sends cover art.
 - **The user-session half** (`--user`, started and restarted by the service
   in the signed-in user's session, as that user): media info from Windows'

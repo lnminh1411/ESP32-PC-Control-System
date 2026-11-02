@@ -5,8 +5,8 @@ Windows service that collects configured PC stats (hardware sensors from [PcHwCt
 ## Two processes, one exe
 
 `ESP32-Helper.exe` runs as two processes, each with its own worker threads:
-- **Service** (`ESP32PcStats`, SYSTEM, session 0): stats, the HID/serial link, power actions, shutdown announcements, `@source` and `@claude` polling, text rendering, cover-art streaming. It runs before sign-in and after sign-out, at High CPU priority so the board's frames and replies stay on time while the PC is busy (the user-session half stays Normal).
-- **User-session half** (`ESP32-Helper.exe --user`): Antigravity quota, Claude Code token refresh, media session and cover art, screenshots. Windows keeps session 0 away from the desktop and the user's media sessions, so this part has to run in the user's session. The service starts it there with the signed-in user's token (normal user rights, not elevated) once someone signs in. It restarts the half if it dies (after 2 s, or 30 s if it died within 15 s of starting) and moves it on a user switch. In `--console` mode it starts the half as the current user (`--no-user` skips it).
+- **Service** (`ESP32PcStats`, SYSTEM, session 0): stats, the USB link (WinUSB/HID/serial), the relays to PcHwCtl and LocalAIHost (power actions, screenshots, presence, RGB/fans, monitors, night mode, local AI), shutdown announcements, `@source` and `@claude` polling, text rendering, cover-art streaming. It runs before sign-in and after sign-out, at High CPU priority so the board's frames and replies stay on time while the PC is busy (the user-session half stays Normal).
+- **User-session half** (`ESP32-Helper.exe --user`): Antigravity quota, Claude Code token refresh, media session and cover art, input idle and the foreground app. Windows keeps session 0 away from the desktop and the user's media sessions, so this part has to run in the user's session. The service starts it there with the signed-in user's token (normal user rights, not elevated) once someone signs in. It restarts the half if it dies (after 2 s, or 30 s if it died within 15 s of starting) and moves it on a user switch. In `--console` mode it starts the half as the current user (`--no-user` skips it).
 
 The two talk over a pair of anonymous pipes (UTF-8 lines):
 
@@ -15,19 +15,20 @@ The two talk over a pair of anonymous pipes (UTF-8 lines):
 | user half to service | `F <feed> <n>` + n `key=value` lines | feed `agy`, `media` or `idle`, read by `@source <name> helper:<feed> <ms>` |
 | user half to service | `A <base64>` | cover art, 144x144 RGB565 big-endian (41,472 bytes) |
 | user half to service | `L <text>` | log line, written to `log.txt` as `user: <text>` |
-| service to user half | `S <nonce> <webhook>` | take a screenshot |
 
-The user half exits as soon as the pipes break, so it never outlives the service. A `helper:` source counts as up while the user half is connected.
+Nothing travels from the service to the user half; that pipe only tells the half the service is alive. The user half exits as soon as the pipes break, so it never outlives the service. A `helper:` source counts as up while the user half is connected.
 
 ## Transport
 
 `auto` (the default) tries three links in order, on the ESP32-S3 (Espressif VID `303A`):
 
-1. **WinUSB bulk pipe** (interface 3, endpoints `0x04` OUT / `0x84` IN, device interface GUID `{39531AD1-55E5-4933-869D-123B4E7D172C}`). The board's MS OS 2.0 descriptors make Windows bind WinUSB by itself, with no INF and no driver install. Full-speed bulk moves about 1 MB/s against HID's 63 bytes per 1 ms frame: a cover (41 KB of base64) arrives in 115 ms instead of 690 ms. The board's parser is now the limit, not the wire. The board sends its lines (`!txt`, `!art`, `!power`, `!hw`, `!ai`, `!shot`, `!pres`) back on this pipe while the service has sent on it within 3 s, else over HID. The service ignores what it reads in the first 500 ms after opening the pipe: an old request left in the board's buffer is never acted on.
+1. **WinUSB bulk pipe** (interface 3, endpoints `0x04` OUT / `0x84` IN, device interface GUID `{39531AD1-55E5-4933-869D-123B4E7D172C}`). The board's MS OS 2.0 descriptors make Windows bind WinUSB by itself, with no INF and no driver install. Full-speed bulk moves about 1 MB/s against HID's 63 bytes per 1 ms frame: a cover (41 KB of base64) arrives in 115 ms instead of 690 ms. The board's parser is now the limit, not the wire. The board sends its lines (`!auth`, `!txt`, `!art`, `!power`, `!hw`, `!ai`, `!mon`, `!night`, `!shot`, `!pres`) back on this pipe while the service has sent on it within 3 s, else over HID. The service ignores what it reads in the first 500 ms after opening the pipe: an old request left in the board's buffer is never acted on.
 2. **Vendor HID** (UsagePage `0xFF00`, Usage `0x01`, report length 64 bytes): Windows' in-box HID driver.
 3. **Serial**: the USB CDC COM port (`@s`, `@t`, `@e` lines), or `--transport serial`.
 
 `--transport winusb` or `--transport hid` uses only that link. With either of the first two, the CDC COM port stays free for flashing and consoles.
+
+**Link challenge**: when `LINK_KEY` is set, the service sends `@auth <nonce>` on each new link and sends no stats and acts on no board line until the board answers `!auth <hex>` (first 16 bytes of HMAC-SHA256(`LINK_KEY`, `esp32-link <nonce>`)). An empty `LINK_KEY` means no challenge. See [docs/helper.md](../../docs/helper.md).
 
 ## Build
 
@@ -35,7 +36,7 @@ Run `build.cmd` from Command Prompt:
 ```cmd
 host\pc_stats\build.cmd
 ```
-First `gen_settings.ps1` writes `Settings.g.cs` (gitignored) from the `HOST_*` keys of `firmware\main\settings.h` (defaults in `settings_or_example.h`, `settings_example.h` when there is no `settings.h`); it reads no other key, so no secret ends up in the exe. Then it runs `dotnet publish` on `ESP32-Helper.csproj` and leaves one self-contained, single-file `build\ESP32-Helper.exe` (~56 MB, .NET 10 runtime included, nothing to install on the PC that runs it). Building needs the .NET 10 SDK; packages come from nuget.org through the repo's `nuget.config`.
+First `gen_settings.ps1` writes `Settings.g.cs` (gitignored) from the `HOST_*` keys of `firmware\main\settings.h` (defaults in `settings_or_example.h`, `settings_example.h` when there is no `settings.h`), plus the two secrets the helper needs: `LINK_KEY` and `DISCORD_SHOT_WEBHOOK` (as `SHOT_WEBHOOK`). It reads no other key. Because the exe carries those two, `install.ps1` locks the install folder to SYSTEM and Administrators. Then it runs `dotnet publish` on `ESP32-Helper.csproj` and leaves one self-contained, single-file `build\ESP32-Helper.exe` (~56 MB, .NET 10 runtime included, nothing to install on the PC that runs it). Building needs the .NET 10 SDK; packages come from nuget.org through the repo's `nuget.config`.
 
 Hardware sensors come from PcHwCtl (`E:\PC Hardware Controller`, service `PcHwCtl`), the only LibreHardwareMonitor reader on the PC; the helper has no LibreHardwareMonitor or PawnIO dependency of its own. `--list` shows what the feed carries.
 
@@ -43,7 +44,7 @@ Hardware sensors come from PcHwCtl (`E:\PC Hardware Controller`, service `PcHwCt
 
 Run PowerShell as Administrator:
 - **Install**: `.\install.ps1` (or `.\install.ps1 -ForceConfig` to overwrite existing `stats.ini`). An installed `stats.ini` that still has LibreHardwareMonitor rules (`key = Cpu | Temperature | ...`, `@every`) is replaced anyway, the old one kept as `stats.ini.old`.
-  Installs files to `C:\Program Files\ESP32 PC Controller\pc_stats\` and creates/starts service `ESP32PcStats` with automatic restart on failure. Over an install from before the merge, it points the existing service at `ESP32-Helper.exe` and removes the old `ESP32 AGY Quota` scheduled task, the old `esp32-pcstats.exe` / `esp32-agyquota.exe`, and the files they used to pass data through in `C:\ProgramData\ESP32PcStats` (`media.txt`, `media_art.bin`, `shot_request.txt`).
+  Installs files to `C:\Program Files\ESP32 PC Controller\pc_stats\` (ACL: SYSTEM and Administrators only), copies the `HOST_FONT_REGULAR` / `HOST_FONT_BOLD` font files into its `fonts\` folder, and creates/starts service `ESP32PcStats` with automatic restart on failure. Over an install from before the merge, it points the existing service at `ESP32-Helper.exe` and removes the old `ESP32 AGY Quota` scheduled task, the old `esp32-pcstats.exe` / `esp32-agyquota.exe`, and the files they used to pass data through in `C:\ProgramData\ESP32PcStats` (`media.txt`, `media_art.bin`, `shot_request.txt`).
 - **Uninstall**: `.\uninstall.ps1`
   Stops and deletes the service and removes the installation directory (preserving `C:\ProgramData\ESP32PcStats\log.txt`). The log rotates at 4 MB into `log.old.txt`, so the two stay under 8 MB together.
 
@@ -61,6 +62,7 @@ ESP32-Helper.exe --port COM4         # Manually specify COM port instead of VID_
 ESP32-Helper.exe --claude <dir>      # Test Claude live fetch & local token totals and exit
 ESP32-Helper.exe --going             # Print PcHwCtl's `power status` (going, last down, wake, updates) and exit
 ESP32-Helper.exe --agy-once          # Poll Antigravity quota once, print the keys and exit
+ESP32-Helper.exe --agy-usage         # Run `agy /usage` once, print the panel text and the parsed Gemini windows
 ESP32-Helper.exe --media             # Sample media sessions for 5 s, print the keys and exit
 ESP32-Helper.exe --render-text <px> <bold> <out.png> <text...>  # Test non-ASCII GDI text rendering
 ESP32-Helper.exe --user <in> <out>   # The user-session half (started by the service, not by hand)
@@ -101,7 +103,7 @@ The service can stream Claude Code live utilization and local spend totals to th
 ```
 
 ### What It Reads
-- **Live Usage**: Reads the OAuth access token from `<claude_dir>\.credentials.json` (`claudeAiOauth.accessToken`) and polls Anthropic's OAuth usage API (`https://api.anthropic.com/api/oauth/usage`). It only uses the access token that Claude Code itself keeps fresh (never refreshes it, never uses the refresh token, and never writes to the credentials file). If the token is expired (`claudeAiOauth.expiresAt`), polling pauses with error `token_expired`. The user-session half prevents that: when less than 10 minutes are left it runs `claude auth status`, which makes the Claude Code CLI refresh its own token (no model call, no usage). It reads only the expiry times, and logs (`user: claude: ...` in `log.txt`) when the refresh token itself nears expiry (then run `claude auth login`).
+- **Live Usage**: Reads the OAuth access token from `<claude_dir>\.credentials.json` (`claudeAiOauth.accessToken`) and polls Anthropic's OAuth usage API (`https://api.anthropic.com/api/oauth/usage`). The service only reads the access token (it never refreshes it and never writes the credentials file). If the token is expired (`claudeAiOauth.expiresAt`), polling pauses with error `token_expired`. The user-session half prevents that: when less than 10 minutes are left it refreshes the token itself with the same request Claude Code makes (`https://platform.claude.com/v1/oauth/token`, Claude Code's public client id) and writes only the token fields back into the user's `.claude\.credentials.json` (if another process refreshed meanwhile, that token wins). It waits for the network before trying, retries a lost answer within seconds and other failures after 5 minutes, and logs (`user: claude: ...` in `log.txt`) when the refresh token itself nears expiry (then run `claude auth login`).
 - **Local Spend & Token Totals**: Incrementally scans session transcripts in `<claude_dir>\projects\**\*.jsonl` modified in the last 31 days using an in-memory per-file byte cache. Tokens are calculated as `input_tokens + output_tokens + cache_creation_input_tokens + cache_read_input_tokens`, de-duplicated by `message.id`. Cost is estimated at standard list rates (Opus, Sonnet, Haiku).
 
 ### Keys Streamed
@@ -154,15 +156,19 @@ It also keeps the last values in `C:\ProgramData\ESP32PcStats\agy_quota.txt` (th
 - **Global:**
   - `agy.live`: Count of active language server clients answering the poll
   - `agy.updated`: Unix timestamp (seconds) of the poll
+  - `agy.active`: Account(s) signed in on a running client right now, comma list, or `none` (`@t`)
 - **Per-Slot (`agy1`, `agy2`, ...):**
   - `agyN.email`: Account email address (`@t`)
   - `agyN.plan`: Plan name (e.g. `Pro`) (`@t`)
+  - `agyN.live`: `1` while a running client is signed in to this account, else `0`
   - `agyN.age_s`: Elapsed seconds since account data was fetched
   - `agyN.flash_pct`: Remaining Flash quota percentage (`0.0` - `100.0`, 1 decimal)
   - `agyN.flash_reset_s`: Seconds until Flash quota reset (`>= 0`)
   - `agyN.flash_reset_at`: Local time of Flash reset (`ddd HH:mm`, InvariantCulture) (`@t`)
   - `agyN.flash_name`: Flash family display name (`@t`)
   - `agyN.pro_pct`, `agyN.pro_reset_s`, `agyN.pro_reset_at`, `agyN.pro_name`: Same metrics for Pro family
+  - `agyN.flash_5h_pct`, `agyN.flash_5h_reset_at` (`HH:mm`), `agyN.flash_5h_reset_ts` (unix s): Gemini 5-hour window, from Google's quota API with agy's stored login (the access token is renewed in memory only)
+  - `agyN.flash_wk_pct`, `agyN.flash_wk_reset_at` (`ddd HH:mm`), `agyN.flash_wk_reset_ts`: Gemini weekly window; the weekly figure is overridden by what `agy /usage` shows (read in a ConPTY every 10 min, 1 min after a failed read)
 
 ## Media Playback & Cover Art
 
@@ -179,7 +185,7 @@ The service reads the feed via:
   - `media.playing`: `1` if playback is active, `0` if paused or stopped
   - `media.pos_s`: Playback position in seconds (extrapolated from `TimelineProperties.LastUpdatedTime` while playing)
   - `media.len_s`: Track duration in seconds
-  - `media.art_id`: CRC32 of the 144x144 RGB565 cover art as an unsigned decimal (`0` = no art)
+  - `media.art_id`: CRC32 of the 144x144 RGB565 cover art (as the user half sends it) as an unsigned decimal (`0` = no art)
 - **Text stats (`@t`)**:
   - `media.title`: Track title (one line, <= 80 chars)
   - `media.artist`: Artist name (one line, <= 80 chars)
@@ -188,12 +194,12 @@ The service reads the feed via:
 
 ### Cover Art Push Protocol (`@a`)
 When `media.art_id` transitions to a non-zero value and the latest art from the user-session half has a matching CRC32:
-1. Cover art is center-cropped to a square, bicubic-scaled to 144x144, converted to RGB565 big-endian (2 bytes/pixel = 41,472 bytes), and Base64-encoded (55,296 characters).
+1. The user half center-crops the cover to a square, bicubic-scales it to 144x144 and sends it as RGB565 big-endian (41,472 bytes). The panels are 12-bit, so the service packs it to RGB444 (2 pixels in 3 bytes, 31,104 bytes) and Base64-encodes that (41,472 characters).
 2. The service streams art across sample ticks:
-   - Header: `@a begin <id> 144 144`
+   - Header: `@a begin <id> 144 144 444`
    - Data lines: `@a d <base64>` in lines of at most 160 base64 chars
-   - Terminator: `@a end <id> <crc32 as 8 hex digits>`
-3. Pushes at most 4,000 base64 chars per tick appended after the `@e` line so regular sensor streaming never stalls.
+   - Terminator: `@a end <id> <crc32 of the packed RGB444 bytes as 8 hex digits>`
+3. Chunks are appended after the `@e` line, so regular sensor streaming never stalls. Each tick carries up to 48,000 base64 chars of `@x` text and `@a` art together, text first (up to 12,000).
 4. If the ESP32 carrier board requests art retransmission via `!art <id>` (received over whichever link is active), the service immediately restarts streaming that art from the beginning.
 
 ### Console Testing
@@ -221,21 +227,22 @@ When the ESP32 carrier board needs to display a text value containing non-ASCII 
 #### 1. Inbound Board Request (`!txt`)
 Sent from the carrier board over the active link (WinUSB bulk IN, HID INPUT report 6, or serial):
 ```
-!txt <id> <px> <bold> <key>
+!txt <id> <px> <bold> <key> [<base64 text>]
 ```
 - `<id>`: Decimal uint32 CRC32 of the UTF-8 bytes of the text value.
 - `<px>`: Font pixel size (em height), integer in range `8`..`64`.
 - `<bold>`: `1` for bold, `0` for regular.
 - `<key>`: Text metric key (e.g. `media.title`).
+- `<base64 text>`: optional; the text itself, when the board has it from somewhere other than an `@t` stat (e.g. the weather place name). The CRC still has to match.
 
-The host validates the request against its dictionary of last-sent `@t` values under a lock:
+Without it, the host validates the request against its dictionary of last-sent `@t` values under a lock:
 - If `<key>` is not found or its CRC32 does not match `<id>`, the request is ignored (the board will ask again with the updated id).
 - Requests identical to one served within the last 5 seconds are ignored to avoid duplicate rendering spikes.
 - At most 4 pending renders are queued at a time (additional requests dropped when full).
 - Each request served or rejected is logged (key, id, w x h; the text itself is never logged for privacy).
 
 #### 2. Host GDI Rendering
-- **Fonts**: Searches `ComicShannsMonoNerdFontPropo-Regular.otf` and `ComicShannsMonoNerdFontPropo-Bold.otf` in `C:\Windows\Fonts`, then in user directories `C:\Users\*\AppData\Local\Microsoft\Windows\Fonts\`. Loaded once via Win32 `AddFontResourceEx` (`FR_PRIVATE = 0x10`). If unavailable, falls back to `Segoe UI` (logged once).
+- **Fonts**: Looks for `HOST_FONT_REGULAR` and `HOST_FONT_BOLD` (default `ComicShannsMonoNerdFontPropo-Regular.otf` / `-Bold.otf`) in `C:\Windows\Fonts`, then in `<install dir>\fonts\` (where `install.ps1` copies them, so the SYSTEM service never parses a font from a user-writable folder). Loaded once via Win32 `AddFontResourceEx` (`FR_PRIVATE = 0x10`). If unavailable, falls back to `HOST_FONT_FALLBACK` (`Segoe UI`, logged once).
 - **Fallback Font Linking**: Rendered using Win32 GDI `CreateFontW` (`ANTIALIASED_QUALITY = 4`, grayscale, no ClearType) and `DrawTextW` on a memory DC, enabling automatic Uniscribe font fallback for non-Latin scripts (Japanese, CJK, etc.).
 - **Measurement**: `w = measured width + 2` (capped at 1600), `h = tmHeight` from `GetTextMetricsW`, `ascent = tmAscent`.
 - **Drawing**: Rendered white text (`SetTextColor 0xFFFFFF`, `SetBkMode TRANSPARENT`) onto a black, top-down 32-bpp DIB section (`CreateDIBSection`) at `x = 1`, `y = 0` (`DT_SINGLELINE | DT_NOPREFIX | DT_NOCLIP`).
@@ -246,7 +253,7 @@ The host validates the request against its dictionary of last-sent `@t` values u
 - Data lines: `@x d <base64>` in lines of at most 160 base64 chars
 - Terminator: `@x end <id> <crc32 of packed bytes as 8 lowercase hex digits>`
 
-Text transfers share a combined per-tick budget of 4,000 base64 characters with cover art (`@a`), with text prioritized before art because text payloads are small. Only one text transfer runs at a time, completing fully before the next queued transfer begins.
+Text transfers go first in each tick, up to 12,000 base64 characters; cover art (`@a`) gets the rest of the 48,000-character budget. Only one text transfer runs at a time, completing fully before the next queued transfer begins.
 
 #### 4. Test Mode
 Inspect font rendering and Uniscribe fallback directly from the command line:
@@ -272,7 +279,7 @@ The service supports bidirectional power management with the carrier board:
   !power <action> <nonce>
   ```
   where `<action>` is strictly allowlisted to `sleep`, `hibernate`, `restart`, `shutdown`, or `lock`, and `<nonce>` is 1-8 hex digits. Any command not matching this exact format is logged and ignored without acking. Duplicate nonces within 60 seconds are discarded to prevent repeated executions.
-- **Who acts**: PcHwCtl, nothing in the helper. The helper sends `power do <action> 1500` on PcHwCtl's pipe (E:\PC Hardware Controller, docs/ipc.md#power-actions-and-events); PcHwCtl accepts or declines at once and carries the action out 1.5 s later, so the ack reaches the board first.
+- **Who acts**: PcHwCtl, nothing in the helper. The helper sends `power do <action> <delayMs>` on PcHwCtl's pipe (E:\PC Hardware Controller, docs/ipc.md#power-actions-and-events); PcHwCtl accepts or declines at once and carries the action out after the delay, so the ack reaches the board first. The delay is 1500 ms for `restart`, `shutdown` and `lock`. For `sleep` and `hibernate` it is 8000 ms and the helper turns the monitors on first (`display wake`, `display power all on`): a monitor that night mode powered off over DDC/CI would otherwise stay dark after the wake until PcHwCtl's agent is back. A displays-off that arrives before the PC is down is skipped.
 - **Host -> Device (Ack)**: Sent in the regular sample stream as a text stat for 10 seconds: `@t power.ack <action> <nonce>` (e.g. `@t power.ack sleep 3f2a`) when PcHwCtl accepted, `@t power.ack error <nonce> <reason>` when it declined, with PcHwCtl's reason (`Hibernation is off.`, `Windows is installing updates.`, `A shutdown is already under way (by X.exe).`, ...). PcHwCtl not running gives `error <nonce> PcHwCtl offline, use Reset`: nothing on the PC can act then, and the board's Reset button (behind its confirm) is the way left. The board posts the reason to Discord.
 - **Wake-on-LAN Target**: The host discovers and continuously advertises its primary network adapter MAC address and interface name in every sample:
   ```
@@ -282,7 +289,7 @@ The service supports bidirectional power management with the carrier board:
   The adapter is chosen by priority: (1) operational wired Ethernet adapter with an IPv4 gateway, (2) any Ethernet adapter, (3) any up adapter with a gateway (skipping virtual adapters such as Hyper-V, VirtualBox, VMware, TAP, Loopback, Bluetooth, WAN Miniport). Refreshed every 30 seconds.
 
 ### Hardware Fallback
-When PcHwCtl or the helper is not running (e.g. PC is powered off in S5, hung, or booting), the carrier board controls the physical front-panel headers via optocoupler pulses: the power button, and the Reset button behind its confirm.
+When the helper sends no stats, the board's `power sleep` and `power shutdown` fall back to its USB HID System Control keys (Windows applies its own power and sleep button settings). For a hung PC the board pulses the motherboard Reset header through an optocoupler (the Reset button behind its confirm). There is no power-button opto: the board wakes the PC or powers it on with USB remote wakeup and Wake-on-LAN.
 
 ### Wake-on-LAN Prerequisites
 To wake the PC from sleep or powered-off state (S5) using Magic Packets:
@@ -320,9 +327,9 @@ PcHwCtl (`E:\PC Hardware Controller`, github.com/lnminh1411/PC-Hardware-Control-
 
 **Presence** (`Presence.cs`): the board's `!pres <seconds>` (every 30 s, `0` or 90 s of silence stops) and `!pres now` run PcHwCtl's `presence` on one thread, so checks never overlap. Each answer goes to the board as the text stat `pc.present`, `<n> <yes|no|unknown> <why> <conf %>`, one text so its fields can't arrive apart; `why` is PcHwCtl's, or `pipe` with PcHwCtl unreachable. The rules are the board's (docs/power-and-night.md).
 
-**Screenshots**: `!shot <nonce> <webhook>` goes to PcHwCtl as `screenshot <nonce> <webhook>`; its agent captures, shows the border, uploads and deletes. The webhook stays out of the helper's log.
+**Screenshots**: the board sends only `!shot <nonce>`. The helper adds its compiled webhook (`DISCORD_SHOT_WEBHOOK`, which never crosses USB) and sends `screenshot <nonce> <webhook>` to PcHwCtl (15 s timeout); its agent captures, shows the border, uploads and later deletes. The helper logs only the outcome (`captured` / `declined: <why>`), never the webhook.
 
-**Night mode** (`Night.cs`): the board decides and owns the sleep / hibernate timers; the helper carries it out. `!night 1` sends `lasso save day` (the normal `prolasso.ini` kept as PcHwCtl profile `day`), then `aff set <exe> <HOST_NIGHT_CORES>` (E-cores 14-17) and `eco on <exe>` (Windows efficiency mode; PcHwCtl sweeps new instances) for every running process and every whole-exe rule outside the keep list: `HOST_NIGHT_KEEP` plus Process Lasso's ProBalance exclusions (`OocExclusions`, read from the ini, since PcHwCtl has no command for them). PcHwCtl writes each rule and pins the running processes at once. Names with spaces and rules not ending in `.exe` are skipped (`aff set` takes one word ending in `.exe`). Heavy exes are left alone: every 10 s the helper asks PcHwCtl for `proc top 50` (cores per exe, 1.0 = one core busy, summed over instances); an exe averaging `HOST_NIGHT_HEAVY_CORES` (0.8) for `HOST_NIGHT_HEAVY_S` (120 s) is heavy until it averages under `HOST_NIGHT_CALM_CORES` (0.3) for `HOST_NIGHT_CALM_S` (300 s). This runs all night: a pinned exe that turns heavy gets its day rule back (`aff set` with the day's CPUs, else `aff clear`) and `eco off`; a calm one gets pinned. The foreground full-screen app (`pc.fg_full`, `pc.fg_exe` from the user half) is left alone the same way. Exes in `HOST_NIGHT_ALWAYS` stay pinned even while heavy. New process names are pinned within 10 s. `pc.heavy` (how many exes are heavy, kept ones included, `HOST_NIGHT_HEAVY_IGNORE` left out: `svchost` and `msmpeng` by default, since a service host summed over dozens of instances never calms down and real work holds sleep through a power request) and `pc.heavy_by` (the busiest) go to the board all day; it won't sleep or hibernate the PC while `pc.heavy >= 1`. `!night 0` sends `lasso load day` (the normal ini back, every process on its own rule or every CPU) and `eco off all`. `night.on` in `C:\ProgramData\ESP32PcStats` marks night engaged and lists the exes pinned and the day's rules, so a restart mid-night restores rather than saving the night config as `day`. After `HOST_NIGHT_NO_WORD_MIN` (5) min without the board's 30 s repeat, the helper sends `lasso load day` itself. A `prolasso.ini.esp32-night` left by the helper's older night code blocks night mode (logged once) until it is copied back over `prolasso.ini` by hand. `pc.disp_req` / `pc.disp_req_by` (a process holds the display awake, so the board holds night mode off), `pc.sys_req` and `pc.exec_req` (each with `_by`; they hold the board's night sleep) are PcHwCtl's `hw.*_req*`, renamed.
+**Night mode** (`Night.cs`): the board decides and owns the sleep / hibernate timers; the helper carries it out. `!night 1` sends `lasso save day` (the normal `prolasso.ini` kept as PcHwCtl profile `day`), then `aff set <exe> <HOST_NIGHT_CORES>` (E-cores 14-17) and `eco on <exe>` (Windows efficiency mode; PcHwCtl sweeps new instances) for every running process and every whole-exe rule outside the keep list: `HOST_NIGHT_KEEP` plus Process Lasso's ProBalance exclusions (`OocExclusions`, read from the ini, since PcHwCtl has no command for them). PcHwCtl writes each rule and pins the running processes at once. Last, `power plan night` switches to PcHwCtl's night power plan. Names with spaces and rules not ending in `.exe` are skipped (`aff set` takes one word ending in `.exe`). Heavy exes are left alone: every 10 s the helper asks PcHwCtl for `proc top 50` (cores per exe, 1.0 = one core busy, summed over instances); an exe averaging `HOST_NIGHT_HEAVY_CORES` (0.8) for `HOST_NIGHT_HEAVY_S` (120 s) is heavy until it averages under `HOST_NIGHT_CALM_CORES` (0.3) for `HOST_NIGHT_CALM_S` (300 s). This runs all night: a pinned exe that turns heavy gets its day rule back (`aff set` with the day's CPUs, else `aff clear`) and `eco off`; a calm one gets pinned. The foreground full-screen app (`pc.fg_full`, `pc.fg_exe` from the user half) is left alone the same way. Exes in `HOST_NIGHT_ALWAYS` stay pinned even while heavy. New process names are pinned within 10 s. `pc.heavy` (how many exes are heavy, kept ones included, `HOST_NIGHT_HEAVY_IGNORE` left out: `svchost` and `msmpeng` by default, since a service host summed over dozens of instances never calms down and real work holds sleep through a power request) and `pc.heavy_by` (the busiest) go to the board all day; it won't sleep or hibernate the PC while `pc.heavy >= 1`. `!night 0` sends `lasso load day` (the normal ini back, every process on its own rule or every CPU; retried every 10 s if it fails), `eco off all` and `power plan day`. Once a minute the helper also asks PcHwCtl for `power caps` and sends `pc.hib` (0 when hibernation is off), which the board uses to hide Hibernate. `night.on` in `C:\ProgramData\ESP32PcStats` marks night engaged and lists the exes pinned and the day's rules, so a restart mid-night restores rather than saving the night config as `day`. After `HOST_NIGHT_NO_WORD_MIN` (5) min without the board's 30 s repeat, the helper sends `lasso load day` itself. A `prolasso.ini.esp32-night` left by the helper's older night code blocks night mode (logged once) until it is copied back over `prolasso.ini` by hand. `pc.disp_req` / `pc.disp_req_by` (a process holds the display awake, so the board holds night mode off), `pc.sys_req` and `pc.exec_req` (each with `_by`; they hold the board's night sleep) are PcHwCtl's `hw.*_req*`, renamed.
 
 The user half still sends the `idle` feed every second (`Idle.cs`, `@source idle helper:idle 1000`): `pc.idle_s`, seconds since the last keyboard or mouse input in the session (`GetLastInputInfo`), for the board's night mode, plus `pc.in_px` (mouse travel) and `pc.in_press` (key and button presses), counters the board uses to tell a real return from a bumped mouse. XInput gamepads count too (Windows' idle time ignores them): a button or trigger is a press, a stick past its dead zone 20 px per 100 ms. `pc.fg_full` = 1 while the foreground app runs full screen (`SHQueryUserNotificationState`), `pc.fg_exe` names the foreground app.
 

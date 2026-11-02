@@ -39,8 +39,9 @@ Every opto GPIO has a 10k pull-down, so nothing gets pressed while the chip
 boots. (That turned out not to hold in ROM download mode; see
 [the eFuse note](#keyfob-presses-during-flashing-efuse-fix).) The netlist
 ([pcb/main.ato](../pcb/main.ato)) is the source of truth;
-`python scripts/check_pins.py` checks it against
-[firmware/main/config.h](../firmware/main/config.h).
+`python scripts/check_pins.py` checks it against the firmware's `PIN_*`
+settings ([settings.md](settings.md); defaults in
+`firmware/main/settings_or_example.h`).
 
 ## Assembly notes
 
@@ -87,7 +88,8 @@ still works afterwards:
   port reboots into the ROM, which shows up as a new COM port;
   `scripts/idf_flash.py` does this);
 - the application's own USB-OTG device (CDC console, a WinUSB bulk stats
-  link, and vendor HID as the stats link's fallback and for the power button).
+  link, and HID: vendor reports as the stats link's fallback, plus the System
+  Control sleep and power-down keys).
 
 Only USB-OTG *download* is gone, which this board never used. A later PCB
 revision could move the door rows off GPIO38-42 instead.

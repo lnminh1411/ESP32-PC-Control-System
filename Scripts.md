@@ -48,6 +48,12 @@ Builds and flashes `firmware` over the native USB port hands-off: stops the ESP3
 ### make_vlw.py
 Converts a TTF/OTF font into an anti-aliased LovyanGFX VLW font as a C array (`font_*.cpp` in firmware/main). Usage: `python scripts/make_vlw.py FONT.otf SIZE NAME OUT.cpp [--extra U+F2C9]`. Located at `scripts/make_vlw.py`.
 ### layout_upload.py
-Uploads a dashboard layout JSON (format in docs/layouts.md) to the board without reflashing: serial in base64 chunks (`--port COM12`) or HTTP `PUT /layout` (`--host esp32-pc-control.local`, password from settings.h). Usage: `python scripts/layout_upload.py FILE.json --port COM12`; the board rejects invalid JSON and keeps the old layout. Located at `scripts/layout_upload.py`.
+Uploads a dashboard layout JSON (format in docs/layouts.md) to the board without reflashing: serial in base64 chunks (`--port COM12`) or HTTP `PUT /layout` (`--host esp32-pc-control.local`, password from the `OTA_PASS` environment variable, else settings.h). Usage: `python scripts/layout_upload.py FILE.json --port COM12`; the board rejects invalid JSON and keeps the old layout. Located at `scripts/layout_upload.py`.
 ### settings_doc.py
 Regenerates `docs/settings-reference.md` from `firmware/main/settings_or_example.h`: every non-secret key with its default and note, one table per section. Run it after adding or changing a setting: `python scripts/settings_doc.py`. Located at `scripts/settings_doc.py`.
+
+### panel_shot.py
+Saves one panel as a PNG: sends `shot <n>` on the board's CDC console and decodes the RGB565 canvas it streams back (GIF faces include the current frame). Usage: `python scripts/panel_shot.py 1 out.png [--port COM12] [--scale 2]`. Located at `scripts/panel_shot.py`.
+
+### readme_shots.py
+Captures every face for `docs/images/screens.png` from an elevated shell: stops the helper service, feeds the board made-up stats, cover art and a rendered title, forces each face and grabs it with `shot`, then restores the faces and the service (`--real-media` keeps the playing track). Located at `scripts/readme_shots.py`.

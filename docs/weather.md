@@ -9,7 +9,7 @@ Runs on the carrier firmware (ESP-IDF 5.5) in its own FreeRTOS task.
 ## 1. Overview & Architecture
 
 - **Home Weather Display**: Displayed on Screen 2 (Media face) whenever the host PC is off, asleep, or restarting. Shows current temperature, min/max, weather icon, wind speed/direction, US AQI, and a 3-day forecast with daily highs/lows.
-- **Dedicated Network Task**: All network transactions (Open-Meteo HTTP requests, Pushover HTTPS POSTs, MQTT processing) run in a dedicated FreeRTOS task on Core 0 (`stack = 9 KB`, 48 KB PSRAM buffer), never blocking the main loop or display rendering.
+- **Dedicated Network Task**: All weather HTTP (Open-Meteo, OpenWeather, Tomorrow.io, RainViewer, GDACS) and the Pushover HTTPS POSTs run in a dedicated FreeRTOS task on Core 0 (`stack = 9 KB`, 48 KB PSRAM buffer), never blocking the main loop or display rendering. OwnTracks MQTT runs in esp-mqtt's own task.
 - **Thread Safety**: Finished structs (`WeatherNow`, `RainAlert`) are published to the main loop under mutex. When changed, `viewsMarkDirty(-1)` is triggered from `weatherPoll()` on the main loop.
 - **Three forecast sources**: Open-Meteo (forecast, AQI, the 17-point nowcast) and, with their keys set, the minute-by-minute rain of the next hour from OpenWeather One Call 4.0 (section 11b) and Tomorrow.io (section 11d). Rain alerts use all of them, plus the radar (section 11c).
 - **SNTP Synchronization**: Once Wi-Fi connects, `board_time.cpp` starts `esp_sntp` pointing to `pool.ntp.org`. Time from the PC stats service (`pc.epoch`) only overrides time if SNTP has never synced. Forecast `utc_offset_seconds` automatically sets local timezone offset if PC stats has not provided `pc.tz_min`.

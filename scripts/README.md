@@ -6,8 +6,9 @@ Two kinds of script live here:
   Python, the only one with the `pcbnew` module. Below, `<kicad-python>`
   means that interpreter, e.g. `"C:\Program Files\KiCad\10.0\bin\python.exe"`.
 - **Plain-Python scripts** (`check_pins.py`, `gif_pack.py`,
-  `make_fit_models.py`, `render_board.py`, `export_gerbers.py`) run under
-  the system Python.
+  `make_fit_models.py`, `render_board.py`, `export_gerbers.py`, and the
+  firmware tools under [Other tools](#other-tools)) run under the system
+  Python. `idf_flash.py` runs under ESP-IDF's Python (it needs pyserial).
 
 Every script finds the board relative to its own location, so running the
 chain from a git worktree only touches that worktree's board.
@@ -158,9 +159,10 @@ changing `BOOST_H`.
 
 ### check_pins.py
 
-Checks the firmware pin map (`firmware/main/config.h`) against
-`pcb/main.ato`: every `PIN_*` must be the GPIO wired to its part pin,
-directly or through one series resistor. Run after changing either file;
+Checks the firmware pin map (the `PIN_*` settings, read the way the build
+reads them: `settings.h`, else `settings_example.h`, over the defaults in
+`settings_or_example.h`) against `pcb/main.ato`: every `PIN_*` must be the
+GPIO wired to its part pin, directly or through one series resistor. Run after changing either file;
 CI runs it on every push.
 
 ```bash
@@ -172,10 +174,82 @@ python scripts/check_pins.py
 Builds `firmware/main/gifs.bin`, the GIF pack for the board's `gifs` partition, from
 the GIFs listed in `firmware/gifs/gifs.json`: frames scaled to 240x320, one
 palette of up to 256 RGB444 colours per GIF, and only each frame's dirty rects
-stored (the cheapest cover of its changed 8-row bands by at most 8 rects),
-LZ4-HC compressed. Format in `firmware/main/gif_store.h`. Needs numpy, Pillow
-and lz4.
+stored (the cheapest cover of its changed 8-row bands by at most 8 rects).
+Frames after the first are predicted from shifted 8x8 blocks of the previous
+frame (`lossy` in `gifs.json` sets the colour error allowed, `flatten` the
+backdrop flattening, `every` keeps every Nth frame), then LZ4-HC compressed.
+It replays every frame to check the decode and refuses more than 12 GIFs,
+512 frames or 6 MB. Format in `firmware/main/gif_store.h`. Needs numpy,
+Pillow and lz4. `idf_flash.py` writes the pack to the `gifs` partition when
+it changed.
 
 ```bash
 python scripts/gif_pack.py
+```
+
+### idf_flash.py
+
+Builds the firmware (`firmware/idf.cmd build`) and flashes it over the native
+USB port, hands-off. It stops the `ESP32PcStats` service (it opens any
+Espressif COM port as its serial fallback; elevation is asked only when the
+service is not already stopped), sends a 1200-baud touch to the app's CDC
+port so the firmware reboots into the ROM downloader, waits up to 20 s for
+the ROM's USB-Serial-JTAG port, and starts the service again at the end.
+Only the images whose MD5 on the board differs (bootloader, partition table,
+app, GIF pack, from `build/flasher_args.json`) are written; nothing changed
+means just a reset. This is the only firmware update path; there is no OTA.
+
+```bash
+python scripts/idf_flash.py [--port COM12] [--no-build] [--full] [--idf coredump-info]
+```
+
+`--full` writes everything (`idf.py flash`); `--idf <action>` runs that
+`idf.py` action on the ROM port instead of flashing.
+
+### layout_upload.py
+
+Checks a `dash` layout JSON (16 KB at most) and uploads it without a reflash:
+over the USB console with `--port` (`layout begin`, `layout data <base64
+chunk>`, `layout end`), or over HTTP with `--host` (`PUT /layout`, header
+`X-OTA-Pass` from the `OTA_PASS` environment variable, else read from
+`settings.h`). See [docs/layouts.md](../docs/layouts.md).
+
+### make_vlw.py
+
+Converts a TTF/OTF font to a LovyanGFX smooth (anti-aliased) VLW font and
+writes it as a C++ byte array (`font_*.cpp`). Default charset: printable
+ASCII plus the degree and micro signs; `--extra` / `--chars` add or pick
+glyphs (Basic Multilingual Plane only).
+
+```bash
+python scripts/make_vlw.py FONT.otf SIZE NAME OUT.cpp [--extra U+00B0,U+F2C9] [--chars "0123456789:"]
+```
+
+### panel_shot.py
+
+Saves what one panel shows as a PNG: sends `shot <n>` on the board's CDC
+console and decodes the RGB565 canvas streamed back. GIF faces come back
+with the current frame under the overlay.
+
+```bash
+python scripts/panel_shot.py 1 out.png [--port COM12] [--scale 2]
+```
+
+### readme_shots.py
+
+Captures every face for `docs/images/screens.png`. Needs an elevated shell:
+it stops the helper service, feeds the board made-up stats (the same
+`@s`/`@t`/`@e` lines, plus generated cover art and a GDI-rendered title as
+`@a`/`@x`), forces each face with `face <n> <name>`, grabs it with
+`shot <n>`, then puts the faces back on auto and starts the service.
+`--real-media` keeps the track the PC is playing.
+
+### settings_doc.py
+
+Regenerates [docs/settings-reference.md](../docs/settings-reference.md)
+from `firmware/main/settings_or_example.h` only (never `settings.h`),
+skipping its secrets section. Run it after adding or changing a setting.
+
+```bash
+python scripts/settings_doc.py
 ```

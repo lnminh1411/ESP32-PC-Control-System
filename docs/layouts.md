@@ -167,7 +167,7 @@ Anti-aliased Comic Shanns Mono Nerd Font VLW bitmaps are embedded in flash:
 
 ## Available PC Stats Keys
 
-Streamed by the host PC stats service over USB HID / CDC:
+Streamed by the PC helper (`ESP32-Helper.exe`) over USB (WinUSB bulk, with vendor HID and CDC serial as fallbacks). The full list is in [host/pc_stats/README.md](../host/pc_stats/README.md) and `host/pc_stats/stats.ini`; a few common ones:
 
 | Key | Type | Description | Unit |
 |---|---|---|---|
@@ -193,9 +193,9 @@ Streamed by the host PC stats service over USB HID / CDC:
 | `claude.w_pct` | number | Claude weekly quota consumed | % |
 | `claude.s_reset_at` | text | Claude session reset time | string |
 | `claude.w_reset_at` | text | Claude weekly reset time | string |
-| `claude.plan` | text | Active AI plan / objective | string |
-| `agy.active` | text | Active Antigravity agent name | string |
-| `agy2.flash_pct` | number | Antigravity flash quota consumed | % |
+| `claude.plan` | text | Claude subscription plan (`Claude Pro`, `Claude Max`, `Claude Ultra`) | string |
+| `agy.active` | text | Antigravity account(s) signed in on a running client, or `none` | string |
+| `agy2.flash_pct` | number | Antigravity Flash quota remaining | % |
 | `agy2.flash_reset_at` | text | Antigravity flash quota reset time | string |
 | `ai.phase_name`, `ai.guard_name` | text | Local agent phase and guard state | string |
 
