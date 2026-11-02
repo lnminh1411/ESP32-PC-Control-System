@@ -205,14 +205,17 @@
 #define NIGHT_DESK_HOLD_S (30 * 60)               // someone at the desk past the idle timer holds the night off this long
 #define NIGHT_GUARD_VETO_MS 120000                // the camera can overrule real input once this often (a dim room can miss you)
 #define PRESENCE_FAST_S 10                        // s between checks while you are away and around the night's start
-#define PRESENCE_DAY_S 60                         // s between checks otherwise
+#define PRESENCE_DAY_S 10                         // s between checks otherwise
+#define PRESENCE_BACK_S 2                         // ...and while the desk rule has the displays off, to give them back (PcHwCtl's presence.minIntervalS must allow it)
 #define PRESENCE_AWAY_KM 0.20                     // phone beyond this from home = you are away
 #define PRESENCE_HOME_KM 0.18                     // ...and back only under this (a margin: no flapping at the line)
 #define PRESENCE_ACC_M 150                        // a fix vaguer than this (m) doesn't switch away / back
 #define PRESENCE_FIX_FRESH_S 120                  // someone at the desk with a fix older than this: ask the phone before alerting
 #define PRESENCE_ASK_WAIT_S 30                    // ...and alert anyway after this long without an answer
 #define PRESENCE_ALERT_REPEAT_S (10 * 60)         // alert again this often while someone stays at the desk
-#define PRESENCE_DAY_OFF_S (5 * 60)               // by day: nobody seen and no input this long = displays off (Windows), low power mode on
+#define PRESENCE_DAY_OFF_S 0                      // by day: nobody seen this long = displays off (Windows), AFK faces; 0 = at the first check
+#define PRESENCE_DAY_IDLE_S 10                    // ...and no input this long (someone typing is in the chair, whatever the camera says)
+#define PRESENCE_DAY_LOW_S (5 * 60)               // ...and low power mode (PC only) after nobody this long: each switch moves every process
 #define PRESENCE_AWAY_IDLE_S (5 * 60)             // input while away gives the displays back until this long without input
 #define PUSHOVER_EMERGENCY_RETRY_S 60             // emergency priority: Pushover repeats the alert this often (minimum 30)
 #define PUSHOVER_EMERGENCY_EXPIRE_S 3600          // ...for this long, or until acknowledged

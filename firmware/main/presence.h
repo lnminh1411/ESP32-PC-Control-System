@@ -3,8 +3,9 @@
 // Is someone at the desk, and what follows from it (docs/power-and-night.md).
 // The camera check is PcHwCtl's, about 3.5 s each; the helper runs one every
 // `!pres <s>` seconds and answers in the text stat pc.present, "<n> <yes|no|unknown>
-// <why> <conf %>", n counting the checks. Every PRESENCE_DAY_S at home,
-// PRESENCE_FAST_S while the phone is away or night mode asks (presenceWatch).
+// <why> <conf %>", n counting the checks. Every PRESENCE_DAY_S at home
+// (PRESENCE_BACK_S while the desk rule has the displays off), PRESENCE_FAST_S
+// while the phone is away or night mode asks (presenceWatch).
 //
 // Phone beyond PRESENCE_AWAY_KM of home: PC displays off, on again when it is
 // back within PRESENCE_HOME_KM. Input on the PC while away gives them back
@@ -17,11 +18,13 @@
 // than PRESENCE_FIX_FRESH_S is checked with the phone first: an alert for
 // someone coming home to a stale fix helps nobody.
 //
-// At home outside the night window: nobody seen and no input for
-// PRESENCE_DAY_OFF_S, nothing keeping the display on (pc.disp_req): Windows'
-// own display off (`!mon power all sleep`, no DDC/CI), and low power mode on,
-// PC only (Process Lasso; PC LEDs, board panels and status LED unchanged),
-// unless something holds sleep (nightSleepHold; tried again at each check).
+// At home outside the night window: nobody seen (at the first check,
+// PRESENCE_DAY_OFF_S) and no input for PRESENCE_DAY_IDLE_S, nothing keeping
+// the display on (pc.disp_req): Windows' own display off (`!mon power all
+// sleep`, no DDC/CI) and the AFK faces. Nobody for PRESENCE_DAY_LOW_S: low
+// power mode on, PC only (Process Lasso; PC LEDs, board panels and status LED
+// unchanged), unless something holds sleep (nightSleepHold; tried again at
+// each check).
 // Someone seen, input, the PC going off or the phone coming home: displays
 // back, and low power mode off if this turned it on. Unknown (too dark, camera
 // busy) changes nothing anywhere.

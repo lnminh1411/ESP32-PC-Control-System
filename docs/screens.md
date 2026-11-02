@@ -8,8 +8,8 @@ The stats in this image are made up; the layout is real.*
 On its auto view (`view 1 pc`, `view 2 media`, `view 3 ai`; a fresh board
 starts all three on `metrics` until a view is saved) each panel shows a set
 of faces and picks one from the PC's state. Night mode shows the PC-off
-faces, and so does being away from the PC (nobody at the desk for 5 min by
-day, or the phone away without input; the clock chip then reads "AFK"):
+faces, and so does being away from the PC (nobody at the desk by day, or the
+phone away without input; the clock chip then reads "AFK"):
 
 | Panel | PC on | PC off / asleep | Restarting / updating |
 |---|---|---|---|

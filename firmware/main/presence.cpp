@@ -136,21 +136,25 @@ static void deskLowPower() {
   }
 }
 
-// By day at home: nobody seen and no input for PRESENCE_DAY_OFF_S, nothing
-// keeping the display on: Windows' display off (no DDC/CI: the monitors keep
-// their power and wake with any input) and low power mode
+// By day at home: nobody seen (PRESENCE_DAY_OFF_S, 0 = the first check) and
+// no input for PRESENCE_DAY_IDLE_S, nothing keeping the display on: Windows'
+// display off (no DDC/CI: the monitors keep their power and wake with any
+// input) and the AFK faces, checks every PRESENCE_BACK_S to give them back;
+// low power mode once nobody has been seen for PRESENCE_DAY_LOW_S
 static void deskCheck(uint32_t now) {
   if (seen == PRES_SOMEONE) { deskBack("with someone at the desk"); return; }
   if (seen != PRES_NOBODY || away || nightEngaged() || nightCovers()) return;
   if (!nobodySinceMs) nobodySinceMs = now | 1;
-  if (deskOff) { deskLowPower(); return; }
+  if (deskOff) {
+    if (now - nobodySinceMs >= PRESENCE_DAY_LOW_S * 1000UL) deskLowPower();
+    return;
+  }
   if (now - nobodySinceMs + 5000 < PRESENCE_DAY_OFF_S * 1000UL) return;   // 5 s: check timing
   float idle;
-  if (!idleKnown(&idle) || idle < PRESENCE_DAY_OFF_S || pcStat("pc.disp_req") >= 1) return;
+  if (!idleKnown(&idle) || idle < PRESENCE_DAY_IDLE_S || pcStat("pc.disp_req") >= 1) return;
   deskOff = true;
   offAtMs = now;
-  logMsg("presence: nobody at the desk for %d min, displays off", PRESENCE_DAY_OFF_S / 60);
-  deskLowPower();
+  logMsg("presence: nobody at the desk, displays off");
 }
 
 static void onCheck(int answer, int conf, const char *whyText) {
@@ -322,7 +326,7 @@ void presencePoll() {
   if (enabled) readCheck();
   displaysFollow(now);
   // off: `!pres 0`, the helper stops asking the camera
-  int every = !enabled ? 0 : away || watching ? PRESENCE_FAST_S : PRESENCE_DAY_S;
+  int every = !enabled ? 0 : away || watching ? PRESENCE_FAST_S : deskOff ? PRESENCE_BACK_S : PRESENCE_DAY_S;
   if (every == sentEvery && now - sentMs < 30000) return;
   char line[24];
   snprintf(line, sizeof line, "!pres %d\n", every);
