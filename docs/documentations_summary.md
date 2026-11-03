@@ -2,8 +2,8 @@
 
 Every Markdown doc in this repo, grouped by area. For how the board, the
 helper, PcHwCtl and LocalAIHost fit together across repos, see the system
-design doc `E:\System Architecture Documentation\ESP32 - Local LLM - PCHwCtl\ESP32-PcHwCtl-LocalLLM.md`
-(and its agent copy `ESP32-PcHwCtl-LocalLLM.agents.md` in the same folder).
+design doc `E:\System Architecture Documentation\ESP32 PC Control System\ESP32-PC-Control-System.md`
+(and its agent copy `ESP32-PC-Control-System.agents.md` in the same folder).
 Third-party READMEs under `firmware/components/lovyangfx/` and
 `firmware/vendor/esp_tinyusb/` are upstream files and are not listed.
 
