@@ -306,7 +306,7 @@
 #define HOST_NIGHT_CALM_CORES 0.3                 // a heavy exe averaging less than this ...
 #define HOST_NIGHT_CALM_S 300                     //   ... for this long is calm again (pinned again at night)
 #define HOST_NIGHT_ALWAYS ""                      // exes night mode keeps pinned even while heavy (comma list, e.g. searchindexer,tiworker); they still hold sleep
-#define HOST_NIGHT_HEAVY_IGNORE "svchost,msmpeng"  // heavy exes that don't hold sleep (comma list): service hosts summed over dozens of instances never calm down; real work holds through a power request
+#define HOST_NIGHT_HEAVY_IGNORE "svchost,msmpeng,pchwctl,msedgewebview2"  // heavy exes that don't hold sleep (comma list): service hosts summed over dozens of instances never calm down, PcHwCtl (its camera checks) and WebView2 hosts are always busy; real work holds through a power request
 #define HOST_HWCTL_PIPE "PcHwCtl"                 // named pipe of the RGB / fan service (!hw)
 #define HOST_HWCTL_TIMEOUT_MS 2000                // its reply timeout
 #define HOST_LOCALAI_PIPE "LocalAIHost"           // named pipe of the local model service (!ai)

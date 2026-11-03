@@ -308,6 +308,18 @@ static void netAverage() {
   netAvg += (v - netAvg) / 60;   // polled every second
 }
 
+// A hold reason without its numbers ("msedgewebview2.exe 1.0 busy" ->
+// "msedgewebview2.exe  busy"): the log names a new holder, not each new load
+static bool sameHold(const char *a, const char *b) {
+  for (;;) {
+    while (*a && ((*a >= '0' && *a <= '9') || *a == '.')) a++;
+    while (*b && ((*b >= '0' && *b <= '9') || *b == '.')) b++;
+    if (*a != *b) return false;
+    if (!*a) return true;
+    a++, b++;
+  }
+}
+
 // While engaged, in the window, no wake being checked: sleep (never hibernate;
 // that waits for the phone to leave home, leaveCheck)
 static void sleepCheck(uint32_t now) {
@@ -319,7 +331,7 @@ static void sleepCheck(uint32_t now) {
   if (inactive < SLEEP_MS && !nobody) { lastHold[0] = 0; return; }
   char why[64];
   sleepHold(why, sizeof why);
-  if (strcmp(why, lastHold)) {
+  if (!sameHold(why, lastHold)) {
     if (*why) logMsg("night: sleep held, %s", why);
     else if (*lastHold) logMsg("night: sleep no longer held");
     snprintf(lastHold, sizeof lastHold, "%s", why);
