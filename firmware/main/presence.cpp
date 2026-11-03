@@ -24,6 +24,7 @@
 static volatile int seen = PRES_UNKNOWN, confPct;
 static volatile uint32_t checks, checkedMs;
 static char why[12] = "-";
+static volatile bool inRoom;             // the last answer: someone, but in the room zone (counted as nobody)
 static int lastN = -1;                   // pc.present's count
 static int nobodyRun;                    // checks in a row that saw nobody
 
@@ -157,8 +158,14 @@ static void deskCheck(uint32_t now) {
   logMsg("presence: nobody at the desk, displays off");
 }
 
-static void onCheck(int answer, int conf, const char *whyText) {
+// room: PcHwCtl saw someone, but in its "room" zone (beyond ~1.6 m), already
+// turned into PRES_NOBODY: walking past or in bed is not at the desk, so the
+// desk, night and intruder rules take it as nobody. desk and near (leaning
+// back, standing behind the chair) stay someone, and so does "-" (too dim to
+// judge the distance: the old answer)
+static void onCheck(int answer, int conf, const char *whyText, bool room = false) {
   uint32_t now = nowMs();
+  inRoom = room;
   seen = answer;
   confPct = conf;
   snprintf(why, sizeof why, "%s", whyText);
@@ -170,14 +177,18 @@ static void onCheck(int answer, int conf, const char *whyText) {
 }
 
 static void readCheck() {
-  char text[40], word[8], whyText[12];
+  char text[48], word[8], whyText[12], zone[8] = "-";
   int n, conf;
   pcTextCopy("pc.present", text, sizeof text);
-  if (sscanf(text, "%d %7s %11s %d", &n, word, whyText, &conf) != 4 || n == lastN) return;
+  // "<n> <yes|no|unknown> <why> <conf %> [<desk|near|room|->]": an older helper sends no zone
+  if (sscanf(text, "%d %7s %11s %d %7s", &n, word, whyText, &conf, zone) < 4 || n == lastN) return;
   bool first = lastN < 0;   // an answer from before a board restart: shown, not acted on
   lastN = n;
   int answer = !strcmp(word, "yes") ? PRES_SOMEONE : !strcmp(word, "no") ? PRES_NOBODY : PRES_UNKNOWN;
-  if (!first) { onCheck(answer, conf, whyText); return; }
+  bool room = answer == PRES_SOMEONE && !strcmp(zone, "room");
+  if (room) answer = PRES_NOBODY;
+  if (!first) { onCheck(answer, conf, whyText, room); return; }
+  inRoom = room;
   seen = answer;
   confPct = conf;
   snprintf(why, sizeof why, "%s", whyText);
@@ -349,8 +360,9 @@ void presenceStatus(char *buf, uint32_t size) {
   if (!enabled) { snprintf(buf, size, "off"); return; }
   if (pcState() != PC_ON) { snprintf(buf, size, "PC not on"); return; }
   if (!checkedMs) { snprintf(buf, size, "no check yet"); return; }
-  char what[40], ago[16];
+  char what[48], ago[16];
   if (seen == PRES_SOMEONE) snprintf(what, sizeof what, "someone at the desk (%d %%)", (int)confPct);
+  else if (seen == PRES_NOBODY && inRoom) snprintf(what, sizeof what, "someone in the room, not at the desk (%d %%)", (int)confPct);
   else if (seen == PRES_NOBODY) snprintf(what, sizeof what, "nobody at the desk");
   else snprintf(what, sizeof what, "can't tell (%s)", why);
   uint32_t age = (nowMs() - checkedMs) / 1000;
@@ -367,11 +379,12 @@ void presenceConsole(const char *a1, const char *a2) {
   if (a1 && a2 && !strcmp(a1, "away")) {
     simAway = !strcmp(a2, "on") ? 1 : !strcmp(a2, "off") ? 0 : -1;
   } else if (a1 && a2 && !strcmp(a1, "seen")) {
-    onCheck(!strcmp(a2, "yes") ? PRES_SOMEONE : !strcmp(a2, "no") ? PRES_NOBODY : PRES_UNKNOWN, 50, "test");
+    bool room = !strcmp(a2, "room");   // someone, in the room zone: nobody at the desk
+    onCheck(!strcmp(a2, "yes") ? PRES_SOMEONE : !strcmp(a2, "no") || room ? PRES_NOBODY : PRES_UNKNOWN, 50, "test", room);
   } else if (a1 && a2 && !strcmp(a1, "dry")) {
     dry = !strcmp(a2, "on");
   } else if (a1) {
-    logMsg("presence: usage presence [on | off | away on|off|auto | seen yes|no|unknown | dry on|off]");
+    logMsg("presence: usage presence [on | off | away on|off|auto | seen yes|no|room|unknown | dry on|off]");
     return;
   }
   char st[96];

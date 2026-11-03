@@ -3,7 +3,8 @@
 // Is someone at the desk, and what follows from it (docs/power-and-night.md).
 // The camera check is PcHwCtl's, about 3.5 s each; the helper runs one every
 // `!pres <s>` seconds and answers in the text stat pc.present, "<n> <yes|no|unknown>
-// <why> <conf %>", n counting the checks. Every PRESENCE_DAY_S at home
+// <why> <conf %> [zone]", n counting the checks; someone seen in PcHwCtl's
+// "room" zone (beyond ~1.6 m) counts as nobody at the desk everywhere. Every PRESENCE_DAY_S at home
 // (PRESENCE_BACK_S while the desk rule has the displays off), PRESENCE_FAST_S
 // while the phone is away or night mode asks (presenceWatch).
 //

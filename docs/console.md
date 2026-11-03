@@ -11,7 +11,7 @@ One per line on the USB CDC console or the CH343 UART (`help` lists them):
 | `shot <1\|2\|3>` | Screenshot of a panel, streamed as base64 on the CDC port |
 | `pcsim <on\|off\|auto>` | Pretend the PC is on or off (LED, faces, backlights), for testing |
 | `door <1-4> [ms]`, `reset`, `reboot` | Press a door button; pulse the motherboard reset (**resets the PC**); restart the board itself (the PC is not touched) |
-| `presence [on\|off \| away on\|off\|auto \| seen yes\|no\|unknown \| dry on\|off]` | The last desk check; `on\|off` turns detection on or off (saved); the other options are tests: fake the phone, fake a check, log lock, alert, posts, displays and sleep instead of doing them ([power-and-night.md](power-and-night.md#presence-at-the-desk)) |
+| `presence [on\|off \| away on\|off\|auto \| seen yes\|no\|room\|unknown \| dry on\|off]` | The last desk check; `on\|off` turns detection on or off (saved); the other options are tests: fake the phone, fake a check (`room`: someone seen away from the desk), log lock, alert, posts, displays and sleep instead of doing them ([power-and-night.md](power-and-night.md#presence-at-the-desk)) |
 | `screenshot` | Post the PC's desktop to #logging for 5 min, then auto-delete (needs the service + a #logging webhook) |
 | `mon <bright <n\|all> <0-100> \| power all on\|off>` | The PC's monitors, numbered from the left: brightness over DDC/CI, power through each model's method plus Windows' display off for `all` (done by PcHwCtl, which the PC service forwards to) |
 | `hw <ping \| rgb ... \| fan ...>`, `ai <status \| model ... \| restart <name> \| ...>` | Raw PcHwCtl (RGB, fans) and LocalAIHost commands, relayed by the PC service |

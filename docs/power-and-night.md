@@ -120,11 +120,20 @@ user-session agent opens the camera for 1-2 s, runs YOLO11n on the NPU, and
 answers in about 3.5 s. The frame stays in its memory and is zeroed after
 inference. The board sets the pace with `!pres <seconds>`, the helper runs the
 checks one at a time and reports `pc.present` ("<n> <yes|no|unknown> <why>
-<conf %>"), and `presence.cpp` holds the rules. A check can answer `unknown`:
+<conf %> <zone>"), and `presence.cpp` holds the rules. A check can answer `unknown`:
 `dark` (luma under 10, nobody seen), `camera` (in use, unplugged, privacy off),
 `agent` (nobody signed in), `pipe` (PcHwCtl down). Unknown never triggers
 anything, and never counts as nobody. The PC Control tab shows the last answer
 in its Presence field.
+
+`zone` is PcHwCtl's distance class for the person seen, from its depth model:
+`desk` (in the chair or right behind it, ~0.5-0.8 m), `near` (~0.8-1.6 m),
+`room` (further), `-` (nobody, or too dim to judge the distance). Someone seen
+only in `room` counts as **nobody at the desk** for every rule: walking past or
+lying in bed doesn't keep the displays on by day, hold the night off, or start
+the intruder rule. `desk`, `near` and `-` count as someone, as before. The
+status reads `someone in the room, not at the desk`; `presence seen room`
+fakes one. A helper without the zone field still works (four fields).
 
 **Presence on/off** (PC Control button, console `presence on|off`, kept in NVS,
 on by default) stops the camera checks. While off no answer counts: night mode
