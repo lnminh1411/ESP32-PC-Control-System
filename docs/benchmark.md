@@ -18,13 +18,13 @@ holds 153 KB of PSRAM (its frame and its decoded rects).
 
 | Memory | Used | Notes |
 |---|---|---|
-| SRAM (512 KB) | 397 KB (78%) | heap 366 KB; lowest free ever: 50 KB, largest block 31 KB |
-| PSRAM (7680 KB) | 1887 KB (25%) | lowest free ever 5024 KB, largest free block 4992 KB |
-| Flash (16 MB) | fully partitioned | one 8.9 MB app slot (no OTA), GIF pack 6 MB, FAT 1 MB, NVS 20 KB, core dump 64 KB |
-| App image | 1638 KB of 9088 KB (18%) | |
-| GIF pack | 6071 KB of 6144 KB (99%) | its own `gifs` partition: 12 GIFs, 472 frames |
+| SRAM (512 KB) | 399 KB (78%) | heap 364 KB; lowest free ever: 49 KB, largest block 31 KB |
+| PSRAM (7680 KB) | 1913 KB (25%) | lowest free ever 4705 KB, largest free block 5760 KB |
+| Flash (16 MB) | fully partitioned | one 6.9 MB app slot (no OTA), GIF pack 8 MB, FAT 1 MB, NVS 20 KB, core dump 64 KB |
+| App image | 1784 KB of 7040 KB (25%) | |
+| GIF pack | 6040 KB of 8192 KB (74%) | its own `gifs` partition: 12 GIFs, 472 frames |
 | FAT /ffat | 4 KB of 972 KB (0%) | layout.json, saved text images |
-| NVS | 232 of 630 entries | 12 namespaces |
+| NVS | 237 of 630 entries | 13 namespaces |
 
 Task stacks, least ever free (bytes): main 6720, discord 5528, httpd 4904,
 websocket 4652, weather 3472, TinyUSB 2808, flush 2716, wifi 2568, gifdec 2200,
@@ -200,11 +200,11 @@ before and decoded as they play (the later sections cover each step).
 
 | | Before | First pack, 27 frames | 42 frames | Now, 472 frames |
 |---|---|---|---|---|
-| GIF pack | none | 532 KB | 793 KB | 6071 KB |
-| Frames in PSRAM | ~3.8 MB with tables and buffers | 1780 KB | 2722 KB | none: 38 KB of tables, 153 KB a panel showing a GIF |
-| PSRAM used, `bench usage`, three 75 KB panel buffers in the older columns | 5179 KB | 3428 KB | 4374 KB | 1887 KB |
-| PSRAM free, lowest ever without bench buffers | 1438 KB | 3426 KB | 2456 KB | 5024 KB |
-| App image | 1650 KB | 2178 KB | 2439 KB | 1638 KB |
+| GIF pack | none | 532 KB | 793 KB | 6040 KB |
+| Frames in PSRAM | ~3.8 MB with tables and buffers | 1780 KB | 2722 KB | none: 57 KB of tables, 153 KB a panel showing a GIF |
+| PSRAM used, `bench usage`, three 75 KB panel buffers in the older columns | 5179 KB | 3428 KB | 4374 KB | 1913 KB |
+| PSRAM free, lowest ever without bench buffers | 1438 KB | 3426 KB | 2456 KB | 4705 KB |
+| App image | 1650 KB | 2178 KB | 2439 KB | 1784 KB |
 | FAT /ffat | 4508 KB | 4 KB | 4 KB | 4 KB |
 | Decoding at boot | 4.5 MB read from FAT | 329 ms to inflate | 498 ms to inflate | none, 13-15 ms a frame as it plays |
 
@@ -218,7 +218,7 @@ is decoded.
 | One panel | 19.5 fps (17.7-20.5) | 1.04x nominal | 1.9 MB/s, 41% |
 | Two panels | 17.8 fps | 1.12x nominal | 70% |
 | Three panels | 12.7 fps | 1.67x nominal | 73% |
-| Now, one panel | 19.9 fps | 1.0x nominal | 1.3-2.0 MB/s, 34% |
+| Now, one panel | 19.9 fps | 1.0x nominal | 1.4-1.7 MB/s, 32% |
 | Now, two panels | 19.6 fps | 1.03x nominal | 74% |
 | Now, three panels | 14.9 fps | 1.34x nominal | 82% |
 
@@ -229,7 +229,7 @@ panels at 20 fps need about 5.7 MB/s, more than the 40 MHz wire carries.
 The app slots then grew from 3 MB to 5 MB each and FAT shrank from 9.9 MB
 to 5.9 MB (`partitions.csv`, flashed over USB). The same image filled 48%
 of its slot instead of 79%, leaving about 2.6 MB for more GIFs. The table is
-now one 8.9 MB app slot, FAT 1 MB and a 6 MB `gifs` partition with 73 KB free.
+now one 6.9 MB app slot, FAT 1 MB and an 8 MB `gifs` partition with 2.1 MB free.
 
 ### Frames inflated as they play
 
@@ -487,3 +487,18 @@ At 26 ms `gifdec` lost time to main drawing the other two panels, so one panel
 came out slower than two. Now shifted pixels fill first, then one pass moves the
 rest both ways between `gifRaw` and `gifCur`, and `gifdec` runs above main. Three
 panels fell from 15.9 to 14.9 fps.
+
+## An 8 MB GIF partition, 2026-11-04
+
+Evil Neuro made way for a second Firefly dance, Anna Yanami and Alya. The fourteen
+came to 6845 KB, past the 6 MB partition, so the app slot went from 8.9 MB to
+6.9 MB (the app is 1.8 MB) and the `gifs` partition to 8 MB; FAT moved below it
+and formatted itself on the first boot. The caps went to 16 GIFs (the played list
+holds a bit each) and 768 frames. Anna (7 frames, 80 KB) and Alya (71 frames,
+725 KB) came out again, leaving twelve GIFs in 6040 KB; the second Firefly is
+20 frames, 189 KB. The 8 MB partition stays, with 2.1 MB free.
+
+With the PC idle, one panel plays at 19.9 fps. Measured again while the PC ran a
+benchmark, two runs each: one panel 17.7-17.8 fps, two 14.8-18.7, three
+16.7-16.9, bus 77-83% throughout. The earlier two and three panel rows above
+were taken with the PC idle.

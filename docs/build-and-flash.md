@@ -21,7 +21,7 @@ flashes over the ROM's USB-Serial-JTAG port and starts the service again.
 It writes only what changed: esptool's `verify_flash` compares the board's
 MD5 of each image in `build/flasher_args.json` (bootloader, partition table,
 app, GIF pack) first, then `write_flash` gets the ones that differ, so a code
-change writes the 1.7 MB app in about 20 s and leaves the 6 MB GIF pack
+change writes the 1.8 MB app in about 20 s and leaves the 6 MB GIF pack
 (about 80 s) alone. Nothing changed: it just restarts the board. `--full`
 writes everything (`idf.py flash`), as does a failed MD5 check.
 `--idf coredump-info` runs any other `idf.py` action on that port instead.
@@ -52,9 +52,9 @@ cover art, in place of the made-up one.
 
 ## Changing the GIFs
 
-The GIFs have their own 6 MB `gifs` partition. Their sources are in
+The GIFs have their own 8 MB `gifs` partition. Their sources are in
 `firmware/gifs/`, and `firmware/gifs/gifs.json` lists them (`every` keeps
-every Nth frame, up to 12 GIFs and 512 frames in all; the partition is the
+every Nth frame, up to 16 GIFs and 768 frames in all; the partition is the
 real limit, about 13 KB a frame). The board plays them in random cycles:
 it keeps a list of what played, so every GIF comes once a cycle, and a GIF stays
 away for at least half the GIFs when a new cycle starts. After changing either, regenerate the
@@ -85,8 +85,6 @@ so a full pack takes a few minutes.
 The `*_20fps.gif` files are made from the originals kept beside them with the
 RIFE models from FluidFrames, which only give the midpoint of two frames:
 
-- `evil_neuro_20fps.gif` is all 10 frames of `evil_neuro.gif` plus a RIFE Lite
-  midpoint after each, last-to-first pair included.
 - `neuro_20fps.gif` is every third frame of `neuro.gif` (33 frames at 30 fps)
   plus a RIFE midpoint after each, last-to-first pair included. In the source
   the tail jumps sides from one frame to the next, so RIFE cuts it in a few
@@ -113,6 +111,9 @@ RIFE models from FluidFrames, which only give the midpoint of two frames:
 - `teto_pppp_20fps.gif` is the 28 frames of `teto_pppp.gif` at their own 80 and 160
   ms, with RIFE in-betweens on the 50 ms grid, 5% past filling the height. The crop
   follows the figure, eased over the loop.
+- `firefly2_20fps.gif` is the 10 frames of `firefly2.gif` plus a RIFE midpoint
+  after each, last-to-first pair included. It fills the width on white, legs off
+  the bottom as in the source.
 
 ## Other uploads
 

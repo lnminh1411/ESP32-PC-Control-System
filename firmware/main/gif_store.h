@@ -26,7 +26,7 @@
 #include "config.h"
 
 #define MAX_DIRTY_RECTS 8
-#define MAX_GIF_SEGS 12
+#define MAX_GIF_SEGS 16   // s_played holds one bit each
 #define GIF_BLOCK 8                     // px, and the GIF's w and h are multiples of it
 #define GIF_SKIP 255                    // index: take the shifted pixel from the frame before
 

@@ -89,8 +89,8 @@ Building and flashing: [build-and-flash.md](build-and-flash.md). Settings:
 16 MB QIO flash, octal PSRAM at 40 MHz with ECC (below), Wi-Fi, lwIP and the
 VFS select tables kept in internal RAM, a 20 s task watchdog that panics, ELF
 core dumps to flash, and the console on the CH343 UART at 3 Mbaud. The
-partition table (`firmware/partitions.csv`) has one 8.9 MB factory app slot,
-a 1 MB FAT partition (`/ffat`: layout, pinned text), a 6 MB `gifs` partition
+partition table (`firmware/partitions.csv`) has one 6.9 MB factory app slot,
+a 1 MB FAT partition (`/ffat`: layout, pinned text), an 8 MB `gifs` partition
 for the GIF pack and a 64 KB core dump partition. There is no OTA: firmware goes
 over USB (`idf_flash.py`). Moving `/ffat` reformats it.
 
