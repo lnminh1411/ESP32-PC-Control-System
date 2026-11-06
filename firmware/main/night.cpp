@@ -682,11 +682,13 @@ void nightPoll() {
 
   if (engaged) {
     // input after engaging: idle shorter than the time since (3 s for the
-    // feed's lag), so a start by hand right after using the PC still holds
+    // feed's lag), so a start by hand right after using the PC still holds.
+    // Not while a sleep or hibernate is under way: Windows resets its idle
+    // time going down, which read as input (lights up, then a false wake)
     float since = (now - engagedMs) / 1000.0f;
     if (!enabled && !manual) disengage("turned off");
     else if (!inWindow && !manual) disengage("06:00");
-    else if (idleKnown && idle + 3 < since && !wokeMs && !hibReqMs) {
+    else if (idleKnown && idle + 3 < since && !wokeMs && !hibReqMs && !sleepReqMs) {
       guardPx0 = pcStat("pc.in_px");
       guardPress0 = pcStat("pc.in_press");
       guardChecks = presenceChecks();
