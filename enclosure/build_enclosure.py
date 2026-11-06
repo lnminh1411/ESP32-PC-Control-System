@@ -59,7 +59,8 @@ BLOCK_H = 6.0                      # block top = PCB underside
 Z_BOT = BLOCK_H
 Z_TOP = Z_BOT + BT
 X_FRONT = 57.5                     # shroud edge, block front face
-BLK_X0, BLK_Y0, BLK_Y1 = 7.0, 0.0, 139.2
+BLK_X0, BLK_Y0, BLK_Y1 = 7.0, -4.2, 139.2   # fills the lid: 0.2 mm inside its south (-4.4) and north (139.4) walls
+Y_MID = 139.2 / 2                  # mirror line (fixed, so the mirror does not move with the block)
 TAIL_W, TAIL_DEPTH = 2.4, 3.2      # pad well width and depth below the block top
 SCREW_D, SCREW_DEPTH = 2.1, 5.0    # pilot hole for a self-tapping M2.5
 
@@ -145,8 +146,10 @@ for hx, hy in HOLES:
 
 # ============================================================== MASK
 MY0, MY1 = -(M_CLR + M_RIM), PANEL_PITCH * 2 + PANEL_W + M_CLR + M_RIM
-MZ0, MZ1 = PANEL_ZBOT - M_CLR - M_RIM, PANEL_ZTOP + M_CLR + M_RIM
-MX0 = X_FRONT + 0.1                # rims run back to the shroud face: closes the space behind the panels
+M_RIM_BOT = 4.0                    # bottom rim, thick enough for the backplate peg sockets
+MZ0, MZ1 = PANEL_ZBOT - M_CLR - M_RIM_BOT, PANEL_ZTOP + M_CLR + M_RIM
+MX0 = PANEL_X0                     # rims stop at the panel PCB rear; the backplate closes the rest
+TAB_X0 = X_FRONT + 0.1             # lid tabs reach back to the shroud face
 MX1 = PANEL_X0 + M_DEPTH
 MX2 = MX1 + M_PLATE
 plate = box(MX1, MX2, MY0, MY1, MZ0, MZ1)
@@ -231,12 +234,33 @@ MP_D, MP_L = 3.0, 5.0              # mask peg dia / length
 MP_Z = PANEL_ZTOP + M_CLR + 2.0
 MASK_PEG_Y = [PANEL_PITCH * i + PANEL_W + (PANEL_PITCH - PANEL_W) / 2 for i in range(2)]
 for py in MASK_PEG_Y:
-    mask = mask.union(box(MX0, MX2, py - 3.0, py + 3.0, PANEL_ZTOP + M_CLR, MP_Z + 2.0))   # full depth: grows from the bed
-    mask = mask.union(cylx(MX0 - MP_L, MX0 + 0.01, py, MP_Z, MP_D))
+    mask = mask.union(box(TAB_X0, MX2, py - 3.0, py + 3.0, PANEL_ZTOP + M_CLR, MP_Z + 2.0))   # full depth: grows from the bed
+    mask = mask.union(cylx(TAB_X0 - MP_L, TAB_X0 + 0.01, py, MP_Z, MP_D))
     lid = lid.union(box(L_X1 - LW - 3.4, L_X1 - LW + 0.01, py - 3.0, py + 3.0, MP_Z - 3.0, L_ZT - LW + 0.01))
-    lid = lid.cut(cylx(MX0 - MP_L - 0.4, L_X1 + 0.1, py, MP_Z, MP_D + 2 * PEG_CLR))
+    lid = lid.cut(cylx(TAB_X0 - MP_L - 0.4, L_X1 + 0.1, py, MP_Z, MP_D + 2 * PEG_CLR))
 
-parts = {"block": block, "mask": mask, "lid": lid}
+# ============================================================== BACKPLATE
+# 2.54 mm plate between the shroud face and the panel PCBs: the panels are clamped
+# between it and the mask, so they cannot slide out. Big window behind each panel
+# (4 mm border) clears the rear components; a slot passes each panel header.
+# Pegs on its front face drop into sockets in the mask's gap ribs and bottom rim.
+BP_X0, BP_X1 = X_FRONT + 0.1, PANEL_X0 - 0.1
+BP_BORDER, BP_TOP = 4.0, 6.0       # side/bottom border, top band above the window
+backplate = box(BP_X0, BP_X1, MY0, MY1, MZ0, MZ1)
+for yc in PANEL_YC:
+    backplate = backplate.cut(box(BP_X0 - 1, BP_X1 + 1, yc - PANEL_W / 2 + BP_BORDER, yc + PANEL_W / 2 - BP_BORDER,
+                                  PANEL_ZBOT + BP_BORDER, PANEL_ZTOP - BP_TOP))
+    backplate = backplate.cut(box(BP_X0 - 1, BP_X1 + 1, yc - 10.8, yc + 10.8,
+                                  PANEL_ZTOP - BP_TOP - 0.1, Z_TOP + SOCKET_PIN_Z + 1.27 + 0.33))   # header slot
+for py in MASK_PEG_Y:
+    backplate = backplate.cut(box(BP_X0 - 1, BP_X1 + 1, py - 3.3, py + 3.3, PANEL_ZTOP + M_CLR - 0.3, MZ1 + 1))   # lid tab
+BP_PEG_D, BP_PEG_L = 2.0, 3.5
+BP_PEGS = [(py, z) for py in MASK_PEG_Y for z in (PANEL_ZTOP - 20.0, PANEL_ZBOT + 20.0)] +           [(yc, PANEL_ZBOT - M_CLR - M_RIM_BOT / 2) for yc in PANEL_YC]
+for py, pz in BP_PEGS:
+    backplate = backplate.union(cylx(BP_X1 - 0.01, BP_X1 + BP_PEG_L, py, pz, BP_PEG_D))
+    mask = mask.cut(cylx(MX0 - 0.2, MX0 + BP_PEG_L + 0.3, py, pz, BP_PEG_D + 2 * PEG_CLR))
+
+parts = {"block": block, "mask": mask, "lid": lid, "backplate": backplate}
 
 # ============================================================== PCB + components (visual and fit checks)
 comps = {}
@@ -288,6 +312,30 @@ def say(t):
     report.append(t)
     print(t)
 
+# KiCad's board Y axis points down; with Z up the model above is a mirror image of
+# the real board. Mirror everything once about y = Y_MID so prints, checks and the
+# viewer match the real hardware (USB-C end now at high Y).
+def unmirror(w):
+    return w.mirror("XZ", basePointVector=(0, Y_MID, 0))
+parts = {n: unmirror(p) for n, p in parts.items()}
+comps = {n: (unmirror(sl), c, g) for n, (sl, c, g) in comps.items()}
+
+# ---- guard: handedness against the real board (top silkscreen, x right, USB-C at the top)
+def ctr(sl):
+    return sl.val().BoundingBox().center
+_usb, _scr, _fob = ctr(comps["USB-C 1"][0]), ctr(comps["Socket J3"][0]), ctr(comps["Keyfob PCB"][0])
+_mid_x = sum(p[0] for p in BOARD) / len(BOARD)
+assert _usb.y > Y_MID and _scr.x > _mid_x and _fob.y < Y_MID and _fob.x < _mid_x,     "model is mirrored or rotated against the real board: USB-C must be at high Y, screens at high X, keyfob notch low-left"
+J3_TO_USB = _usb.y - _scr.y
+assert J3_TO_USB > 0, "J3 (first screen) must sit on the USB-C side of the board"
+
+# ---- guard: parts that nest must fill each other (gap per side, mm)
+L_IN = {"west": L_X0 + LW, "south": L_Y0 + LW, "north": L_Y1 - LW}
+FIT_GAPS = {"west": BLK_X0 - L_IN["west"], "south": BLK_Y0 - L_IN["south"], "north": L_IN["north"] - BLK_Y1,
+            "east": X_FRONT - L_X1}
+for side, g in FIT_GAPS.items():
+    assert -0.01 <= g <= 0.5, f"block vs lid {side} gap {g:.2f} mm: block must fill the lid (0..0.5 mm)"
+
 say("== interference: component vs printed part (mm^3, want ~0) ==")
 bad = 0
 for cname, (cs, _, grp) in comps.items():
@@ -303,10 +351,13 @@ for cname, (cs, _, grp) in comps.items():
             say(f"  HIT  {cname:16s} x {pname:6s} {v:8.1f}")
 say(f"  {bad} interferences")
 say("== part vs part (mm^3, want ~0) ==")
-for a, b in (("block", "lid"), ("block", "mask"), ("lid", "mask")):
+for a, b in [(a, b) for i, a in enumerate(parts) for b in list(parts)[i + 1:]]:
     v = parts[a].intersect(parts[b]).val().Volume()
     say(f"  {a} x {b}: {v:.2f}")
-say(f"== joints == lid->block {len(LID_PEGS)} x {LP_D} dia pegs, mask->lid {len(MASK_PEG_Y)} x {MP_D} dia pegs, {PEG_CLR} mm radial clearance")
+say(f"== joints == lid->block {len(LID_PEGS)} x {LP_D} dia pegs, mask->lid {len(MASK_PEG_Y)} x {MP_D} dia pegs, backplate->mask {len(BP_PEGS)} x {BP_PEG_D} dia pegs, {PEG_CLR} mm radial clearance")
+say("== guards ==")
+say("  handedness OK: USB-C at the top, screens on the right, keyfob notch bottom-left (as the top silkscreen)")
+say("  block in lid, gap per side: " + ", ".join(f"{k} {v:.2f}" for k, v in FIT_GAPS.items()) + " mm")
 say("== glass-side protrusion ==")
 say(f"  mask face {MX2 - X_FRONT:.1f} mm past the shroud edge (limit {GLASS_LIMIT:.0f}); bare panels {PANEL_X1 - X_FRONT:.1f} mm")
 say(f"  panel rear parts reach x={PANEL_X0 - 2.5:.2f}, shroud edge x={X_FRONT:.2f}, clearance {PANEL_X0 - 2.5 - X_FRONT:.2f} mm")
@@ -340,6 +391,7 @@ orient = {
     "block": lambda p: p,
     "lid": lambda p: p.rotate((0, 0, 0), (1, 0, 0), 180),
     "mask": lambda p: p.rotate((0, 0, 0), (0, 1, 0), 90),
+    "backplate": lambda p: p.rotate((0, 0, 0), (0, 1, 0), -90),   # back face on the bed, pegs up
 }
 say("== print files (out/print, mm) ==")
 for n, p in parts.items():
@@ -362,11 +414,61 @@ def mesh(solid, tol=0.05):
     return base64.b64encode(struct.pack(f"<{len(pos)}f", *pos)).decode()
 
 data = []
-colours = {"block": "#1f2023", "mask": "#26272a", "lid": "#2c2d31"}   # all printed in black
+colours = {"block": "#1f2023", "mask": "#26272a", "lid": "#2c2d31", "backplate": "#323338"}   # all printed in black
 for n, p in parts.items():
     data.append({"name": n, "group": "enclosure", "colour": colours[n], "pos": mesh(p)})
 for n, (s, c, g) in comps.items():
     data.append({"name": n, "group": g, "colour": c, "pos": mesh(s, 0.1)})
 with open(os.path.join(OUT, "viewer_data.json"), "w") as f:
-    json.dump({"parts": data, "panel_front": MX2, "x_front": X_FRONT}, f)
+    json.dump({"parts": data, "panel_front": MX2, "x_front": X_FRONT, "y_mirror": 2 * Y_MID}, f)
+# ============================================================== 1:1 paper template
+# Print at 100 % and lay the real PCB on it, components up, before sending files out.
+# Holes, pads and the outline must line up and the labels read normally: this catches
+# a mirrored or mis-sized model for the price of a sheet of paper.
+def fy(y):
+    return 2 * Y_MID - y
+PAD = 12.0
+VX0, VX1 = L_X0 - PAD, PANEL_X1 + PAD + 14
+_ys = [fy(v) for v in (L_Y0, L_Y1, MY0, MY1)]
+VY0, VY1 = min(_ys) - PAD - 20, max(_ys) + PAD   # 20 mm at the bottom for the notes
+W, H = VX1 - VX0, VY1 - VY0
+def sx(x): return x - VX0
+def sy(y): return VY1 - fy(y)            # SVG y grows downward
+def rect(x0, x1, y0, y1, **a):
+    ya, yb = sorted((sy(y0), sy(y1)))
+    return f'<rect x="{sx(x0):.2f}" y="{ya:.2f}" width="{x1 - x0:.2f}" height="{yb - ya:.2f}" {" ".join(f'{k.replace("_", "-")}="{v}"' for k, v in a.items())}/>'
+el = []
+el.append(rect(L_X0, L_X1, L_Y0, L_Y1, fill="none", stroke="#888", stroke_width=0.3, stroke_dasharray="2 1"))
+el.append(rect(BLK_X0, X_FRONT, BLK_Y0, BLK_Y1, fill="#eef0f3", stroke="#333", stroke_width=0.3))
+el.append('<polygon points="' + " ".join(f"{sx(x):.2f},{sy(y):.2f}" for x, y in BOARD) + '" fill="none" stroke="#0a7a3a" stroke-width="0.4"/>')
+for x, y in PADS:
+    el.append(f'<circle cx="{sx(x):.2f}" cy="{sy(y):.2f}" r="0.5" fill="#c33"/>')
+for x, y in HOLES:
+    el.append(f'<circle cx="{sx(x):.2f}" cy="{sy(y):.2f}" r="1.35" fill="none" stroke="#000" stroke-width="0.3"/>'
+              f'<path d="M{sx(x)-2:.2f},{sy(y):.2f}h4M{sx(x):.2f},{sy(y)-2:.2f}v4" stroke="#000" stroke-width="0.15"/>')
+for yc in PANEL_YC:
+    el.append(rect(PANEL_X0, PANEL_X1, yc - PANEL_W / 2, yc + PANEL_W / 2, fill="none", stroke="#2b6cb0", stroke_width=0.3))
+t = lambda x, y, txt, size=3.0, anchor="start": f'<text x="{sx(x):.2f}" y="{sy(y):.2f}" font-size="{size}" font-family="Arial" text-anchor="{anchor}">{txt}</text>'
+el.append(t(MOD_XC, L_Y0 - 2.0, "USB-C END", 3.0, "middle"))
+el.append(t(24.0, 112.0, "KEYFOB", 3.0, "middle"))
+el.append(t(PANEL_X1 + 1.5, PANEL_YC[0], "J3", 3.0))
+el.append(t(PANEL_X1 + 1.5, PANEL_YC[1], "J4", 3.0))
+el.append(t(PANEL_X1 + 1.5, PANEL_YC[2], "J5", 3.0))
+notes = ["TOP VIEW 1:1. Print at 100 % (no fit-to-page), then measure the 50 mm bar.",
+         "Lay the PCB on it, components up: holes, pads and outline must line up.",
+         "Red = pads, cross = M2.5 hole, grey = block, dashed = lid, blue = screens."]
+for i, line in enumerate(notes):
+    el.append(f'<text x="{sx(L_X0):.2f}" y="{H - 14 + i * 3.6:.2f}" font-size="2.4" font-family="Arial">{line}</text>')
+bx, by = sx(L_X0), H - 18.5
+el.append(f'<path d="M{bx:.2f},{by:.2f}h50" stroke="#000" stroke-width="0.4"/><path d="M{bx:.2f},{by-1.5:.2f}v3M{bx+50:.2f},{by-1.5:.2f}v3" stroke="#000" stroke-width="0.3"/>')
+el.append(f'<text x="{bx + 52:.2f}" y="{by + 0.9:.2f}" font-size="2.4" font-family="Arial">50 mm</text>')
+svg = (f'<svg xmlns="http://www.w3.org/2000/svg" width="{W:.1f}mm" height="{H:.1f}mm" viewBox="0 0 {W:.2f} {H:.2f}">'
+       '<rect width="100%" height="100%" fill="#fff"/>' + "".join(el) + "</svg>")
+open(os.path.join(PRINT, "template_1to1.svg"), "w", encoding="utf-8").write(svg)
+html = (f'<!doctype html><title>Enclosure template</title><style>@page{{size:A4;margin:8mm}}body{{margin:0}}</style>{svg}')
+open(os.path.join(PRINT, "template_1to1.html"), "w", encoding="utf-8").write(html)
+say(f"== paper template == out/print/template_1to1.svg ({W:.0f} x {H:.0f} mm, fits A4)")
+with open(os.path.join(OUT, "checks.txt"), "w", encoding="utf-8") as f:
+    f.write("\n".join(report) + "\n")
+
 print("done")

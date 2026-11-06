@@ -1,10 +1,16 @@
 == interference: component vs printed part (mm^3, want ~0) ==
   0 interferences
 == part vs part (mm^3, want ~0) ==
-  block x lid: 0.00
   block x mask: 0.00
-  lid x mask: 0.00
-== joints == lid->block 4 x 2.0 dia pegs, mask->lid 2 x 3.0 dia pegs, 0.15 mm radial clearance
+  block x lid: 0.00
+  block x backplate: 0.00
+  mask x lid: 0.00
+  mask x backplate: 0.00
+  lid x backplate: 0.00
+== joints == lid->block 4 x 2.0 dia pegs, mask->lid 2 x 3.0 dia pegs, backplate->mask 7 x 2.0 dia pegs, 0.15 mm radial clearance
+== guards ==
+  handedness OK: USB-C at the top, screens on the right, keyfob notch bottom-left (as the top silkscreen)
+  block in lid, gap per side: west 0.20, south 0.20, north 0.20, east 0.00 mm
 == glass-side protrusion ==
   mask face 9.1 mm past the shroud edge (limit 10); bare panels 7.9 mm
   panel rear parts reach x=57.74, shroud edge x=57.50, clearance 0.24 mm
@@ -13,10 +19,13 @@
   lid 52.3 wide, roof z=26.6, outer y -6.0..141.0; air in south, out north
   128 through-hole pads -> 48 wells (2.4 wide, 3.2 deep); 4 screw pilots 2.1 dia x 5.0 deep
 == part sizes (x y z mm) ==
-  block    50.5 x  139.2 x   6.0  vol   39.7 cm^3  (~10 g at 20 percent PETG)
-  mask     14.0 x  153.3 x  76.6  vol   14.5 cm^3  (~4 g at 20 percent PETG)
+  block    50.5 x  143.4 x   6.0  vol   41.0 cm^3  (~10 g at 20 percent PETG)
+  mask     14.0 x  153.3 x  79.6  vol   14.5 cm^3  (~4 g at 20 percent PETG)
   lid      52.3 x  147.0 x  26.6  vol   26.0 cm^3  (~7 g at 20 percent PETG)
+  backplate    6.0 x  153.3 x  76.6  vol   11.1 cm^3  (~3 g at 20 percent PETG)
 == print files (out/print, mm) ==
-  block    50.5 x  139.2 x   6.0 tall
-  mask     76.6 x  153.3 x  14.0 tall
+  block    50.5 x  143.4 x   6.0 tall
+  mask     79.6 x  153.3 x  14.0 tall
   lid      52.3 x  147.0 x  26.6 tall
+  backplate   76.6 x  153.3 x   6.0 tall
+== paper template == out/print/template_1to1.svg (98 x 202 mm, fits A4)

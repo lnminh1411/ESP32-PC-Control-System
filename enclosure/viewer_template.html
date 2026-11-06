@@ -48,7 +48,7 @@ const shroud = new THREE.Mesh(new THREE.BoxGeometry(110, 220, 3),
 shroud.position.set(DATA.x_front - 55, 70, -1.5); scene.add(shroud);
 
 const groups = {};
-const EXPLODE = {block: [0,0,0], mask: [38,0,0], base: [0,0,0], lid: [0,0,45], lightpipe: [0,0,28], bezel: [38,0,0], baycover: [0,0,70], cradle: [0,0,18],
+const EXPLODE = {block: [0,0,0], mask: [38,0,0], backplate: [12,0,0], base: [0,0,0], lid: [0,0,45], lightpipe: [0,0,28], bezel: [38,0,0], baycover: [0,0,70], cradle: [0,0,18],
                  module: [0,0,32], panel: [30,0,0], screen: [30,0,0], keyfob: [0,0,26]};
 const items = [];
 for (const p of DATA.parts) {
@@ -66,7 +66,7 @@ for (const p of DATA.parts) {
   scene.add(m); items.push(m);
   (groups[m.userData.key] = groups[m.userData.key] || []).push(m);
 }
-const labels = {block:'Plinth block', mask:'Screen mask', base:'Base tray', lid:'Lid', bezel:'Display bezel', cradle:'Keyfob cradle', baycover:'Bay cover', lightpipe:'LED light pipe',
+const labels = {block:'Plinth block', mask:'Screen mask', backplate:'Screen backplate', base:'Base tray', lid:'Lid', bezel:'Display bezel', cradle:'Keyfob cradle', baycover:'Bay cover', lightpipe:'LED light pipe',
   pcb:'PCB + parts', module:'ESP32 module', panel:'Display panels', screen:'Screens', keyfob:'Keyfob'};
 const tg = document.getElementById('tg');
 for (const k of Object.keys(labels)) {
@@ -85,6 +85,7 @@ for (const x of [20, 30, 48, 55]) for (const z of [9, 22]) {
   arrows.add(new THREE.ArrowHelper(new THREE.Vector3(0,1,0), new THREE.Vector3(x, -34, z), 24, 0x1e90ff, 6, 4));
 }
 for (const x of [18, 30]) arrows.add(new THREE.ArrowHelper(new THREE.Vector3(0,1,0), new THREE.Vector3(x, 143, 8), 22, 0x1e90ff, 6, 4));
+if (DATA.y_mirror) { arrows.scale.y = -1; arrows.position.y = DATA.y_mirror; }  // model mirrored to match the real board
 scene.add(arrows);
 document.getElementById('air').onchange = e => arrows.visible = e.target.checked;
 
@@ -100,14 +101,14 @@ document.getElementById('xray').onchange = e => {
 };
 
 // orbit
-const target = new THREE.Vector3(40, 66, 8);
-let theta = -0.9, phi = 1.0, dist = 330;
+const target = new THREE.Vector3(40, 73, 8);
+let theta = 0.9, phi = 1.0, dist = 330;
 function place() {
   cam.position.set(target.x + dist*Math.sin(phi)*Math.cos(theta), target.y + dist*Math.sin(phi)*Math.sin(theta), target.z + dist*Math.cos(phi));
   cam.lookAt(target);
 }
-const VIEWS = {iso:[-0.95,1.0,330,[40,66,8]], glass:[0.0,1.35,300,[40,66,-10]], top:[-1.5708,0.02,300,[34,66,10]],
-               back:[-1.5708,1.25,260,[34,66,8]], under:[-1.0,2.6,330,[40,66,0]]};
+const VIEWS = {iso:[0.95,1.0,330,[40,73,8]], glass:[0.0,1.35,300,[40,73,-10]], top:[-1.5708,0.02,300,[34,73,10]],
+               back:[1.5708,1.25,260,[34,73,8]], under:[1.0,2.6,330,[40,73,0]]};
 window.setView = n => { const v = VIEWS[n]; theta=v[0]; phi=v[1]; dist=v[2]; target.set(v[3][0], v[3][1], v[3][2]); place(); };
 document.querySelectorAll('[data-v]').forEach(b => b.onclick = () => setView(b.dataset.v));
 let drag = null;
