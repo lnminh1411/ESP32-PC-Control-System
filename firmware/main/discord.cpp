@@ -292,6 +292,22 @@ static int rest(const char *method, const char *path, const char *body, char *ou
   }
 
   int code = esp_http_client_get_status_code(client);
+  // Discord's proxy (envoy) failing before the API ("envoy overloaded",
+  // "upstream connect error ... before headers"): a 5xx in plain text, not
+  // JSON, so the request never reached Discord and one more try is safe,
+  // on a fresh connection (likely another edge host). Button acks lost to it
+  // showed "This interaction failed" though the click had worked.
+  if (err == ESP_OK && code >= 502 && code <= 504 && respBuf.text[0] != '{') {
+    char first[96];
+    snprintf(first, sizeof first, "%d %.80s", code, respBuf.text);
+    esp_http_client_close(client);
+    respBuf.len = 0;
+    respBuf.text[0] = 0;
+    err = esp_http_client_perform(client);
+    lastUseMs[slot] = nowMs();
+    code = err == ESP_OK ? esp_http_client_get_status_code(client) : 0;
+    logMsg("discord: %s got %s from Discord's proxy, tried again: %d", method, first, code);
+  }
   // the path without interaction tokens (long, and not for #logging)
   char shown[64];
   strlcpy(shown, path, sizeof shown);   // cut short on purpose
