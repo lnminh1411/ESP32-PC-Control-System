@@ -44,3 +44,9 @@ Notes on what is shown:
   (GPU2) load and temperature warnings stay off: that card runs the model.
   Limits and the window are set with the `pcwarn` console command and kept in
   NVS.
+- **Local AI face** shows the generation speed in tok/s while the model
+  writes. While it reads the prompt, the big number is the percent read, with
+  the reading speed, tokens read of those to read (`64k / 68k`), the time
+  left, and a bar over the whole prompt whose dim start is the part the cache
+  reuses. These come from the Local LLM status hub's `ai.pp_*` keys; a hub
+  without them gets a dimmed 0.0 with "reading prompt".

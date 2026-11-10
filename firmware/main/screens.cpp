@@ -1361,24 +1361,76 @@ static void drawLocalAi(LGFX_Sprite &c) {
 
   // ai.gen_tok_s is live only while generating (phase 4); otherwise it holds
   // the last request's speed, so the face shows 0.0 (dimmed) until the next
-  // generation starts. While the prompt is processed (phase 3) there is no
-  // live speed at all (llama-server does not report one).
+  // generation starts.
   double phaseN = pcStat("ai.phase");
   bool generating = !isnan(phaseN) && phaseN == 4.0;
   bool prompting = !isnan(phaseN) && phaseN == 3.0;
-  double tps = pcStat("ai.gen_tok_s");
-  if (!generating || isnan(tps)) tps = 0.0;
-  char tpsBuf[16];
-  snprintf(tpsBuf, sizeof(tpsBuf), "%.1f", tps);
-  c.setFont(fontDigits());
-  c.setTextColor(generating ? C_TEXT : C_DIM);
-  c.setTextDatum(lgfx::textdatum_t::top_left);
-  c.drawString(tpsBuf, 12, 70);
+  // Reading the prompt (phase 3): the hub's ai.pp_* keys (from llama-server's
+  // /slots): new = tokens to process (total less what the cache reuses),
+  // pct and eta over those. A hub without them (pp_new 0) gets the old label.
+  double ppNew = pcStat("ai.pp_new");
+  if (prompting && !isnan(ppNew) && ppNew > 0.0) {
+    double pct = pcStat("ai.pp_pct"), done = pcStat("ai.pp_done"), cached = pcStat("ai.pp_cached");
+    double ppTps = pcStat("ai.pp_tok_s"), eta = pcStat("ai.pp_eta_s");
+    if (isnan(pct)) pct = 0.0;
+    if (isnan(done)) done = 0.0;
+    if (isnan(cached) || cached < 0.0) cached = 0.0;
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%.0f%%", pct);
+    c.setFont(fontDigits());
+    c.setTextColor(C_TEXT);
+    c.setTextDatum(lgfx::textdatum_t::top_left);
+    c.drawString(buf, 12, 70);
 
-  c.setFont(fontBody());
-  c.setTextColor(C_DIM);
-  c.setTextDatum(lgfx::textdatum_t::top_right);
-  c.drawString(prompting ? "reading prompt" : "tok/s", 228, 110);
+    // right column, 84 px beside "100%": speed, tokens, time left
+    auto kTok = [](char *out, size_t cap, double n) {
+      if (n < 1000.0) snprintf(out, cap, "%.0f", n);
+      else if (n < 10000.0) snprintf(out, cap, "%.1fk", n / 1000.0);
+      else snprintf(out, cap, "%.0fk", n / 1000.0);
+    };
+    c.setTextDatum(lgfx::textdatum_t::top_right);
+    c.setFont(fontBody());
+    c.setTextColor(C_TEXT);
+    if (isnan(ppTps) || ppTps <= 0.0) snprintf(buf, sizeof(buf), "-- tok/s");
+    else snprintf(buf, sizeof(buf), "%.0f tok/s", ppTps);
+    c.drawString(buf, 228, 72);
+
+    char a[12], b[12];
+    kTok(a, sizeof a, done);
+    kTok(b, sizeof b, ppNew);
+    snprintf(buf, sizeof(buf), "%s / %s", a, b);
+    c.setFont(fontSmall());
+    c.setTextColor(C_DIM);
+    c.drawString(buf, 228, 92);
+
+    uint32_t e = (isnan(eta) || eta <= 0.0) ? 0 : (uint32_t)lround(eta);
+    if (!e) snprintf(buf, sizeof(buf), pct >= 100.0 ? "almost done" : "-- left");
+    else if (e < 60) snprintf(buf, sizeof(buf), "%lu s left", (unsigned long)e);
+    else snprintf(buf, sizeof(buf), "%lu:%02lu left", (unsigned long)(e / 60), (unsigned long)(e % 60));
+    c.drawString(buf, 228, 106);
+
+    // bar over the whole prompt: the cached part (dim), then what is read so far
+    double total = cached + ppNew;
+    drawBar(c, 12, 124, 216, 6, (float)((cached + (done < ppNew ? done : ppNew)) / total), C_PURPLE);
+    if (cached > 0.0) {
+      int cw = (int)lround(216.0 * cached / total);
+      if (cw >= 6) c.fillRoundRect(12, 124, cw, 6, 3, C_AI_PULSE_DIM);
+    }
+  } else {
+    double tps = pcStat("ai.gen_tok_s");
+    if (!generating || isnan(tps)) tps = 0.0;
+    char tpsBuf[16];
+    snprintf(tpsBuf, sizeof(tpsBuf), "%.1f", tps);
+    c.setFont(fontDigits());
+    c.setTextColor(generating ? C_TEXT : C_DIM);
+    c.setTextDatum(lgfx::textdatum_t::top_left);
+    c.drawString(tpsBuf, 12, 70);
+
+    c.setFont(fontBody());
+    c.setTextColor(C_DIM);
+    c.setTextDatum(lgfx::textdatum_t::top_right);
+    c.drawString(prompting ? "reading prompt" : "tok/s", 228, 110);
+  }
 
   // Step n / max: the local agent harness (Bridge job) step counter; plain
   // chat requests have no steps, the hub then reports 0 / 0
