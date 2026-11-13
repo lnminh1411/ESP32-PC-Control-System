@@ -43,17 +43,19 @@ category dropdown; picking one swaps the controls below it:
 | Tab | Shows | Controls |
 |---|---|---|
 | Door | Door remote state | Door 1-4 |
-| PC Control | PC state, board Wi-Fi, night and low power mode, power plan, CPU, RAM, both GPUs, drive, fans, network, presence at the desk | Wake PC, Lock; Sleep, Hibernate, Restart, Shut down, PC reset (these ask first); Screenshot; Night auto on/off; Start / End night now; Low power on/off; Presence on/off |
+| PC Control | PC state, board Wi-Fi, night and low power mode, power plan, CPU, RAM, both GPUs, drive, fans, network, presence at the desk | Wake PC, Lock; Sleep, Hibernate, Restart, Shut down, PC reset (these ask first); Screenshot; Presence, Auto night and Low power on/off; Night now / End night |
 | PC Case RGB LEDs | PcHwCtl's RGB rules and brightness | Mode, color and brightness dropdowns; target group (All, Motherboard, RAM) |
 | PC Fan Control | Each fan's speed, rpm and temperature, the RX 6600 and RTX 3050 included (with Zero RPM) | Target (All fans, Case fans, one case fan, RX 6600, RTX 3050), speed (held 5/15/60 min) and curve dropdowns; a Zero RPM dropdown in place of the curve for a GPU; Auto releases the override |
-| PC Monitor Control | Each monitor's power and brightness, numbered from the left | Target (one monitor or all), brightness in 10 % steps (DDC/CI); All screens on / off (each monitor's power method in PcHwCtl, plus Windows' display off) |
-| Local Agent Control | Local model, phase, context, auto-unload, keep awake, services, VRAM | Load, unload, force unload and reload (both ask first), warm cache; context 128K / 256K, auto-unload, keep awake; restart the gateway (asks first), Web UI or proxy; guard check |
-| ESP32 Board Control | Uptime, Wi-Fi, internal RAM, PSRAM, last restart reason, status LED | Status LED max brightness (10 % steps) and on/off (both saved); Restart board (asks first), Refresh weather, Reconnect Discord |
+| PC Monitor Control | Each monitor's power and brightness, numbered from the left | Target (one monitor or all), brightness in 10 % steps (DDC/CI); a power button per monitor ("Mon 2: on", a press switches it through its power method in PcHwCtl); All on / All off (each monitor's power method, plus Windows' display off). With more than 4 monitors the per-monitor buttons give way to Target on / off |
+| Local Agent Control | Local model, phase, context, auto-unload, keep awake, services, VRAM | Load, unload, force unload and reload (both ask first), warm cache, guard check; context (shows the next load's size, a press switches 128K / 256K), auto-unload, keep awake; restart (↻) the gateway (asks first), Web UI or proxy |
+| ESP32 Board Control | Uptime, Wi-Fi, internal RAM, PSRAM, last restart reason, status LED | Status LED max brightness (10 % steps) and on/off (both saved); Reboot board (asks first), Weather ↻ (refresh), Discord ↻ (reconnect) |
 | ESP32 Display Control | Each panel's screen and backlight | A screen dropdown per panel (each with an Auto option; saved like `face`, so a pinned screen stays across restarts); a brightness dropdown for all panels (5 % steps + Off, saved) |
 
-Every tab has a Refresh and, on an `/actions` panel, a Close. The Display tab
-fills all five of Discord's action rows with dropdowns, so Refresh there is an
-entry inside the category dropdown instead of a button.
+Refresh and, on an `/actions` panel, Close are the last entries of the
+category dropdown. Buttons come three to a row (Door: two), each label padded
+with U+2800 blanks to the widest one on the panel, so every button has the same
+width: a row fits a phone, and a row that still wraps keeps its columns. A
+toggle that is on shows a ✓ and is blurple.
 
 A button that asks first swaps the controls for "Yes, ..." and Cancel. On the
 #control panel that prompt is left alone for 60 s (`CONTROL_PANEL_CONFIRM_MS`):

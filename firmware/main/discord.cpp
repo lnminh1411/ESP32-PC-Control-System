@@ -494,6 +494,50 @@ static cJSON *addRow(cJSON *comps) {
   return rowComps;
 }
 
+// Panel buttons: Discord sizes a button by its label, so every label gets
+// padded to the widest one on the panel and rows hold three. A row then fits
+// a phone, and one that still wraps keeps its columns. The padding is U+2800
+// (braille blank): Discord trims spaces, not that.
+struct Btn { char label[32]; char id[20]; int style; };
+struct BtnList {
+  Btn b[15];
+  int n = 0;
+  void add(const char *label, const char *id, int style) {
+    if (n >= (int)(sizeof b / sizeof b[0])) return;
+    snprintf(b[n].label, sizeof b[n].label, "%s", label);
+    snprintf(b[n].id, sizeof b[n].id, "%s", id);
+    b[n++].style = style;
+  }
+};
+static const int BTN_PER_ROW = 3;
+static const int BTN_PAD_PER_10 = 10;    // blanks per 10 characters a label is short of the widest
+
+static int labelChars(const char *s) {   // UTF-8 code points
+  int n = 0;
+  for (; *s; s++) n += ((uint8_t)*s & 0xC0) != 0x80;
+  return n;
+}
+
+static void addButtonGrid(cJSON *comps, const BtnList &l, int perRow = BTN_PER_ROW) {
+  int widest = 0;
+  for (int i = 0; i < l.n; i++) {
+    int c = labelChars(l.b[i].label);
+    if (c > widest) widest = c;
+  }
+  cJSON *r = nullptr;
+  for (int i = 0; i < l.n; i++) {
+    if (i % perRow == 0 && !(r = addRow(comps))) return;
+    int pad = ((widest - labelChars(l.b[i].label)) * BTN_PAD_PER_10 + 5) / 10;
+    char label[160];
+    size_t len = 0;
+    for (int k = 0; k < pad / 2 && len + 3 < sizeof label; k++) { memcpy(label + len, "\xE2\xA0\x80", 3); len += 3; }
+    len += snprintf(label + len, sizeof label - len, "%s", l.b[i].label);
+    for (int k = 0; k < pad - pad / 2 && len + 3 < sizeof label; k++) { memcpy(label + len, "\xE2\xA0\x80", 3); len += 3; }
+    label[len < sizeof label ? len : sizeof label - 1] = 0;
+    addButton(r, label, l.b[i].id, l.b[i].style);
+  }
+}
+
 // Screen picker for one panel: a select menu with the override marked
 static void addFaceSelect(cJSON *comps, int panel) {
   cJSON *row = addRow(comps);
@@ -674,35 +718,34 @@ static const char *aiField(const char *key, char *buf, size_t size) {
   return buf;
 }
 
-static void addAiRows(cJSON *comps, cJSON *r) {
+// 12 buttons, 4 rows. Context is one button that switches to the other size.
+static void addAiButtons(BtnList &l) {
   char idle[8], keep[8], want[8];
   aiField("idle", idle, sizeof idle);
   aiField("keep", keep, sizeof keep);
   aiField("want", want, sizeof want);
   if (atoi(idle) > 0) aiIdleOn = atoi(idle);
 
-  addButton(r, "Load", "ai_load", 3);
-  addButton(r, "Unload", "ai_unload", 2);
-  addButton(r, "Force unload", "ai_force", 4);
-  addButton(r, "Reload", "ai_reload", 4);
-  addButton(r, "Warm cache", "ai_warm", 2);
+  l.add("Load", "ai_load", 3);
+  l.add("Unload", "ai_unload", 2);
+  l.add("Reload", "ai_reload", 4);
+  l.add("Force unload", "ai_force", 4);
+  l.add("Warm cache", "ai_warm", 2);
+  l.add("Guard check", "ai_guard", 2);
 
-  r = addRow(comps);
-  addButton(r, "Ctx 128K", "ai_ctx_default", !strcmp(want, "128k") ? 1 : 2);
-  addButton(r, "Ctx 256K", "ai_ctx_heavy", !strcmp(want, "256k") ? 1 : 2);
-  char label[40];
-  if (!idle[0] || !strcmp(idle, "-")) snprintf(label, sizeof label, "Auto-unload: ?");
-  else if (atoi(idle) == 0) snprintf(label, sizeof label, "Auto-unload: off");
-  else snprintf(label, sizeof label, "Auto-unload: %s min", idle);
-  addButton(r, label, "ai_idle", 2);
-  snprintf(label, sizeof label, "Keep awake: %s", keep[0] && strcmp(keep, "-") ? keep : "?");
-  addButton(r, label, "ai_keep", 2);
+  bool heavy = !strcmp(want, "256k"), normal = !strcmp(want, "128k");   // unknown: a press asks for 128K
+  l.add(heavy ? "Context 256K" : normal ? "Context 128K" : "Context ?", normal ? "ai_ctx_heavy" : "ai_ctx_default", 1);
+  char label[32];   // auto-unload after this many idle minutes
+  if (!idle[0] || !strcmp(idle, "-")) snprintf(label, sizeof label, "Unload: ?");
+  else if (atoi(idle) == 0) snprintf(label, sizeof label, "Unload: off");
+  else snprintf(label, sizeof label, "Unload: %.4sm", idle);
+  l.add(label, "ai_idle", 2);
+  bool awake = !strcmp(keep, "on");
+  l.add(awake ? "\xE2\x9C\x93 Keep awake" : keep[0] && strcmp(keep, "-") ? "Keep awake" : "Keep awake ?", "ai_keep", awake ? 1 : 2);
 
-  r = addRow(comps);
-  addButton(r, "Restart gateway", "ai_gw", 4);
-  addButton(r, "Restart Web UI", "ai_webui", 2);
-  addButton(r, "Restart proxy", "ai_proxy", 2);
-  addButton(r, "Guard check", "ai_guard", 2);
+  l.add("Gateway \xE2\x86\xBB", "ai_gw", 4);     // U+21BB: restart
+  l.add("Web UI \xE2\x86\xBB", "ai_webui", 2);
+  l.add("Proxy \xE2\x86\xBB", "ai_proxy", 2);
 }
 
 // Fan tab (PcHwCtl via the PC, same relay as RGB). A speed pick is an
@@ -810,6 +853,35 @@ static void addMonRows(cJSON *comps) {
   monTargetLabel(t, sizeof t);
   snprintf(ph, sizeof ph, "Brightness for %s", t);
   addRgbSelect(comps, "mon_bright", ph, MON_BRIGHT, RGB_N(MON_BRIGHT));
+}
+
+// mon.<n>.power: 1 on, 0 off, -1 or missing unknown
+static int monPower(int n) {
+  char k[24];
+  snprintf(k, sizeof k, "mon.%d.power", n);
+  float p = pcStat(k);
+  return isnan(p) || p < 0 ? -1 : p >= 1 ? 1 : 0;
+}
+
+// Power buttons, two rows: one per monitor ("Mon 2: on", a press switches
+// it) and All on / All off. With more than 4 monitors there is no room, so
+// the on / off pair works on the target picked above instead.
+static void addMonButtons(BtnList &l) {
+  int n = monCount();
+  if (n + 2 <= 2 * BTN_PER_ROW) {
+    for (int i = 1; i <= n; i++) {
+      int p = monPower(i);
+      char label[24], id[16];
+      snprintf(label, sizeof label, "Mon %d: %s", i, p > 0 ? "on" : p == 0 ? "off" : "?");
+      snprintf(id, sizeof id, "mon_pw_%d", i);
+      l.add(label, id, p > 0 ? 3 : 2);
+    }
+    l.add("All on", "mon_on", 3);
+    l.add("All off", "mon_off", 4);
+  } else {
+    l.add("Target on", "mon_ton", 3);
+    l.add("Target off", "mon_toff", 4);
+  }
 }
 
 static void addField(cJSON *fields, const char *name, const char *value) {
@@ -1048,9 +1120,10 @@ static void buildEmbed(cJSON *embed, const char *footerText, bool standing) {
 }
 
 static void confirmRow(cJSON *comps, const char *label, const char *id, int style) {
-  cJSON *r1 = addRow(comps);
-  addButton(r1, label, id, style);
-  addButton(r1, "Cancel", "refresh", 2);
+  BtnList l;
+  l.add(label, id, style);
+  l.add("Cancel", "refresh", 2);
+  addButtonGrid(comps, l);
 }
 
 static void buildComponents(cJSON *data, PanelView view, bool standing) {
@@ -1061,15 +1134,15 @@ static void buildComponents(cJSON *data, PanelView view, bool standing) {
     case PANEL_CONFIRM_RESTART: confirmRow(comps, "Yes, restart", "restart_confirm", 4); return;
     case PANEL_CONFIRM_SHUTDOWN: confirmRow(comps, "Yes, shut down", "shutdown_confirm", 4); return;
     case PANEL_CONFIRM_HIBERNATE: confirmRow(comps, "Yes, hibernate", "hibernate_confirm", 2); return;
-    case PANEL_CONFIRM_REBOOT: confirmRow(comps, "Yes, restart the board", "reboot_confirm", 4); return;
+    case PANEL_CONFIRM_REBOOT: confirmRow(comps, "Yes, restart board", "reboot_confirm", 4); return;
     case PANEL_CONFIRM_AI_FORCE: confirmRow(comps, "Yes, force unload", "ai_force_confirm", 4); return;
     case PANEL_CONFIRM_AI_RELOAD: confirmRow(comps, "Yes, reload", "ai_reload_confirm", 4); return;
-    case PANEL_CONFIRM_AI_GATEWAY: confirmRow(comps, "Yes, restart the gateway", "ai_gw_confirm", 4); return;
+    case PANEL_CONFIRM_AI_GATEWAY: confirmRow(comps, "Yes, restart gateway", "ai_gw_confirm", 4); return;
     case PANEL_NORMAL: break;
   }
 
-  // row 1: the category dropdown; the tab's buttons follow, Refresh and
-  // Close (the /actions panel only) at the end
+  // row 1: the category dropdown, with Refresh and (the /actions panel only)
+  // Close at its end; the tab's dropdowns and buttons follow, 5 rows at most
   uint8_t cat = panelCat(standing);
   cJSON *sel = cJSON_CreateObject();
   cJSON_AddNumberToObject(sel, "type", 3);
@@ -1082,93 +1155,90 @@ static void buildComponents(cJSON *data, PanelView view, bool standing) {
     if (i == cat) cJSON_AddBoolToObject(op, "default", true);
     addItem(opts, op);
   }
+  for (int i = 0; i < (standing ? 1 : 2); i++) {
+    cJSON *op = cJSON_CreateObject();
+    cJSON_AddStringToObject(op, "label", i ? "Close" : "Refresh");
+    cJSON_AddStringToObject(op, "value", i ? "close" : "refresh");
+    addItem(opts, op);
+  }
   cJSON *catRow = addRow(comps);
-  if (!catRow) {   // no memory: the Refresh option below goes into opts, so sel must not be freed later
+  if (!catRow) {
     cJSON_Delete(sel);
     return;
   }
   cJSON_AddItemToArray(catRow, sel);
 
-  cJSON *r = addRow(comps);
-  if (!r) return;   // the tabs below delete the last row: without r that would be the one holding opts
+  static const char *const CHECK = "\xE2\x9C\x93 ";   // U+2713: a toggle that is on
+  char label[32];
+  BtnList l;
   if (cat == CAT_DOOR) {
-    addButton(r, "Door 1", "door_1", 1);
-    addButton(r, "Door 2", "door_2", 1);
-    addButton(r, "Door 3", "door_3", 1);
-    addButton(r, "Door 4", "door_4", 1);
-    r = addRow(comps);
+    // 3 rows: tabs, doors 1-2, doors 3-4
+    for (int i = 1; i <= 4; i++) {
+      char id[8];
+      snprintf(label, sizeof label, "Door %d", i);
+      snprintf(id, sizeof id, "door_%d", i);
+      l.add(label, id, 1);
+    }
+    addButtonGrid(comps, l, 2);
   } else if (cat == CAT_PC) {
-    addButton(r, "Wake PC", "wake", 3);
-    addButton(r, "Lock", "lock", 1);
-    addButton(r, "Sleep", "sleep", 2);
-    if (powerHibernateOn() != 0) addButton(r, "Hibernate", "hibernate", 2);   // hidden while the PC has it off
-    r = addRow(comps);
-    addButton(r, "Restart", "restart", 4);
-    addButton(r, "Shut down", "shutdown", 4);
-    addButton(r, "PC reset", "reset", 4);
-    r = addRow(comps);
-    addButton(r, nightEnabled() ? "Night auto: on" : "Night auto: off", "night", nightEnabled() ? 1 : 2);
-    addButton(r, nightEngaged() ? "End night now" : "Start night now", "night_now", nightEngaged() ? 3 : 2);
-    addButton(r, nightLowPowerPcOnly() ? "Low power: PC only" : nightLowPowerOn() ? "Low power: on" : "Low power: off", "lowpower",
-              nightLowPowerOn() ? 1 : 2);
-    addButton(r, presenceEnabled() ? "Presence: on" : "Presence: off", "presence", presenceEnabled() ? 1 : 2);
-    r = addRow(comps);
-    addButton(r, "Screenshot", "shot", 2);   // Refresh/Close share this row
+    // 5 rows: tabs, then 12 buttons (11 while the PC has hibernate off)
+    l.add("Wake PC", "wake", 3);
+    l.add("Lock", "lock", 1);
+    l.add("Sleep", "sleep", 2);
+    if (powerHibernateOn() != 0) l.add("Hibernate", "hibernate", 2);
+    l.add("Restart", "restart", 4);
+    l.add("Shut down", "shutdown", 4);
+    l.add("PC reset", "reset", 4);
+    l.add("Screenshot", "shot", 2);
+    snprintf(label, sizeof label, "%sPresence", presenceEnabled() ? CHECK : "");
+    l.add(label, "presence", presenceEnabled() ? 1 : 2);
+    snprintf(label, sizeof label, "%sAuto night", nightEnabled() ? CHECK : "");
+    l.add(label, "night", nightEnabled() ? 1 : 2);
+    l.add(nightEngaged() ? "End night" : "Night now", "night_now", nightEngaged() ? 3 : 2);
+    snprintf(label, sizeof label, "%s%s", nightLowPowerOn() ? CHECK : "", nightLowPowerPcOnly() ? "Low: PC" : "Low power");
+    l.add(label, "lowpower", nightLowPowerOn() ? 1 : 2);
+    addButtonGrid(comps, l);
   } else if (cat == CAT_RGB) {
-    // 5 rows: tabs, mode, color, brightness, then target group + Refresh/Close
-    cJSON_DeleteItemFromArray(comps, cJSON_GetArraySize(comps) - 1);
+    // 5 rows: tabs, mode, color, brightness, target group
     addRgbRows(comps);
-    r = addRow(comps);
     for (int i = 0; i < RGB_N(RGB_GROUPS); i++) {
       char bid[16];
       snprintf(bid, sizeof bid, "rgbg_%s", RGB_GROUPS[i].value);
-      addButton(r, RGB_GROUPS[i].label, bid, i == rgbGroup ? 1 : 2);
+      snprintf(label, sizeof label, "%s%s", i == rgbGroup ? CHECK : "", RGB_GROUPS[i].label);
+      l.add(label, bid, i == rgbGroup ? 1 : 2);
     }
+    addButtonGrid(comps, l, l.n <= BTN_PER_ROW ? BTN_PER_ROW : l.n > 5 ? 5 : l.n);   // one row: the tab has no room for two
   } else if (cat == CAT_FAN) {
-    // 5 rows: tabs, target, speed, curve, then Hold/Auto + Refresh/Close
-    cJSON_DeleteItemFromArray(comps, cJSON_GetArraySize(comps) - 1);
+    // 5 rows: tabs, target, speed, curve, Hold / Auto
     addFanRows(comps);
-    r = addRow(comps);
-    char label[24];
     snprintf(label, sizeof label, "Hold: %d min", FAN_HOLD_MIN[fanHold]);
-    addButton(r, label, "fan_hold", 2);
-    addButton(r, "Auto (release)", "fan_release", 1);
+    l.add(label, "fan_hold", 2);
+    l.add("Fans: auto", "fan_release", 1);
+    addButtonGrid(comps, l);
   } else if (cat == CAT_MON) {
-    // 4 rows: tabs, target, brightness, then Screen on/off + Refresh/Close
-    cJSON_DeleteItemFromArray(comps, cJSON_GetArraySize(comps) - 1);
+    // 5 rows: tabs, target, brightness, then power: each monitor, All on / off
     addMonRows(comps);
-    r = addRow(comps);
-    addButton(r, "All screens on", "mon_on", 3);
-    addButton(r, "All screens off", "mon_off", 4);
+    addMonButtons(l);
+    addButtonGrid(comps, l);
   } else if (cat == CAT_AI) {
-    // 5 rows: tabs, model, context/idle, services, Refresh/Close
-    addAiRows(comps, r);
-    r = addRow(comps);
+    // 5 rows: tabs, then 12 buttons
+    addAiButtons(l);
+    addButtonGrid(comps, l);
   } else if (cat == CAT_BOARD) {
-    // 4 rows: tabs, status LED brightness, LED on/off, board buttons + Refresh/Close
-    cJSON_DeleteItemFromArray(comps, cJSON_GetArraySize(comps) - 1);
+    // 4 rows: tabs, status LED brightness, then 4 buttons
     addLedSelect(comps);
-    r = addRow(comps);
-    bool ledOff = ledMode() == LED_OFF;
-    addButton(r, ledOff ? "Status LED: off" : "Status LED: on", "led_toggle", ledOff ? 2 : 1);
-    r = addRow(comps);
-    addButton(r, "Restart board", "reboot", 4);
-    addButton(r, "Refresh weather", "wx_refresh", 2);
-    addButton(r, "Reconnect Discord", "dc_reconnect", 2);
+    bool ledOn = ledMode() != LED_OFF;
+    snprintf(label, sizeof label, "%sStatus LED", ledOn ? CHECK : "");
+    l.add(label, "led_toggle", ledOn ? 1 : 2);
+    l.add("Reboot board", "reboot", 4);
+    l.add("Weather \xE2\x86\xBB", "wx_refresh", 2);
+    l.add("Discord \xE2\x86\xBB", "dc_reconnect", 2);
+    addButtonGrid(comps, l);
   } else {
-    // 5 rows max, all dropdowns: tabs, 3 screen pickers, brightness. Refresh
-    // sits in the tab dropdown instead; the /actions panel closes by itself
-    cJSON_DeleteItemFromArray(comps, cJSON_GetArraySize(comps) - 1);
-    cJSON *op = cJSON_CreateObject();
-    cJSON_AddStringToObject(op, "label", "Refresh");
-    cJSON_AddStringToObject(op, "value", "refresh");
-    addItem(opts, op);
+    // 5 rows, all dropdowns: tabs, 3 screen pickers, brightness
     for (int i = 0; i < N_PANELS; i++) addFaceSelect(comps, i);
     addBrightnessSelect(comps);
-    return;
   }
-  addButton(r, "Refresh", "refresh", 2);
-  if (!standing) addButton(r, "Close", "close", 2);
 }
 
 // 4 = reply with a new (ephemeral) panel; 7 = update the panel the button is
@@ -1526,10 +1596,37 @@ static bool monInteraction(const char *cid, cJSON *jVal, const char *id, const c
     // Windows' own display off: every display at once, any input wakes them
     snprintf(cmd, sizeof cmd, "power all %s", on ? "on" : "off");
     snprintf(what, sizeof what, "All screens %s", on ? "on" : "off");
+  } else if (!strncmp(cid, "mon_pw_", 7)) {
+    // one monitor through its own power method in PcHwCtl; on unless it is on now
+    int n = atoi(cid + 7);
+    if (n >= 1 && n <= monCount()) {
+      bool on = monPower(n) != 1;   // unknown: on, harmless for one that is lit
+      char name[64];
+      monLabel(n, name, sizeof name);
+      snprintf(cmd, sizeof cmd, "power %d %s", n, on ? "on" : "off");
+      snprintf(what, sizeof what, "%s: %s", name, on ? "on" : "off");
+    } else {
+      snprintf(lastPanelResult, sizeof lastPanelResult, "Monitor %d is gone, refreshed", n);
+    }
+  } else if (!strcmp(cid, "mon_ton") || !strcmp(cid, "mon_toff")) {
+    bool on = !strcmp(cid, "mon_ton");
+    snprintf(cmd, sizeof cmd, "power %s %s", target, on ? "on" : "off");
+    snprintf(what, sizeof what, "%s: %s", t, on ? "on" : "off");
   }
   if (cmd[0] && monCommand(cmd, what)) panelRefreshLater(standing, token);
   sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, lastPanelResult);
   return true;
+}
+
+// Close: the button, or the tab dropdown's Close entry (the /actions panel)
+static bool ixIsClose(cJSON *data) {
+  cJSON *jCid = data ? cJSON_GetObjectItem(data, "custom_id") : nullptr;
+  if (!jCid || !cJSON_IsString(jCid)) return false;
+  if (!strcmp(jCid->valuestring, "close")) return true;
+  if (strcmp(jCid->valuestring, "cat")) return false;
+  cJSON *jVals = cJSON_GetObjectItem(data, "values");
+  cJSON *jVal = jVals && cJSON_IsArray(jVals) ? cJSON_GetArrayItem(jVals, 0) : nullptr;
+  return jVal && cJSON_IsString(jVal) && !strcmp(jVal->valuestring, "close");
 }
 
 static void onInteraction(cJSON *d) {
@@ -1593,7 +1690,7 @@ static void onInteraction(cJSON *d) {
   } else if (type == 3) { // button
     cJSON *jCid = data ? cJSON_GetObjectItem(data, "custom_id") : nullptr;
     const char *cid = (jCid && jCid->valuestring) ? jCid->valuestring : "";
-    if (!strcmp(cid, "close") && !standing) {
+    if (ixIsClose(data) && !standing) {
       cJSON *r = cJSON_CreateObject();
       cJSON_AddNumberToObject(r, "type", 6); // DEFERRED_UPDATE_MESSAGE
       char *body = cJSON_PrintUnformatted(r);
@@ -1689,6 +1786,7 @@ static void onInteraction(cJSON *d) {
       return;
     }
     if (jVal && cJSON_IsString(jVal) && !strcmp(cid, "cat") && !strcmp(jVal->valuestring, "refresh")) {
+      if (panelCat(standing) == CAT_AI) aiRefreshStatus();
       snprintf(lastPanelResult, sizeof lastPanelResult, "Refreshed");
       sendPanelResponse(id, token, 7, standing, PANEL_NORMAL, "Refreshed");
       return;
@@ -1917,8 +2015,7 @@ static bool ackInteraction(cJSON *d) {
     return true;
   }
   if (type == 3) {
-    cJSON *jCid = data ? cJSON_GetObjectItem(data, "custom_id") : nullptr;
-    bool close = jCid && cJSON_IsString(jCid) && !strcmp(jCid->valuestring, "close");
+    bool close = ixIsClose(data);
     if (!close) ackButton(id, token);    // Close answers with its own deferred update
     return true;
   }
