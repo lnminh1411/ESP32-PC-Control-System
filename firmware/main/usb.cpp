@@ -1,5 +1,6 @@
 #include "usb.h"
 #include "sys.h"
+#include "vis.h"
 
 #include <esp_check.h>
 #include <esp_err.h>
@@ -42,8 +43,13 @@
     HID_USAGE(0x04), HID_LOGICAL_MIN(0x00), HID_LOGICAL_MAX(0xff), HID_REPORT_SIZE(8), HID_REPORT_COUNT(report_size), \
     HID_FEATURE(HID_DATA | HID_VARIABLE | HID_ABSOLUTE), HID_COLLECTION_END
 
+// ID 6: the text link. ID 7 (output only, same size so Windows still reports
+// 64-byte output reports): music levels for the cover border (vis.h), handled
+// in the callback so they skip the line parser and its main-loop wait.
 static const uint8_t s_hid_report_descriptor[] = {
-  TUD_HID_REPORT_DESC_GENERIC_INOUT_FEATURE(63, HID_REPORT_ID(6)),
+  TUD_HID_REPORT_DESC_GENERIC_INOUT_FEATURE(63, HID_REPORT_ID(7)
+    HID_USAGE(0x05), HID_LOGICAL_MIN(0x00), HID_LOGICAL_MAX(0xff), HID_REPORT_SIZE(8), HID_REPORT_COUNT(63),
+    HID_OUTPUT(HID_DATA | HID_VARIABLE | HID_ABSOLUTE), HID_REPORT_ID(6)),
   TUD_HID_REPORT_DESC_SYSTEM_CONTROL(HID_REPORT_ID(1))
 };
 
@@ -279,6 +285,10 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_
     report_id = buffer[0];
     data = buffer + 1;
     len = bufsize - 1;
+  }
+  if (report_id == 7) {   // [0x56 'V'][seq][6 lengths][6 volumes]
+    if (len >= 2 + VIS_CH && data[0] == 0x56) visPut(data[1], data + 2);
+    return;
   }
   if (report_id != 6) return;
   if (!s_hid_stream) return;

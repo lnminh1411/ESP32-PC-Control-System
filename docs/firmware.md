@@ -17,6 +17,7 @@ Building and flashing: [build-and-flash.md](build-and-flash.md). Settings:
 | `screens` | The faces ([screens.md](screens.md)) and which one each view picks |
 | `layout` | JSON dashboard pages from `/ffat/layout.json` ([layouts.md](layouts.md)) |
 | `pcstats`, `textimg`, `art` | Stats the PC sends; PC-rendered text bitmaps; cover art |
+| `vis` | Music border around the cover: band lengths and volumes from HID report 7, the 100 ms average, 100 ms hold and 0.5 s fall the ring shows, the `vis` command and its stream and ring counters ([screens.md](screens.md)); the flush task draws the ring |
 | `pcwarn` | PC usage warnings: 2 s averages against limits saved in NVS |
 | `pc_state`, `pc_going` | PC power state from USB events; restart/update detection; status LED |
 | `optos`, `power`, `wol` | Door presses and the reset pulse; power and screenshot requests to the PC helper (`!power`, `!shot`), with the HID System Control fallback; wake (USB remote wakeup and Wake-on-LAN: 3 bursts to ports 9 and 7, MAC learned from the PC helper) |
@@ -76,7 +77,7 @@ Building and flashing: [build-and-flash.md](build-and-flash.md). Settings:
 | Task | Core | Stack | Does |
 |---|---|---|---|
 | main | 1 | 10 KB | Draws the faces; console, USB, power, night and the rest of the main loop (20 s task watchdog) |
-| `flush` | 0 | 4 KB | Diffs each canvas against the glass, sends the dirty rectangles |
+| `flush` | 0 | 4 KB | Diffs each canvas against the glass, sends the dirty rectangles; owns the music border: pushes it every 33 ms as 4 strips (~11 KB a frame), also between diff bands, GIF rects and push chunks of a long flush |
 | `gifdec` | 1 | 3 KB | Decodes each GIF frame's rects from flash into the panel's buffers, then hands it to `flush`, which packs them to RGB444 as it sends (priority 2, above main: about 26-30% of core 1 for a 20 fps GIF) |
 | `led` | 0 | 2 KB | Status LED patterns |
 | `discord` | 0 | 10 KB | Discord gateway and REST |

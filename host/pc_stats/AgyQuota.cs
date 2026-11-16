@@ -578,6 +578,22 @@ static partial class AgyQuota {
     return null;
   }
 
+  // Test modes print to the console they were started from
+  internal static void UseParentConsole() {
+    AttachConsole(ATTACH_PARENT_PROCESS);
+    IntPtr stdHandle = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (stdHandle != IntPtr.Zero && stdHandle.ToInt64() != -1) {
+      SafeFileHandle safeHandle = new SafeFileHandle(stdHandle, false);
+      FileStream fs = new FileStream(safeHandle, FileAccess.Write);
+      StreamWriter writer = new StreamWriter(fs, Console.OutputEncoding);
+      writer.AutoFlush = true;
+      Console.SetOut(writer);
+    }
+  }
+
+  // Audio.cs logs through this half's log (the pipe under the service)
+  internal static void LogLine(string message) { Log(message); }
+
   // Under the service, log lines go over the pipe into its log.txt; the
   // standalone test modes (--agy-once, --media) keep agy_quota.log.
   static void Log(string message) {
@@ -1241,6 +1257,7 @@ static partial class AgyQuota {
   static DateTime artRecheckUntilUtc = DateTime.MinValue;
   static DateTime lastArtCheckUtc = DateTime.MinValue;
   static byte[] currentArtBytes = null;
+  static int currentArtW, currentArtH;
   static uint[] crcTable;
 
   static uint ComputeCrc32(byte[] data) {
@@ -1329,33 +1346,107 @@ static partial class AgyQuota {
     return current;
   }
 
-  static byte[] ProcessThumbnail(IRandomAccessStreamReference thumbRef) {
+  // Cover art fits a 224x144 box (224 leaves 8 px at each side of the 240 px
+  // panel), keeping the picture's shape: 144 tall up to 224:144, then 224 wide
+  // and shorter, down to 96 (2/3). Past those limits it is cut evenly: the
+  // sides of one wider than 224:96, top and bottom of one taller than 1:2.
+  // Both sides even; the board centres it in the box.
+  internal const int ArtH = 144, ArtMinH = 96, ArtMinW = 72, ArtMaxW = 224;
+
+  internal static bool ArtSizeOk(int w, int h) {
+    return h >= ArtMinH && h <= ArtH && w >= ArtMinW && w <= ArtMaxW && (w & 1) == 0 && (h & 1) == 0;
+  }
+
+  // Black bars around the picture (a 16:9 video in a 4:3 YouTube thumbnail, a
+  // 4:3 one pillarboxed in 16:9): the rows/columns of near-black at each edge,
+  // trimmed only when both sides have them, about equally, so a dark cover's
+  // own black edge stays.
+  static Rectangle TrimBars(Bitmap src) {
+    int w = src.Width, h = src.Height;
+    var full = new Rectangle(0, 0, w, h);
+    if (w < 16 || h < 16) return full;
+    var bd = src.LockBits(full, ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
+    byte[] raw = new byte[bd.Stride * h];
+    Marshal.Copy(bd.Scan0, raw, 0, raw.Length);
+    int stride = bd.Stride;
+    src.UnlockBits(bd);
+
+    Func<int, int, bool> dark = (x, y) => {
+      int o = y * stride + x * 3;
+      return raw[o] <= 24 && raw[o + 1] <= 24 && raw[o + 2] <= 24;
+    };
+    Func<int, bool> darkRow = y => { for (int x = 0; x < w; x++) if (!dark(x, y)) return false; return true; };
+    Func<int, int, int, bool> darkCol = (x, y0, y1) => { for (int y = y0; y < y1; y++) if (!dark(x, y)) return false; return true; };
+
+    int top = 0, bottom = 0;
+    while (top < h && darkRow(top)) top++;
+    if (top == h) return full;   // all dark: nothing to go by
+    while (darkRow(h - 1 - bottom)) bottom++;
+    if (!(BarsEven(top, bottom, h))) top = bottom = 0;
+
+    int left = 0, right = 0;
+    while (left < w && darkCol(left, top, h - bottom)) left++;
+    while (right < w - left && darkCol(w - 1 - right, top, h - bottom)) right++;
+    if (!(BarsEven(left, right, w))) left = right = 0;
+
+    return new Rectangle(left, top, w - left - right, h - top - bottom);
+  }
+
+  // Both bars at least 4 % of the side, within 2 % (or 2 px) of each other,
+  // and at least 40 % of the side left between them
+  static bool BarsEven(int a, int b, int side) {
+    int min = Math.Max(2, side * 4 / 100);
+    return a >= min && b >= min && Math.Abs(a - b) <= Math.Max(2, side * 2 / 100) && side - a - b >= side * 40 / 100;
+  }
+
+  static byte[] ProcessThumbnail(IRandomAccessStreamReference thumbRef, out int artW, out int artH) {
+    artW = artH = 0;
     if (thumbRef == null) return null;
     var stream = AwaitWinRt(thumbRef.OpenReadAsync());
     if (stream == null) return null;
     using (stream)
     using (var netStream = System.IO.WindowsRuntimeStreamExtensions.AsStreamForRead(stream))
-    using (var img = Image.FromStream(netStream)) {
-      int crop = Math.Min(img.Width, img.Height);
-      int x = (img.Width - crop) / 2;
-      int y = (img.Height - crop) / 2;
-      using (var bmp = new Bitmap(144, 144, PixelFormat.Format24bppRgb)) {
-        using (var g = Graphics.FromImage(bmp)) {
+    using (var img = Image.FromStream(netStream))
+    using (var src = new Bitmap(img.Width, img.Height, PixelFormat.Format24bppRgb)) {
+      using (var g = Graphics.FromImage(src)) g.DrawImage(img, new Rectangle(0, 0, img.Width, img.Height));
+      Rectangle pic = TrimBars(src);
+
+      // the picture's shape, fitted to the box and clamped (both sides even)
+      double aspect = (double)pic.Width / pic.Height;
+      int w, h;
+      if (aspect * ArtH <= ArtMaxW) {
+        h = ArtH;
+        w = Math.Max(ArtMinW, (int)Math.Round(ArtH * aspect / 2.0) * 2);
+      } else {
+        w = ArtMaxW;
+        h = Math.Max(ArtMinH, Math.Min(ArtH, (int)Math.Round(ArtMaxW / aspect / 2.0) * 2));
+      }
+      // the part of the picture with that shape, centred: past the clamps the
+      // sides (or top and bottom) are cut
+      int sw = pic.Width, sh = pic.Height;
+      if ((long)sw * h > (long)w * sh) sw = Math.Max(1, (int)Math.Round((double)sh * w / h));
+      else sh = Math.Max(1, (int)Math.Round((double)sw * h / w));
+      int sx = pic.X + (pic.Width - sw) / 2, sy = pic.Y + (pic.Height - sh) / 2;
+
+      using (var bmp = new Bitmap(w, h, PixelFormat.Format24bppRgb)) {
+        using (var g = Graphics.FromImage(bmp))
+        using (var attr = new ImageAttributes()) {
           g.InterpolationMode = InterpolationMode.HighQualityBicubic;
           g.PixelOffsetMode = PixelOffsetMode.HighQuality;
           g.SmoothingMode = SmoothingMode.HighQuality;
-          g.DrawImage(img, new Rectangle(0, 0, 144, 144), new Rectangle(x, y, crop, crop), GraphicsUnit.Pixel);
+          attr.SetWrapMode(WrapMode.TileFlipXY);   // no dark fringe from sampling past the edge
+          g.DrawImage(src, new Rectangle(0, 0, w, h), sx, sy, sw, sh, GraphicsUnit.Pixel, attr);
         }
-        var bd = bmp.LockBits(new Rectangle(0, 0, 144, 144), ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
-        byte[] raw = new byte[bd.Stride * 144];
+        var bd = bmp.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
+        byte[] raw = new byte[bd.Stride * h];
         Marshal.Copy(bd.Scan0, raw, 0, raw.Length);
         bmp.UnlockBits(bd);
 
-        byte[] rgb565 = new byte[144 * 144 * 2];
+        byte[] rgb565 = new byte[w * h * 2];
         int dest = 0;
-        for (int row = 0; row < 144; row++) {
+        for (int row = 0; row < h; row++) {
           int offset = row * bd.Stride;
-          for (int col = 0; col < 144; col++) {
+          for (int col = 0; col < w; col++) {
             byte b = raw[offset + col * 3];
             byte g_val = raw[offset + col * 3 + 1];
             byte r = raw[offset + col * 3 + 2];
@@ -1364,6 +1455,8 @@ static partial class AgyQuota {
             rgb565[dest++] = (byte)(val & 0xFF);
           }
         }
+        artW = w;
+        artH = h;
         return rgb565;
       }
     }
@@ -1446,14 +1539,19 @@ static partial class AgyQuota {
       lastArtCheckUtc = DateTime.UtcNow;
       lastTrackKey = trackKey;
       try {
-        byte[] rgb565 = ProcessThumbnail(thumbRef);
-        if (rgb565 != null && rgb565.Length == 41472) {
+        int artW, artH;
+        byte[] rgb565 = ProcessThumbnail(thumbRef, out artW, out artH);
+        if (rgb565 != null && ArtSizeOk(artW, artH) && rgb565.Length == artW * artH * 2) {
           uint crc = ComputeCrc32(rgb565);
           if (crc != 0) {
             // before the media lines that name it, so the service has it by then
-            if (crc != lastArtId) SendToService("A " + Convert.ToBase64String(rgb565) + "\n");
+            if (crc != lastArtId)
+              SendToService("A " + artW.ToString(CultureInfo.InvariantCulture) + " " +
+                            artH.ToString(CultureInfo.InvariantCulture) + " " + Convert.ToBase64String(rgb565) + "\n");
             lastArtId = crc;
             currentArtBytes = rgb565;
+            currentArtW = artW;
+            currentArtH = artH;
           }
         }
       } catch (Exception ex) {
@@ -1477,8 +1575,10 @@ static partial class AgyQuota {
 
   static void SaveCurrentArtToPng(string pngPath) {
     byte[] rgb565 = currentArtBytes;
-    if (rgb565 == null || rgb565.Length != 41472) {
-      rgb565 = new byte[41472];
+    int w = currentArtW, h = currentArtH;
+    if (rgb565 == null || !ArtSizeOk(w, h) || rgb565.Length != w * h * 2) {
+      w = h = ArtH;
+      rgb565 = new byte[w * h * 2];
     }
 
     try {
@@ -1486,13 +1586,13 @@ static partial class AgyQuota {
       if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir)) {
         try { Directory.CreateDirectory(dir); } catch { }
       }
-      using (var bmp = new Bitmap(144, 144, PixelFormat.Format24bppRgb)) {
-        var bd = bmp.LockBits(new Rectangle(0, 0, 144, 144), ImageLockMode.WriteOnly, PixelFormat.Format24bppRgb);
-        byte[] raw = new byte[bd.Stride * 144];
+      using (var bmp = new Bitmap(w, h, PixelFormat.Format24bppRgb)) {
+        var bd = bmp.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.WriteOnly, PixelFormat.Format24bppRgb);
+        byte[] raw = new byte[bd.Stride * h];
         int src = 0;
-        for (int row = 0; row < 144; row++) {
+        for (int row = 0; row < h; row++) {
           int offset = row * bd.Stride;
-          for (int col = 0; col < 144; col++) {
+          for (int col = 0; col < w; col++) {
             ushort val = (ushort)((rgb565[src] << 8) | rgb565[src + 1]);
             src += 2;
             int r5 = (val >> 11) & 0x1F;
@@ -1513,15 +1613,7 @@ static partial class AgyQuota {
   }
 
   internal static void RunMediaTest() {
-    AttachConsole(ATTACH_PARENT_PROCESS);
-    IntPtr stdHandle = GetStdHandle(STD_OUTPUT_HANDLE);
-    if (stdHandle != IntPtr.Zero && stdHandle.ToInt64() != -1) {
-      SafeFileHandle safeHandle = new SafeFileHandle(stdHandle, false);
-      FileStream fs = new FileStream(safeHandle, FileAccess.Write);
-      StreamWriter writer = new StreamWriter(fs, Console.OutputEncoding);
-      writer.AutoFlush = true;
-      Console.SetOut(writer);
-    }
+    UseParentConsole();
 
     GlobalSystemMediaTransportControlsSessionManager mgr = null;
     try {
@@ -1624,15 +1716,7 @@ static partial class AgyQuota {
   }
 
   static void RunOnce(string configPath) {
-    AttachConsole(ATTACH_PARENT_PROCESS);
-    IntPtr stdHandle = GetStdHandle(STD_OUTPUT_HANDLE);
-    if (stdHandle != IntPtr.Zero && stdHandle.ToInt64() != -1) {
-      SafeFileHandle safeHandle = new SafeFileHandle(stdHandle, false);
-      FileStream fs = new FileStream(safeHandle, FileAccess.Write);
-      StreamWriter writer = new StreamWriter(fs, Console.OutputEncoding);
-      writer.AutoFlush = true;
-      Console.SetOut(writer);
-    }
+    UseParentConsole();
 
     ConfigData cfg = LoadConfig(configPath);
     Dictionary<string, AccountState> accountsData = new Dictionary<string, AccountState>(StringComparer.OrdinalIgnoreCase);
@@ -1678,6 +1762,7 @@ static partial class AgyQuota {
     Thread mediaThread = new Thread(MediaLoop) { IsBackground = true, Name = "esp32_media" };
     mediaThread.Start();
     new Thread(IdleLoop) { IsBackground = true, Name = "esp32_idle" }.Start();
+    Audio.Start(line => SendToService(line));   // music-reactive border levels, ~30 lines/s
 
     while (true) {
       DateTime t0 = DateTime.UtcNow;

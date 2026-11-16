@@ -859,6 +859,26 @@ static void drawPcStats(LGFX_Sprite &c) {
   c.drawString(buf, 130, 296);
 }
 
+// Fade the cover's corners outside radius r to black, antialiased: the
+// music ring (display.cpp) fills them from the same centres, adding its
+// colour where the cover fades.
+static void roundCover(LGFX_Sprite &c, int x, int y, int w, int h, int r) {
+  for (int j = 0; j < r; j++)
+    for (int i = 0; i < r; i++) {
+      float d = hypotf(r - (i + 0.5f), r - (j + 0.5f));
+      float cov = r + 0.5f - d;
+      if (cov >= 1) continue;
+      if (cov < 0) cov = 0;
+      const int px[4] = {x + i, x + w - 1 - i, x + i, x + w - 1 - i};
+      const int py[4] = {y + j, y + j, y + h - 1 - j, y + h - 1 - j};
+      for (int k = 0; k < 4; k++) {
+        uint16_t v = c.readPixel(px[k], py[k]);
+        int r5 = (int)((v >> 11) * cov + 0.5f), g6 = (int)(((v >> 5) & 63) * cov + 0.5f), b5 = (int)((v & 31) * cov + 0.5f);
+        c.drawPixel(px[k], py[k], (uint16_t)(r5 << 11 | g6 << 5 | b5));
+      }
+    }
+}
+
 // Screen 2: Media playback & uptime / network face.
 static void drawMedia(LGFX_Sprite &c) {
   c.fillScreen(C_BG);
@@ -880,22 +900,32 @@ static void drawMedia(LGFX_Sprite &c) {
   bool mediaOk = (pcStat("media.ok") == 1.0) && pcText("media.title")[0];
 
   if (mediaOk) {
-    int s = hasRain ? 104 - (boxH - 44) : 144;   // a taller box takes it from the art
+    // the art's box: 224x144, a warning box takes its height from it (and the
+    // art shrinks with it); the art is centred in the box both ways
+    int s = hasRain ? 104 - (boxH - 44) : ART_BOX_H;
     int artX = 120 - s / 2;
     int artY = 8 + top;
 
     double artIdStat = pcStat("media.art_id");
     uint32_t artId = isnan(artIdStat) ? 0 : (uint32_t)artIdStat;
-    const uint16_t *artPixels = artId ? artGet(artId) : nullptr;
+    int artW = 0, artH = 0;
+    const uint16_t *artPixels = artId ? artGet(artId, &artW, &artH) : nullptr;
 
     if (artPixels) {
+      // even x and width: the music ring around it is pushed as RGB444 pairs
+      int dw = (artW * s / ART_BOX_H) & ~1, dh = artH * s / ART_BOX_H;
+      int dx = (120 - dw / 2) & ~1, dy = artY + (s - dh) / 2;
+      displaySetRing(c, dx - 8, dy - 8, dw + 16, dh + 16);
       if (!hasRain) {
-        c.pushImage(artX, artY, 144, 144, (const lgfx::swap565_t *)artPixels);
+        c.pushImage(dx, dy, artW, artH, (const lgfx::swap565_t *)artPixels);
       } else {
-        c.pushImageRotateZoom((float)artX, (float)artY, 0.0f, 0.0f, 0.0f,
-                              s / 144.0f, s / 144.0f, 144, 144,
+        float z = (float)s / ART_BOX_H;
+        c.setClipRect(dx, dy, dw, dh);   // zoomed, it can run a pixel past (dw, dh): the ring's corners assume not
+        c.pushImageRotateZoom((float)dx, (float)dy, 0.0f, 0.0f, 0.0f, z, z, artW, artH,
                               (const lgfx::swap565_t *)artPixels);
+        c.clearClipRect();
       }
+      roundCover(c, dx, dy, dw, dh, 8);   // the ring's inner radius (RING_R - RING_T)
     } else {
       // Placeholder card with music note glyph
       c.fillRoundRect(artX, artY, s, s, 6, C_CARD);
@@ -1650,6 +1680,7 @@ bool screensIsGif(Face f) {
 }
 
 void screensDraw(Face f, LGFX_Sprite &c) {
+  displaySetRing(c, 0, 0, 0, 0);   // drawMedia asks again while it shows a cover
   // The weather place (settings.h, may be non-ASCII): the PC renders it once
   // and the board keeps the image in flash for when the PC is off.
   textImgPin("wx.place");

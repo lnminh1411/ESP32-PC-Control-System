@@ -16,8 +16,8 @@ Third-party READMEs under `firmware/components/lovyangfx/` and
   repository layout.
 - [screens.md](screens.md): the faces each panel shows on its auto view for
   PC on, off and restarting, with the board-captured image; notes on quota
-  cards, PC-rendered non-Latin text, cover art, weather warning boxes and PC
-  usage warnings.
+  cards, PC-rendered non-Latin text, cover art and its music border (bands,
+  colours, smoothing, `vis`), weather warning boxes and PC usage warnings.
 - [security.md](security.md): the 2026-11-02 audit record: risks accepted on
   purpose (writable `E:\`, no flash encryption, unauthenticated local
   console), which secrets live where (key names only), and a checklist for a
@@ -79,7 +79,9 @@ Third-party READMEs under `firmware/components/lovyangfx/` and
   reference: the two processes and their pipe lines, USB transports and the
   link challenge, build and install, command-line options, the `stats.ini`
   format, Claude usage keys, Antigravity quota keys, media and cover art
-  (`@a`), the wire protocol and PC-rendered text (`!txt` / `@x`), power
+  (`@a`), the music border audio stream (WASAPI capture, `V` lines, HID
+  report 7, `--vis-test` / `--vis-bench`), the wire protocol and
+  PC-rendered text (`!txt` / `@x`), power
   relay and Wake-on-LAN target, restart/update keys from PcHwCtl, and the
   PcHwCtl relays (sensor feed, monitors, presence, screenshots, night mode).
 

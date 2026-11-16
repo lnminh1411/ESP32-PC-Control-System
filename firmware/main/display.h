@@ -65,6 +65,7 @@ struct Panel {
   float emaBytes;                   // EMA of bytes per frame
   uint32_t deferred;                // deferred frames in last 1 s window
   float gifStretch;                 // actual / nominal frame interval last window (GIF only)
+  volatile bool sentReset;          // core 1 reset sent; the music ring skips the panel until its next flush
 };
 
 extern Panel panels[N_PANELS];
@@ -76,6 +77,10 @@ void displaySubmit(int panel);      // busy=true, queue it; caller must not touc
 void displayWait(int panel);        // block (vTaskDelay(1) loop) until !busy
 void displayWaitAll();
 float busLoadPct();
+// Music border (vis.h) around the cover: the outer rect of an 8 px ring on
+// the panel drawing into c, x and w even; w 0 = none. Taken when the frame is flushed.
+void displaySetRing(LGFX_Sprite &c, int x, int y, int w, int h);
+void displayShotRing(int panel, uint16_t *buf);   // screenshot: the ring over a canvas copy
 
 // Backlights: a per-panel user setting, forced dark while the PC is idle.
 void backlightInit();

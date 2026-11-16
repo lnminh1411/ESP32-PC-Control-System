@@ -28,6 +28,9 @@
 //        ESP32-Helper.exe --list      print one PcHwCtl sensor feed snapshot and exit
 //        ESP32-Helper.exe --agy-once  poll Antigravity quota once, print it
 //        ESP32-Helper.exe --media     sample media sessions for 5 s
+//        ESP32-Helper.exe --vis-test [s]   music ring: capture + band levels here, print them (default 20 s)
+//        ESP32-Helper.exe --vis-bench [s]  music ring: report 7 at 30 Hz on the board's HID interface,
+//                                     write timing and lateness (default 60 s; works beside the service)
 //        --transport auto|winusb|hid|serial  transport mode (default: auto)
 //        --port COMn                  skip VID auto-detect, force serial COMn
 //        --no-user                    with --console: don't start the user half
@@ -346,6 +349,11 @@ partial class PcStats : ServiceBase {
     IntPtr readReport = Marshal.AllocHGlobal(64);
     IntPtr readOv = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(OVERLAPPED)));
 
+    // report + ov are shared by the main tick's Write and audio_tx's SendRaw:
+    // held per 64-byte report (fill, WriteFile, wait), so music frames slip in
+    // between the chunks of a long write
+    readonly object sendLock = new object();
+
     public bool IsFaulted {
       get { return isFaulted; }
     }
@@ -432,6 +440,11 @@ partial class PcStats : ServiceBase {
 
     public void Write(string text) {
       if (isFaulted) throw new IOException("HID link is faulted");
+      writing = true;
+      try { WriteReports(text); } finally { writing = false; }
+    }
+
+    void WriteReports(string text) {
       byte[] bytes = Utf8NoBom.GetBytes(text);
       int offset = 0;
       while (offset < bytes.Length) {
@@ -439,13 +452,52 @@ partial class PcStats : ServiceBase {
         byte[] buf = new byte[64];
         buf[0] = 0x06;   // HID_REPORT_ID_VENDOR
         Array.Copy(bytes, offset, buf, 1, count);
-        Marshal.Copy(buf, 0, report, 64);
-        SendReport();
+        lock (sendLock) {
+          if (report == IntPtr.Zero) throw new IOException("HID link is closed");
+          Marshal.Copy(buf, 0, report, 64);
+          uint w = SendReport(1000);
+          if (w != WAIT_OBJECT_0) throw new IOException("HID write timeout (" + w + ")");
+          SendPendingRaw();   // an audio report waiting goes between ours
+        }
         offset += count;
+      }
+      lock (sendLock) SendPendingRaw();
+    }
+
+    // A report SendRaw queued while Write runs. lock is not fair: audio_tx
+    // waiting on it would lose to Write's next report again and again, so it
+    // leaves the report here instead and Write sends it between its own.
+    byte[] pendingRaw;
+    readonly object pendLock = new object();
+    volatile bool writing;
+
+    // Caller holds sendLock
+    void SendPendingRaw() {
+      byte[] raw;
+      lock (pendLock) { raw = pendingRaw; pendingRaw = null; }
+      if (raw == null || report == IntPtr.Zero) return;
+      Marshal.Copy(raw, 0, report, 64);
+      try { SendReport(50); } catch (IOException) { }   // a lost level frame is not a link fault
+    }
+
+    // One raw 64-byte report (audio_tx, report 7): 0 sent, 1 timed out
+    // (cancelled), 2 failed. A failure here leaves faulting to the main Write.
+    public int SendRaw(byte[] buf, uint timeoutMs) {
+      if (writing) {   // queued for Write to send between its reports (newest wins)
+        lock (pendLock) pendingRaw = (byte[])buf.Clone();
+        return 0;
+      }
+      lock (sendLock) {
+        if (isFaulted || report == IntPtr.Zero || handle == null || handle.IsClosed) return 2;
+        Marshal.Copy(buf, 0, report, 64);
+        try { return SendReport(timeoutMs) == WAIT_OBJECT_0 ? 0 : 1; }
+        catch (IOException) { return 2; }
       }
     }
 
-    void SendReport() {
+    // Caller holds sendLock and has filled report. WAIT_OBJECT_0 when sent,
+    // else the wait result once the cancel has landed.
+    uint SendReport(uint timeoutMs) {
       ResetEvent(hEvent);
       OVERLAPPED o = new OVERLAPPED();
       o.hEvent = hEvent;
@@ -454,21 +506,23 @@ partial class PcStats : ServiceBase {
       if (!ok) {
         int err = Marshal.GetLastWin32Error();
         if (err == ERROR_IO_PENDING) {
-          uint waitRes = WaitForSingleObject(hEvent, 1000);
+          uint waitRes = WaitForSingleObject(hEvent, timeoutMs);
           uint transferred;
           if (waitRes == WAIT_OBJECT_0) {
             if (!GetOverlappedResult(handle, ov, out transferred, false)) {
               throw new IOException("HID GetOverlappedResult failed: " + Marshal.GetLastWin32Error());
             }
           } else {
-            CancelIo(handle);
-            GetOverlappedResult(handle, ov, out transferred, true);   // let the cancel land before reuse
-            throw new IOException("HID write timeout (" + waitRes + ")");
+            CancelIoEx(handle, ov);   // this write only, not the reader's
+            // let the cancel land before reuse; the write may have completed after all
+            if (GetOverlappedResult(handle, ov, out transferred, true)) return WAIT_OBJECT_0;
+            return waitRes;
           }
         } else {
           throw new IOException("HID WriteFile failed: " + err);
         }
       }
+      return WAIT_OBJECT_0;
     }
 
     public void Close() {
@@ -480,22 +534,25 @@ partial class PcStats : ServiceBase {
         try { readerThread.Join(1000); } catch (Exception) { }
         readerThread = null;
       }
-      if (handle != null && !handle.IsClosed) {
-        try { CancelIo(handle); } catch (Exception) { }
-        try { handle.Close(); } catch (Exception) { }
+      // audio_tx may be mid-report: free nothing under it
+      lock (sendLock) {
+        if (handle != null && !handle.IsClosed) {
+          try { CancelIoEx(handle, IntPtr.Zero); } catch (Exception) { }
+          try { handle.Close(); } catch (Exception) { }
+        }
+        if (hEvent != IntPtr.Zero) {
+          try { CloseHandle(hEvent); } catch (Exception) { }
+          hEvent = IntPtr.Zero;
+        }
+        if (hReadEvent != IntPtr.Zero) {
+          try { CloseHandle(hReadEvent); } catch (Exception) { }
+          hReadEvent = IntPtr.Zero;
+        }
+        if (report != IntPtr.Zero) { Marshal.FreeHGlobal(report); report = IntPtr.Zero; }
+        if (ov != IntPtr.Zero) { Marshal.FreeHGlobal(ov); ov = IntPtr.Zero; }
+        if (readReport != IntPtr.Zero) { Marshal.FreeHGlobal(readReport); readReport = IntPtr.Zero; }
+        if (readOv != IntPtr.Zero) { Marshal.FreeHGlobal(readOv); readOv = IntPtr.Zero; }
       }
-      if (hEvent != IntPtr.Zero) {
-        try { CloseHandle(hEvent); } catch (Exception) { }
-        hEvent = IntPtr.Zero;
-      }
-      if (hReadEvent != IntPtr.Zero) {
-        try { CloseHandle(hReadEvent); } catch (Exception) { }
-        hReadEvent = IntPtr.Zero;
-      }
-      if (report != IntPtr.Zero) { Marshal.FreeHGlobal(report); report = IntPtr.Zero; }
-      if (ov != IntPtr.Zero) { Marshal.FreeHGlobal(ov); ov = IntPtr.Zero; }
-      if (readReport != IntPtr.Zero) { Marshal.FreeHGlobal(readReport); readReport = IntPtr.Zero; }
-      if (readOv != IntPtr.Zero) { Marshal.FreeHGlobal(readOv); readOv = IntPtr.Zero; }
     }
 
     public void Dispose() {
@@ -513,6 +570,7 @@ partial class PcStats : ServiceBase {
     volatile bool readerStop;
     volatile bool isFaulted;
     readonly DateTime openedUtc = DateTime.UtcNow;
+    public string DevicePath;   // audio_tx pairs the HID side channel by its USB device (VisLink.cs)
 
     public bool IsFaulted {
       get { return isFaulted; }
@@ -1084,8 +1142,13 @@ partial class PcStats : ServiceBase {
   // keeps one running there. --console mode starts it as the current user.
   // Two anonymous pipes, UTF-8 lines. User half to service:
   //   F <feed> <n>   then n key=value lines (feeds: agy, media, idle; @source helper:<feed>)
-  //   A <base64>     cover art, 144x144 RGB565 big-endian (41,472 bytes)
+  //   A <w> <h> <base64>  cover art, RGB565 big-endian, w x h within 224x144
+  //                       (AgyQuota.ArtSizeOk)
   //   L <text>       log line, written to this log as "user: <text>"
+  //   V <ss><l0..l5><v0..v5> music ring frame, 30/s: seq + 6 band lengths + 6
+  //                  band volumes, 2 lowercase hex digits each (26 hex digits);
+  //                  all zero = silence, sent
+  //                  once on entering it (VisLink.cs)
   // Nothing goes the other way: the user half exits as soon as its pipes
   // break, so it never outlives us.
   class HelperFeed {
@@ -1096,6 +1159,7 @@ partial class PcStats : ServiceBase {
   static readonly object helperLock = new object();
   static readonly Dictionary<string, HelperFeed> helperFeeds = new Dictionary<string, HelperFeed>(StringComparer.OrdinalIgnoreCase);
   static byte[] helperArt;           // latest cover art from the user half
+  static int helperArtW, helperArtH;
   static StreamWriter helperOut;     // pipe to the user half, null while none is connected
   static Thread helperThread;
   static volatile bool helperStop;
@@ -1253,8 +1317,15 @@ partial class PcStats : ServiceBase {
                 helperFeeds[p[1]] = new HelperFeed { Lines = lines, ReceivedUtc = DateTime.UtcNow };
             }
           } else if (line.StartsWith("A ")) {
-            byte[] art = Convert.FromBase64String(line.Substring(2));
-            if (art.Length == 41472) lock (helperLock) { helperArt = art; }
+            string[] a = line.Split(new[] { ' ' }, 4);
+            int aw, ah;
+            if (a.Length == 4 && int.TryParse(a[1], NumberStyles.None, CultureInfo.InvariantCulture, out aw) &&
+                int.TryParse(a[2], NumberStyles.None, CultureInfo.InvariantCulture, out ah) && AgyQuota.ArtSizeOk(aw, ah)) {
+              byte[] art = Convert.FromBase64String(a[3]);
+              if (art.Length == aw * ah * 2) lock (helperLock) { helperArt = art; helperArtW = aw; helperArtH = ah; }
+            }
+          } else if (line.StartsWith("V ")) {
+            VisLine(line);
           } else if (line.StartsWith("L ")) {
             Log("user: " + line.Substring(2));
           }
@@ -2378,6 +2449,8 @@ partial class PcStats : ServiceBase {
       else if (args[i] == "--list") { ListFeed(); return; }
       else if (args[i] == "--claude" && i + 1 < args.Length) { ClaudeTest(args[++i]); return; }
       else if (args[i] == "--going") { PrintGoingTest(); return; }
+      else if (args[i] == "--vis-test") { VisTest(ArgSeconds(args, i, 20)); return; }
+      else if (args[i] == "--vis-bench") { VisBench(ArgSeconds(args, i, 60)); return; }
       else if (args[i] == "--render-text" && i + 3 < args.Length) {
         int px = int.Parse(args[++i]);
         bool bold = (args[++i] == "1");
@@ -2402,6 +2475,7 @@ partial class PcStats : ServiceBase {
         while ((l = Console.ReadLine()) != null) if (l.StartsWith("!")) HandleBoardLine(l, true);
       }) { IsBackground = true, Name = "stdin" }.Start();
       StartUserHalf();
+      StartVisTx();
       s.Run();
       StopUserHalf();
     } else {
@@ -2429,6 +2503,7 @@ partial class PcStats : ServiceBase {
     worker = new Thread(Run) { IsBackground = true, Name = "pcstats" };
     worker.Start();
     StartUserHalf();
+    StartVisTx();
   }
 
   protected override void OnStop() { stop = true; sendNow.Set(); StopUserHalf(); if (worker != null) worker.Join(5000); }
@@ -2505,7 +2580,8 @@ partial class PcStats : ServiceBase {
     return sb.ToString();
   }
 
-  static string FindHid(out SafeFileHandle matchedHandle) {
+  // usbParent: only interfaces of that USB device (UsbParentId, VisLink.cs)
+  static string FindHid(out SafeFileHandle matchedHandle, string usbParent = null) {
     matchedHandle = null;
     Guid hidGuid;
     HidD_GetHidGuid(out hidGuid);
@@ -2526,7 +2602,8 @@ partial class PcStats : ServiceBase {
           Marshal.WriteInt32(pDetail, IntPtr.Size == 8 ? 8 : 6);
           if (SetupDiGetDeviceInterfaceDetail(hDevInfo, ref ifData, pDetail, reqSize, out reqSize, IntPtr.Zero)) {
             string path = Marshal.PtrToStringUni(new IntPtr(pDetail.ToInt64() + 4));
-            if (path != null && path.IndexOf("vid_303a", StringComparison.OrdinalIgnoreCase) >= 0) {
+            if (path != null && path.IndexOf("vid_303a", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                (usbParent == null || string.Equals(UsbParentId(path), usbParent, StringComparison.OrdinalIgnoreCase))) {
               SafeFileHandle hFile = CreateFile(
                   path,
                   GENERIC_READ | GENERIC_WRITE,
@@ -2611,7 +2688,7 @@ partial class PcStats : ServiceBase {
     string path = FindWinUsb(out h);
     if (path == null || h == null) return null;
     try {
-      ILink l = new WinUsbLink(h);
+      ILink l = new WinUsbLink(h) { DevicePath = path };
       Log("connected winusb " + path);
       return l;
     } catch (Exception e) {
@@ -2676,6 +2753,7 @@ partial class PcStats : ServiceBase {
   // Cover art transfer
   class ArtTransfer {
     public string Id;
+    public int W, H;
     public string CrcHex;
     public string Base64;
     public int CharsSent;
@@ -2734,14 +2812,15 @@ partial class PcStats : ServiceBase {
 
       if (trigger && !string.IsNullOrEmpty(targetId) && targetId != "0") {
         byte[] bytes;
-        lock (helperLock) { bytes = helperArt; }   // latest cover from the user half
-        if (bytes != null) {
+        int bw, bh;
+        lock (helperLock) { bytes = helperArt; bw = helperArtW; bh = helperArtH; }   // latest cover from the user half
+        if (bytes != null && bytes.Length == bw * bh * 2) {
           uint crc = ComputeCrc32(bytes);
           string crcDec = crc.ToString(CultureInfo.InvariantCulture);
           if (crcDec == targetId || crc.ToString("x8").Equals(targetId, StringComparison.OrdinalIgnoreCase)) {
             // the panels are 12-bit: send RGB444 (2 px in 3 bytes), 25% less to move
-            byte[] packed = new byte[144 * 144 * 3 / 2];
-            for (int px = 0, o = 0; px < 144 * 144; px += 2, o += 3) {
+            byte[] packed = new byte[bw * bh * 3 / 2];   // ArtSizeOk: w even, so whole pairs
+            for (int px = 0, o = 0; px < bw * bh; px += 2, o += 3) {
               int a = (bytes[2 * px] << 8) | bytes[2 * px + 1], b = (bytes[2 * px + 2] << 8) | bytes[2 * px + 3];
               packed[o] = (byte)(((a >> 12) << 4) | ((a >> 7) & 15));
               packed[o + 1] = (byte)((((a >> 1) & 15) << 4) | (b >> 12));
@@ -2749,6 +2828,8 @@ partial class PcStats : ServiceBase {
             }
             activeArtTransfer = new ArtTransfer {
               Id = targetId,
+              W = bw,
+              H = bh,
               CrcHex = ComputeCrc32(packed).ToString("x8"),
               Base64 = Convert.ToBase64String(packed),
               CharsSent = 0,
@@ -3220,7 +3301,8 @@ partial class PcStats : ServiceBase {
       if (activeArtTransfer == null || activeArtTransfer.Done) return;
 
       if (!activeArtTransfer.SentBegin) {
-        sb.Append("@a begin ").Append(activeArtTransfer.Id).Append(" 144 144 444\n");
+        sb.Append("@a begin ").Append(activeArtTransfer.Id).Append(' ').Append(activeArtTransfer.W).Append(' ')
+          .Append(activeArtTransfer.H).Append(" 444\n");
         activeArtTransfer.SentBegin = true;
       }
 
@@ -3579,6 +3661,7 @@ partial class PcStats : ServiceBase {
           link.Poll();
           if (link.IsFaulted) {
             Log("port faulted");
+            currentLink = null;
             try { link.Close(); } catch (Exception) { }
             link = null;
           }
@@ -3784,6 +3867,7 @@ partial class PcStats : ServiceBase {
         if (link != authLink) {
           authLink = link;
           if (link != null) { LinkNew(); nextChallenge = DateTime.MinValue; }
+          currentLink = link;   // audio_tx (VisLink.cs): after LinkNew, so the old link's trust never carries over
         }
         if (link != null && !LinkTrusted()) {
           if (DateTime.UtcNow >= nextChallenge) {
@@ -3791,6 +3875,7 @@ partial class PcStats : ServiceBase {
             try { link.Write("@auth " + linkNonce + "\n"); }
             catch (Exception e) {
               Log("port lost: " + e.Message);
+              currentLink = null;
               try { link.Close(); } catch (Exception) { }
               link = null;
             }
@@ -3821,12 +3906,13 @@ partial class PcStats : ServiceBase {
               sb.Append("@t ").Append(texts[i].Key).Append(' ').Append(val).Append('\n');
             }
             sb.Append("@e ").Append(seq++).Append('\n');
-            // a whole cover (41 KB of base64) fits one tick: ~0.7 s on the HID link
+            // a 144x144 cover (41 KB of base64) fits one tick (~0.7 s on the HID link); the widest, 224x144 (63 KB), takes two
             int textChars = AppendTextChunk(sb, 12000);
             AppendArtChunk(sb, 48000 - textChars);
             link.Write(sb.ToString());
           } catch (Exception e) {
             Log("port lost: " + e.Message);
+            currentLink = null;
             try { link.Close(); } catch (Exception) { }
             link = null;
           }
@@ -3850,6 +3936,7 @@ partial class PcStats : ServiceBase {
         claudeSource.Stop();
         claudeSource = null;
       }
+      currentLink = null;
       if (link != null) try { link.Close(); } catch (Exception) { }
       Log("stop");
     }

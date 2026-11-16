@@ -21,6 +21,7 @@ One per line on the USB CDC console or the CH343 UART (`help` lists them):
 | `bl <1\|2\|3\|all> <0-100\|on\|off>`, `display <on\|off>`, `led <auto\|on\|off\|sweep\|0-100>` | Backlights (saved); all panels dark until `display on` (not saved); status LED |
 | `fps [budget <20-95> \| cap <1\|2\|3> <1-60\|off>]` | SPI budget and per-panel frame caps |
 | `pcwarn [set <metric> <high\|crit> <v\|off\|default> \| avg <ms> \| reset \| demo [one] \| off]` | PC usage warning limits and averaging window (saved in NVS) |
+| `vis [on\|off\|stats\|reset]` | Music border around the cover ([screens.md](screens.md)): on/off (saved, default on); `stats` (or no argument) = level stream counters (frames, rate, lost by seq, gap avg/max, >50 / >100 ms) and ring push counters (frames, push avg/max ms, gap max, >40 ms); `reset` clears them |
 | `layout <show\|reload\|default\|begin\|data <b64>\|end>` | Dashboard layouts |
 | `weather <show\|refresh\|demo [rain\|typhoon]\|clear\|storms\|home <lat>,<lon> [name]\|test-alert\|owm-check\|end-reset>` | Weather: state, refetch, 5-min demo, home place, a test alert, an OpenWeather merge test, reset the rain-end accuracy stats |
 | `bench [all\|usage\|cpu\|mem\|flash\|spi\|usb <KB>\|psram [MB]]`, `socks` | Debug: memory map and task stacks, speed tests, PSRAM stress; open sockets |

@@ -13,6 +13,7 @@
 #include <freertos/task.h>
 #include <string.h>
 #include <algorithm>
+#include <math.h>
 
 #include <LovyanGFX.hpp>
 
@@ -20,6 +21,7 @@
 #include "screens.h"
 #include "log.h"
 #include "sys.h"
+#include "vis.h"
 
 #define BAND 8
 #define INTERNAL_RESERVE (160 * 1024)   // Wi-Fi + two TLS sessions need it
@@ -67,6 +69,323 @@ static void setWindow(Panel &p, int x, int y, int w, int h) {
   esp_lcd_panel_io_tx_param(p.io, 0x2B, ra, 4);   // RASET
 }
 
+// ---- Music-reactive cover border (vis.h) ----
+// An 8 px ring around the media cover with rounded corners (radius 16 out, 8
+// in, the cover's own), owned by this task: pushed as 4 strips
+// at 30 fps straight from a colour table (no canvas, no PSRAM reads), and
+// painted over the canvas wherever a face push crosses it, so face redraws
+// neither flicker nor push it. drawMedia asks for it per frame
+// (displaySetRing); it is applied when that frame is flushed. One panel at a
+// time.
+#define RING_T 8
+#define RING_R 16       // outer corner radius; the cover's is RING_R - RING_T, same centres
+#define RING_MS 33
+#define RING_BLEND 20   // px over which neighbouring colours blend
+struct RingGeom { int16_t x, y, w, h; };   // outer rect, x and w even; w 0 = none
+static RingGeom ringReq[N_PANELS];   // core 1, read when that panel's frame is flushed
+static RingGeom ringCur;             // this task
+static int ringPanel = -1;
+static uint16_t ringLut[2 * (TFT_W + TFT_H)];   // RGB444 per perimeter position, clockwise from top left
+static bool ringDark = true;
+static uint32_t ringDueMs, ringLastMs;
+
+// heavy bass .. upper high
+static const uint8_t ringColors[VIS_BANDS][3] = {
+  {0xc8, 0, 0}, {0xff, 0, 0}, {0, 0, 0xc8}, {0, 0, 0xff}, {0, 0xc8, 0}, {0, 0xff, 0}};
+
+void displaySetRing(LGFX_Sprite &c, int x, int y, int w, int h) {
+  for (int i = 0; i < N_PANELS; i++)
+    if (panels[i].canvas == &c) ringReq[i] = {(int16_t)x, (int16_t)y, (int16_t)w, (int16_t)h};
+}
+
+// Top-left corner box of the ring, (x, y) from the corner: ring coverage
+// 0..255 (antialiased at both radii) and whether the cover is behind the
+// inner edge (else black, outside the outer edge). The other corners mirror it.
+static uint8_t cornerA[RING_R][RING_R];
+static bool cornerArt[RING_R][RING_R];
+
+static void cornerTables() {
+  static bool done;
+  if (done) return;
+  done = true;
+  for (int y = 0; y < RING_R; y++)
+    for (int x = 0; x < RING_R; x++) {
+      float d = hypotf(RING_R - (x + 0.5f), RING_R - (y + 0.5f));
+      float out = RING_R + 0.5f - d, in = d - (RING_R - RING_T) + 0.5f;
+      float a = std::min(std::max(std::min(out, in), 0.0f), 1.0f);
+      cornerA[y][x] = (uint8_t)(a * 255.0f + 0.5f);
+      cornerArt[y][x] = d < RING_R - RING_T / 2;
+    }
+}
+
+static inline void put2(uint8_t *o, uint16_t a, uint16_t c) {
+  o[0] = a >> 4;                // R1 G1
+  o[1] = (a << 4) | (c >> 8);   // B1 R2
+  o[2] = c;                     // G2 B2
+}
+
+static inline void set444(uint8_t *row, int i, uint16_t c) {
+  uint8_t *o = row + (i >> 1) * 3;
+  if (!(i & 1)) {
+    o[0] = c >> 4;                          // R1 G1
+    o[1] = (o[1] & 0x0F) | (uint8_t)(c << 4);   // B1
+  } else {
+    o[1] = (o[1] & 0xF0) | (c >> 8);        // R2
+    o[2] = c;                               // G2 B2
+  }
+}
+
+// canvas/sent pixel (byte-swapped RGB565) -> RGB444, as push444 packs it
+static inline uint16_t to444(uint16_t sw) {
+  uint16_t a = __builtin_bswap16(sw);
+  return (uint16_t)((a >> 12) << 8 | ((a >> 7) & 15) << 4 | ((a >> 1) & 15));
+}
+
+static inline uint16_t scale444(uint16_t c, int a) {   // a 0..255
+  return (uint16_t)((((c >> 8) & 15) * a + 127) / 255 << 8 | (((c >> 4) & 15) * a + 127) / 255 << 4 |
+                    ((c & 15) * a + 127) / 255);
+}
+
+static inline uint16_t add444(uint16_t a, uint16_t b) {
+  int r = std::min(((a >> 8) & 15) + ((b >> 8) & 15), 15), g = std::min(((a >> 4) & 15) + ((b >> 4) & 15), 15),
+      bl = std::min((a & 15) + (b & 15), 15);
+  return (uint16_t)(r << 8 | g << 4 | bl);
+}
+
+// The ring's colour at ring-relative (rx, ry) over the pixel behind it
+// (byte-swapped RGB565), or -1 where the cover shows untouched. Perimeter
+// positions run clockwise from the top left: top, right, bottom (right to
+// left), left (bottom to top).
+static int ringColor(const RingGeom &g, int rx, int ry, uint16_t behind) {
+  int W = g.w, H = g.h;
+  int pos = ry < RING_T ? rx : ry >= H - RING_T ? W + H + (W - 1 - rx) : rx < W / 2 ? 2 * W + H + (H - 1 - ry) : W + ry;
+  uint16_t c = ringLut[pos];
+  int cx = rx < RING_R ? rx : rx >= W - RING_R ? W - 1 - rx : -1;
+  int cy = ry < RING_R ? ry : ry >= H - RING_R ? H - 1 - ry : -1;
+  if (cx >= 0 && cy >= 0) {
+    int a = cornerA[cy][cx];
+    uint16_t r = a == 255 ? c : scale444(c, a);
+    return cornerArt[cy][cx] ? add444(to444(behind), r) : r;   // the cover's corner is already faded to black
+  }
+  if (rx < RING_T || rx >= W - RING_T || ry < RING_T || ry >= H - RING_T) return c;
+  return -1;
+}
+
+// Paint the ring over one packed RGB444 row (panel row y, columns [x, x+w),
+// x even) whose source pixels (byte-swapped RGB565, panel row y from column
+// 0) are src. Per pixel only in the RING_R corner boxes; elsewhere straight
+// from the table, two pixels at a time.
+static void ringRow(uint8_t *row, int y, int x, int w, const uint16_t *src) {
+  const RingGeom &g = ringCur;
+  int ry = y - g.y, W = g.w, H = g.h;
+  if (ry < 0 || ry >= H) return;
+  int a = std::max(x, (int)g.x) - g.x, b = std::min(x + w, g.x + W) - g.x;   // ring columns [a, b), even
+  if (a >= b) return;
+  int off = g.x - x;   // row pixel of ring column 0, even
+  auto perPixel = [&](int r0, int r1) {
+    for (int rx = std::max(a, r0); rx < std::min(b, r1); rx++) {
+      int c = ringColor(g, rx, ry, src[g.x + rx]);
+      if (c >= 0) set444(row, rx + off, (uint16_t)c);
+    }
+  };
+  if (ry < RING_T || ry >= H - RING_T) {   // top or bottom: the whole width
+    perPixel(0, RING_R);
+    perPixel(W - RING_R, W);
+    bool top = ry < RING_T;
+    int base = W + H;
+    for (int rx = std::max(a, RING_R); rx < std::min(b, W - RING_R); rx += 2)
+      put2(row + (rx + off) / 2 * 3, ringLut[top ? rx : base + W - 1 - rx], ringLut[top ? rx + 1 : base + W - 2 - rx]);
+  } else if (ry < RING_R || ry >= H - RING_R) {   // the rest of the corner boxes
+    perPixel(0, RING_R);
+    perPixel(W - RING_R, W);
+  } else {   // a side: RING_T pixels of one colour each side
+    uint16_t cl = ringLut[2 * W + H + (H - 1 - ry)], cr = ringLut[W + ry];
+    for (int rx = a; rx < std::min(b, RING_T); rx += 2) put2(row + (rx + off) / 2 * 3, cl, cl);
+    for (int rx = std::max(a, W - RING_T); rx < b; rx += 2) put2(row + (rx + off) / 2 * 3, cr, cr);
+  }
+}
+
+// Panel screenshot (cmdShot): the ring over a copy of the canvas (byte-swapped
+// RGB565). Reads this task's state from another task: a torn colour at worst.
+void displayShotRing(int panel, uint16_t *buf) {
+  if (panel != ringPanel || !ringCur.w) return;
+  const RingGeom g = ringCur;
+  for (int ry = 0; ry < g.h; ry++)
+    for (int rx = 0; rx < g.w; rx++) {
+      uint16_t *px = buf + (size_t)(g.y + ry) * TFT_W + g.x + rx;
+      int c = ringColor(g, rx, ry, *px);
+      if (c < 0) continue;
+      int r = (c >> 8) & 15, gr = (c >> 4) & 15, bl = c & 15;
+      uint16_t v = (uint16_t)((r << 12) | (r >> 3 << 11) | (gr << 7) | (gr >> 2 << 5) | (bl << 1) | (bl >> 3));
+      *px = __builtin_bswap16(v);
+    }
+}
+
+// The colour table: the bands in order around the ring, each as long as its
+// share of the lengths (a band under 10% of the longest is left out),
+// turning once in 120 s (0.5 RPM); RING_BLEND px of blending at each
+// boundary. Each region is lit 60..100% by its band's volume against the
+// song; the whole ring by the longest length (1 while music plays, falling
+// to 0 on silence: the fade). One band alone fills the ring.
+static void ringCompute(const float lv[VIS_BANDS], const float vol[VIS_BANDS], bool any) {
+  const RingGeom &g = ringCur;
+  int P = 2 * (g.w + g.h);
+  if (!any) {
+    memset(ringLut, 0, P * sizeof ringLut[0]);
+    return;
+  }
+  float mx = 0;
+  for (int b = 0; b < VIS_BANDS; b++) mx = std::max(mx, lv[b]);
+  int seg[VIS_BANDS], n = 0;
+  float len[VIS_BANDS], sum = 0;
+  for (int b = 0; b < VIS_BANDS; b++)
+    if (lv[b] >= mx * 0.1f) { seg[n] = b; len[n] = lv[b]; sum += lv[b]; n++; }
+  float start[VIS_BANDS + 1];
+  start[0] = 0;
+  for (int i = 0; i < n; i++) start[i + 1] = start[i] + len[i] / sum * P;
+  start[n] = (float)P;
+  float off = (float)(nowMs() % 120000) / 120000.0f * P;
+  float k = mx / 255.0f * 15.0f;   // 8-bit colour * fade -> 4 bits
+  float cs[VIS_BANDS][3];           // each region's colour at its brightness
+  for (int i = 0; i < n; i++) {
+    float v = vol[seg[i]];
+    float m = 0.6f + 0.4f * (v < 0 ? 0 : v > 1 ? 1 : v);
+    for (int c = 0; c < 3; c++) cs[i][c] = ringColors[seg[i]][c] * m;
+  }
+  for (int p = 0; p < P; p++) {
+    float u = p - off;
+    if (u < 0) u += P;
+    int i = 0;
+    while (i < n - 1 && u >= start[i + 1]) i++;
+    const float *c = cs[i];
+    float r = c[0], gr = c[1], bl = c[2];
+    if (n > 1) {
+      float d0 = u - start[i], d1 = start[i + 1] - u;
+      int j = -1;
+      float t = 1;
+      if (d0 < RING_BLEND / 2 && d0 <= d1) { j = (i + n - 1) % n; t = 0.5f + d0 / RING_BLEND; }
+      else if (d1 < RING_BLEND / 2) { j = (i + 1) % n; t = 0.5f + d1 / RING_BLEND; }
+      if (j >= 0) {
+        const float *o = cs[j];
+        r = r * t + o[0] * (1 - t);
+        gr = gr * t + o[1] * (1 - t);
+        bl = bl * t + o[2] * (1 - t);
+      }
+    }
+    int r4 = (int)(r * k + 0.5f), g4 = (int)(gr * k + 0.5f), b4 = (int)(bl * k + 0.5f);
+    ringLut[p] = (uint16_t)(std::min(r4, 15) << 8 | std::min(g4, 15) << 4 | std::min(b4, 15));
+  }
+}
+
+// One ring strip. The sides (RING_R wide) carry the cover's edge columns, so
+// they start from what is on the glass (sent); the top and bottom are all
+// ring. The strip is packed while the previous one is still on the wire.
+static void pushStrip(Panel &p, int x, int y, int w, int h, bool fromSent) {
+  waitTx(1);   // the buffer we fill next is free
+  uint8_t *b = dmaBuf[txIssued & 1], *o = b;
+  size_t rowBytes = (size_t)w * 3 / 2;
+  for (int r = 0; r < h; r++, o += rowBytes) {
+    const uint16_t *srow = p.sent + (size_t)(y + r) * TFT_W;
+    if (fromSent) {
+      uint8_t *q = o;
+      for (int k = x; k < x + w; k += 2, q += 3) {
+        uint16_t a = to444(srow[k]), c = to444(srow[k + 1]);
+        q[0] = a >> 4;
+        q[1] = (uint8_t)(a << 4) | (c >> 8);
+        q[2] = c;
+      }
+    }
+    ringRow(o, y + r, x, w, srow);
+  }
+  waitTx(0);   // CASET/RASET go out after the previous strip
+  setWindow(p, x, y, w, h);
+  txIssued++;
+  esp_lcd_panel_io_tx_color(p.io, 0x2C, b, o - b);
+  p.bytes += o - b;
+}
+
+// sent over the ring made stale, so the next diff repaints it from the canvas
+static void ringForget(Panel &p, const RingGeom &g) {
+  for (int y = g.y; y < g.y + g.h; y++) {
+    uint16_t *row = p.sent + (size_t)y * TFT_W;
+    if (y < g.y + RING_T || y >= g.y + g.h - RING_T) {
+      for (int x = g.x; x < g.x + g.w; x++) row[x] = 0xA5A5;
+    } else {
+      for (int x = g.x; x < g.x + RING_R; x++) row[x] = 0xA5A5;
+      for (int x = g.x + g.w - RING_R; x < g.x + g.w; x++) row[x] = 0xA5A5;
+    }
+  }
+}
+
+// A face frame of panel idx is about to be flushed: take its ring request
+static void ringApply(Panel &p, int idx) {
+  RingGeom g = ringReq[idx];
+  ringReq[idx] = {0, 0, 0, 0};   // one-shot: views that never call screensDraw (stats, bench) drop it
+  cornerTables();
+  bool ok = g.w >= 2 * RING_R + 2 && g.h >= 2 * RING_R + 2 && g.x >= 0 && g.y >= 0 && g.x + g.w <= TFT_W &&
+            g.y + g.h <= TFT_H && !(g.x & 1) && !(g.w & 1) && !p.gifMode && visEnabled();
+  if (!ok) g = {0, 0, 0, 0};
+  if (ringPanel >= 0 && ringPanel != idx) return;   // on another panel already
+  if (ringPanel < 0 && !g.w) return;
+  if (!memcmp(&g, &ringCur, sizeof g)) return;
+  if (ringPanel == idx && ringCur.w) ringForget(p, ringCur);
+  ringCur = g;
+  ringPanel = g.w ? idx : -1;
+  if (ringPanel >= 0) {
+    float lv[VIS_BANDS], vol[VIS_BANDS];
+    bool any = visLevels(lv, vol);
+    ringCompute(lv, vol, any);   // the face push below paints the ring with it
+    ringDark = !any;
+    ringDueMs = nowMs() + RING_MS;
+    ringLastMs = 0;
+  }
+}
+
+static void ringTick() {
+  if (ringPanel < 0) return;
+  if (panels[ringPanel].gifMode) {   // a GIF face took the panel (even before its first frame)
+    ringPanel = -1;
+    ringCur = {0, 0, 0, 0};
+    return;
+  }
+  // core 1 reset this panel's sent (new face, wake): the strips would carry
+  // garbage from it until the panel's next flush repaints everything
+  if (panels[ringPanel].sentReset) return;
+  uint32_t now = nowMs();
+  if ((int32_t)(now - ringDueMs) < 0) return;
+  ringDueMs += RING_MS;
+  if ((int32_t)(now - ringDueMs) >= 0) ringDueMs = now + RING_MS;   // fell behind: no burst
+  float lv[VIS_BANDS], vol[VIS_BANDS];
+  bool any = visLevels(lv, vol);
+  if ((!any && ringDark) || backlightIsIdle()) {
+    ringLastMs = 0;
+    return;
+  }
+  uint32_t t0 = nowUs();
+  ringCompute(lv, vol, any);
+  Panel &p = panels[ringPanel];
+  const RingGeom &g = ringCur;
+  pushStrip(p, g.x, g.y, g.w, RING_T, false);
+  pushStrip(p, g.x + g.w - RING_R, g.y + RING_T, RING_R, g.h - 2 * RING_T, true);
+  pushStrip(p, g.x, g.y + g.h - RING_T, g.w, RING_T, false);
+  pushStrip(p, g.x, g.y + RING_T, RING_R, g.h - 2 * RING_T, true);
+  waitTx(0);
+  uint32_t us = nowUs() - t0;
+  p.pushUs += us;
+  visRingPushed(us, ringLastMs ? now - ringLastMs : 0);
+  ringLastMs = any ? now : 0;
+  ringDark = !any;
+}
+
+// Called where a long flush can pause (between diff bands, GIF rects): a
+// ring frame that is due goes out now instead of after the whole frame
+static void ringIfDue() {
+  if (ringPanel >= 0 && (int32_t)(nowMs() - ringDueMs) >= 0) {
+    waitTx(0);
+    ringTick();
+  }
+}
+
 // Push canvas rect (x, y, w, h) of panel p as RGB444. x and w must be even.
 static void push444(Panel &p, int x, int y, int w, int h) {
   const uint16_t *src = (const uint16_t *)p.canvas->getBuffer();
@@ -77,10 +396,23 @@ static void push444(Panel &p, int x, int y, int w, int h) {
   bool first = true;
   for (int r0 = 0; r0 < h; r0 += rowsPerChunk) {
     int rows = std::min(rowsPerChunk, h - r0);
+    if (r0 > 0 && ringPanel >= 0 && (int32_t)(nowMs() - ringDueMs) >= 0) {
+      // a long push (a whole face is ~35 ms) would make the ring miss a
+      // frame: put it out between chunks, then reopen the window for the rest.
+      // The side strips read sent: the rows already out go into it first.
+      waitTx(0);
+      for (int r = 0; r < r0; r++)
+        memcpy(p.sent + (size_t)(y + r) * TFT_W + x, src + (size_t)(y + r) * TFT_W + x, w * 2);
+      ringTick();
+      setWindow(p, x, y + r0, w, h - r0);
+      first = true;
+    }
     waitTx(1);                                    // the buffer we fill next is free
     uint8_t *b = dmaBuf[txIssued & 1], *o = b;
+    bool ring = ringPanel == &p - panels;
     for (int r = 0; r < rows; r++) {
       const uint16_t *s = src + (size_t)(y + r0 + r) * TFT_W + x;
+      uint8_t *rowStart = o;
       for (int k = 0; k < w; k += 2) {
         uint16_t a = __builtin_bswap16(s[k]);
         uint16_t c = __builtin_bswap16(s[k + 1]);
@@ -89,6 +421,7 @@ static void push444(Panel &p, int x, int y, int w, int h) {
         o[2] = ((c >> 3) & 0xF0) | ((c >> 1) & 0x0F);               // G2 B2
         o += 3;
       }
+      if (ring) ringRow(rowStart, y + r0 + r, x, w, src + (size_t)(y + r0 + r) * TFT_W);
     }
     txIssued++;
     esp_lcd_panel_io_tx_color(p.io, first ? 0x2C : 0x3C, b, o - b);   // RAMWR, then RAMWRC
@@ -123,6 +456,7 @@ static void flushRows(Panel &p, int yStart, int yEnd) {
   int runY = -1, rx0 = TFT_W, rx1 = -1;
   for (int y = yStart; y <= yEnd; y += BAND) {
     int x0, x1;
+    ringIfDue();
     bool dirty = y < yEnd && bandDiff(p, y, std::min(BAND, yEnd - y), x0, x1);
     if (dirty) {
       if (runY < 0) runY = y;
@@ -140,6 +474,8 @@ static void flushRows(Panel &p, int yStart, int yEnd) {
 
 static uint32_t displayFlush(Panel &p) {
   uint32_t t0 = nowUs();
+  p.sentReset = false;   // this flush repaints from the canvas whatever sent says
+  ringApply(p, &p - panels);
   flushRows(p, 0, TFT_H);
   waitTx(0);
   uint32_t us = nowUs() - t0;
@@ -271,6 +607,7 @@ static void pushGif(Panel &p) {
     uint8_t nr = gif.nRects[fIdx];
     for (uint8_t i = 0; i < nr; i++) {
       const GifRect &r = gif.rects[fIdx][i];
+      ringIfDue();
       pushGifRect(p, s, pal, r.x, r.y, r.w, r.h, x0, y0);
       s += (size_t)r.w * r.h;
       if (y0 + r.y < p.bandY1 && y0 + r.y + r.h > p.bandY0) bandDirty = true;
@@ -295,10 +632,19 @@ static void flushTask(void *) {
   uint32_t winStart = nowMs();
   for (;;) {
     int idx;
-    if (xQueueReceive(flushQueue, &idx, pdMS_TO_TICKS(10)) == pdTRUE) {
+    TickType_t wait = pdMS_TO_TICKS(10);
+    if (ringPanel >= 0) {
+      int32_t d = (int32_t)(ringDueMs - nowMs());
+      wait = d <= 0 ? 0 : pdMS_TO_TICKS(std::min<int32_t>(d, 10));
+    }
+    if (xQueueReceive(flushQueue, &idx, wait) == pdTRUE) {
       if (idx >= 0 && idx < N_PANELS) {
         Panel &p = panels[idx];
         uint32_t bytesBefore = p.bytes;
+        if (p.gifMode && idx == ringPanel) {   // a GIF took the panel: its whole frame covers the ring
+          ringPanel = -1;
+          ringCur = {0, 0, 0, 0};
+        }
         if (p.gifMode) pushGif(p);
         else displayFlush(p);
         uint32_t frameBytes = p.bytes - bytesBefore;
@@ -311,6 +657,7 @@ static void flushTask(void *) {
         p.busy = false;
       }
     }
+    ringTick();
     uint32_t now = nowMs();
     if (now - winStart >= 1000) {
       float dt = (now - winStart) / 1000.0f;

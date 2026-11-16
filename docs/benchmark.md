@@ -502,3 +502,38 @@ With the PC idle, one panel plays at 19.9 fps. Measured again while the PC ran a
 benchmark, two runs each: one panel 17.7-17.8 fps, two 14.8-18.7, three
 16.7-16.9, bus 77-83% throughout. The earlier two and three panel rows above
 were taken with the PC idle.
+
+## Music border stream, 2026-11-16
+
+The cover's music border gets 6 band levels from the PC 30 times a second as
+(lengths only at the time; volumes were added later the same day, same report)
+HID output report 7 (on a side channel next to WinUSB). `ESP32-Helper.exe
+--vis-bench 60` sent synthetic frames at 30 Hz while the service ran, four
+runs, with the board's `vis stats` on the other end:
+
+| PC side, 4 x 60 s | Result |
+|---|---|
+| Frames | 1800/1800 each run, 0 timeouts, 30.02 frames/s |
+| Write time | avg 0.86-0.99 ms, p99 1.28-1.40 ms, max 2.09 ms |
+| Send lateness | p99 0.00-0.01 ms (one 6-9 ms late send at the start) |
+
+| Board side | Result |
+|---|---|
+| Stream | 0 lost, gap avg 33.3 ms, max 40-42 ms, none over 50 ms |
+
+The flush task pushes the ring every 33 ms (~11 KB a frame). A ring frame is
+late when its gap passes 40 ms:
+
+| Ring push | Push avg | Push max | Gaps over 40 ms |
+|---|---|---|---|
+| Per pixel, first version | 8.94 ms | 14.8 ms | 44 of 734 |
+| Colour table fast path, next strip packed while the last one sends | 5.38 ms | 9.1 ms | 99 of 1826 |
+| Ring also between push chunks | | | 67 of 1825 |
+| Ring also between diff bands and GIF rects | | | 2 of 1854 (gap max 41 ms) |
+
+The fast path cut the push time, but about 5% of frames were still late
+while a long face or GIF flush held the bus; letting a due ring frame out between the
+flush's chunks, bands and rects removed nearly all of them.
+
+Real music (Brave, Spotify): 28-32 frames/s, 0 lost, 0-1 late ring frames
+of about 320.

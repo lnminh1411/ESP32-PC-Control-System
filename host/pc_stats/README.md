@@ -5,15 +5,16 @@ Windows service that collects configured PC stats (hardware sensors from [PcHwCt
 ## Two processes, one exe
 
 `ESP32-Helper.exe` runs as two processes, each with its own worker threads:
-- **Service** (`ESP32PcStats`, SYSTEM, session 0): stats, the USB link (WinUSB/HID/serial), the relays to PcHwCtl and LocalAIHost (power actions, screenshots, presence, RGB/fans, monitors, night mode, local AI), shutdown announcements, `@source` and `@claude` polling, text rendering, cover-art streaming. It runs before sign-in and after sign-out, at High CPU priority so the board's frames and replies stay on time while the PC is busy (the user-session half stays Normal).
-- **User-session half** (`ESP32-Helper.exe --user`): Antigravity quota, Claude Code token refresh, media session and cover art, input idle and the foreground app. Windows keeps session 0 away from the desktop and the user's media sessions, so this part has to run in the user's session. The service starts it there with the signed-in user's token (normal user rights, not elevated) once someone signs in. It restarts the half if it dies (after 2 s, or 30 s if it died within 15 s of starting) and moves it on a user switch. In `--console` mode it starts the half as the current user (`--no-user` skips it).
+- **Service** (`ESP32PcStats`, SYSTEM, session 0): stats, the USB link (WinUSB/HID/serial), the relays to PcHwCtl and LocalAIHost (power actions, screenshots, presence, RGB/fans, monitors, night mode, local AI), shutdown announcements, `@source` and `@claude` polling, text rendering, cover-art streaming, forwarding the music border's levels (`audio_tx`). It runs before sign-in and after sign-out, at High CPU priority so the board's frames and replies stay on time while the PC is busy (the user-session half stays Normal).
+- **User-session half** (`ESP32-Helper.exe --user`): Antigravity quota, Claude Code token refresh, media session and cover art, the music border's audio capture, input idle and the foreground app. Windows keeps session 0 away from the desktop, the user's media sessions and its audio, so this part has to run in the user's session. The service starts it there with the signed-in user's token (normal user rights, not elevated) once someone signs in. It restarts the half if it dies (after 2 s, or 30 s if it died within 15 s of starting) and moves it on a user switch. In `--console` mode it starts the half as the current user (`--no-user` skips it).
 
 The two talk over a pair of anonymous pipes (UTF-8 lines):
 
 | Direction | Line | Meaning |
 |---|---|---|
 | user half to service | `F <feed> <n>` + n `key=value` lines | feed `agy`, `media` or `idle`, read by `@source <name> helper:<feed> <ms>` |
-| user half to service | `A <base64>` | cover art, 144x144 RGB565 big-endian (41,472 bytes) |
+| user half to service | `A <w> <h> <base64>` | cover art, w x h RGB565 big-endian, within 224x144 (w 72-224, h 96-144, both even) |
+| user half to service | `V <seq><lengths><volumes>` | music border frame: seq, 6 band lengths, 6 band volumes, 2 lowercase hex digits each (26 hex, 30 a second while audio plays) |
 | user half to service | `L <text>` | log line, written to `log.txt` as `user: <text>` |
 
 Nothing travels from the service to the user half; that pipe only tells the half the service is alive. The user half exits as soon as the pipes break, so it never outlives the service. A `helper:` source counts as up while the user half is connected.
@@ -64,6 +65,9 @@ ESP32-Helper.exe --going             # Print PcHwCtl's `power status` (going, la
 ESP32-Helper.exe --agy-once          # Poll Antigravity quota once, print the keys and exit
 ESP32-Helper.exe --agy-usage         # Run `agy /usage` once, print the panel text and the parsed Gemini windows
 ESP32-Helper.exe --media             # Sample media sessions for 5 s, print the keys and exit
+ESP32-Helper.exe --vis-test [s]      # Music border: capture + band levels only, print them (default 20 s)
+ESP32-Helper.exe --vis-bench [s]     # Music border: 30 Hz synthetic report 7 frames on the board's HID interface,
+                                     #  print write ms and lateness (default 60 s; runs beside the service)
 ESP32-Helper.exe --render-text <px> <bold> <out.png> <text...>  # Test non-ASCII GDI text rendering
 ESP32-Helper.exe --user <in> <out>   # The user-session half (started by the service, not by hand)
 ```
@@ -185,7 +189,7 @@ The service reads the feed via:
   - `media.playing`: `1` if playback is active, `0` if paused or stopped
   - `media.pos_s`: Playback position in seconds (extrapolated from `TimelineProperties.LastUpdatedTime` while playing)
   - `media.len_s`: Track duration in seconds
-  - `media.art_id`: CRC32 of the 144x144 RGB565 cover art (as the user half sends it) as an unsigned decimal (`0` = no art)
+  - `media.art_id`: CRC32 of the RGB565 cover art (as the user half sends it) as an unsigned decimal (`0` = no art)
 - **Text stats (`@t`)**:
   - `media.title`: Track title (one line, <= 80 chars)
   - `media.artist`: Artist name (one line, <= 80 chars)
@@ -194,9 +198,9 @@ The service reads the feed via:
 
 ### Cover Art Push Protocol (`@a`)
 When `media.art_id` transitions to a non-zero value and the latest art from the user-session half has a matching CRC32:
-1. The user half center-crops the cover to a square, bicubic-scales it to 144x144 and sends it as RGB565 big-endian (41,472 bytes). The panels are 12-bit, so the service packs it to RGB444 (2 pixels in 3 bytes, 31,104 bytes) and Base64-encodes that (41,472 characters).
+1. The user half trims black bars around the picture (both sides about equal, as on a letterboxed video thumbnail), fits it to a 224x144 box keeping its shape (144 tall up to 224:144; then 224 wide and down to 96 tall; past those limits, and below 72 wide, it cuts evenly from both ends), bicubic-scales it and sends it as RGB565 big-endian (`A <w> <h> <base64>`, 41,472 bytes for 144x144). The panels are 12-bit, so the service packs it to RGB444 (2 pixels in 3 bytes, 31,104 bytes for 144x144, 48,384 at most) and Base64-encodes that.
 2. The service streams art across sample ticks:
-   - Header: `@a begin <id> 144 144 444`
+   - Header: `@a begin <id> <w> <h> 444` (the board takes w 72-224, h 96-144, both even, and centres the art in its 224x144 box)
    - Data lines: `@a d <base64>` in lines of at most 160 base64 chars
    - Terminator: `@a end <id> <crc32 of the packed RGB444 bytes as 8 hex digits>`
 3. Chunks are appended after the `@e` line, so regular sensor streaming never stalls. Each tick carries up to 48,000 base64 chars of `@x` text and `@a` art together, text first (up to 12,000).
@@ -204,6 +208,28 @@ When `media.art_id` transitions to a non-zero value and the latest art from the 
 
 ### Console Testing
 Run `ESP32-Helper.exe --media` to sample media sessions for 5 seconds, print the keys to the console, and save the current cover art decoded back from the RGB565 buffer to `K:\scratch\media_art.png`.
+
+## Music Border Audio Stream (`V`, HID report 7)
+
+The cover's music border on the board ([docs/screens.md](../../docs/screens.md)) is drawn from 6 band lengths and 6 band volumes the helper sends 30 times a second.
+
+**Capture** (`Audio.cs`, user-session half, thread `esp32_audio`):
+- WASAPI loopback on the default render device (`eRender`/`eConsole`), shared mode, polled every 10 ms; float32 or PCM 16/24/32, all channels mixed down to mono. Reopened when the default device changes (checked every 2 s) or the device is invalidated.
+- FFT 2048 with a Hann window, doubled while bins are wider than 24 Hz (4096 at 96 kHz); hop = rate / 30 (1600 at 48 kHz), so 30 frames a second on the audio clock.
+- Bands 20-60, 60-250, 250-1000, 1000-4000, 4000-8000, 8000-16000 Hz, all on one scale: band power per octave in dB (pink noise reads level; music leans to the low bands). Length = the band's amplitude times a mild bass-first weight (`LenWeight` 1.25, 1.15, 1.05, 1.0, 0.95, 0.9) over the largest, so a faint treble or very faint bass takes little of the ring. Volume = the band's dB against the song's loudness (`songRef`: the loudest band level heard, falling 1 dB/s, never under `RefFloorDb` 10, frozen while silent and started over from the first frame after it) over a 24 dB range; a band more than 48 dB under it (`LenGateDb`) gets no length; Windows' volume plays no part. Both through an envelope: instant attack, release tau 150/110/80 ms (bass/mid/high).
+- Silence: under -60 dBFS for 300 ms, or no packets for 200 ms, sends one all-zero frame and then nothing until the sound passes -50 dBFS. It starts silent.
+- The thread is pinned to the E-cores with `SetThreadSelectedCpuSets` (`CpuSets.cs`: lowest `EfficiencyClass`; logical processors 2-5 and 10-17 on the 265K), AboveNormal, MMCSS class `Audio`.
+- Each frame goes to the service as the pipe line `V <seq><6 lengths><6 volumes>`. `--vis-test` prints both plus each band's dB and `songRef`.
+
+**Forwarding** (`VisLink.cs`, service, thread `audio_tx`, E-cores, AboveNormal): `V` lines set the latest frame; `audio_tx` sends each frame within 100 ms (older ones are dropped), only while the main link is trusted (`@auth` passed). On the wire it is HID output report 7, 64 bytes: `[0x07][0x56 'V'][seq][6 lengths][6 volumes]`, zero-padded. Frames never ride the main link's line stream, where a tick's 48 KB write would leave them stale:
+- **WinUSB main link**: a write-only side channel, a second handle on the board's HID interface. It is paired to the WinUSB link's USB device by walking `CM_Get_Parent` up to the `USB\VID_303A&PID_` composite device id. No `@auth` on it (the board would answer on the vendor pipe). Reopened at most every 3 s.
+- **HID main link**: `HidLink.SendRaw`, queued and sent between the main write's 64-byte reports (the lock is not fair, so a frame would otherwise wait for the whole write).
+- **Serial link**: no border.
+
+While frames flow the service logs a summary every 60 s. On the board, report 7 skips the line parser: TinyUSB's set-report callback hands it straight to `visPut`.
+
+### Console Testing
+`ESP32-Helper.exe --vis-test [s]` runs the capture and DSP alone (default 20 s) and prints the levels. `ESP32-Helper.exe --vis-bench [s]` sends synthetic report 7 frames at 30 Hz on the board's HID interface while the service runs (default 60 s) and prints write times and send lateness; the board's `vis stats` shows what arrived. Numbers: [docs/benchmark.md](../../docs/benchmark.md#music-border-stream-2026-11-16).
 
 ## Wire Protocol
 

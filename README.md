@@ -36,7 +36,8 @@ layout is real. What each panel shows and when: [docs/screens.md](docs/screens.m
 
 ## What it does
 
-- **Three status panels:** PC stats, media with cover art, Claude and
+- **Three status panels:** PC stats, media with cover art in a
+  music-reactive border, Claude and
   Antigravity quota and the local AI while the PC is on; a GIF, the weather
   and a clock while it is off.
 - **Power control:** Wake-on-LAN and USB wake, sleep / hibernate / restart /

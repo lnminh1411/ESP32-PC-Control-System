@@ -18,12 +18,15 @@ processes:
   Claude's usage, and streams everything to the board over a WinUSB bulk pipe
   (no driver install; vendor HID, then CDC serial as fallbacks; the COM port
   stays free unless serial is in use). It also renders
-  non-Latin text for the board and sends cover art.
+  non-Latin text for the board, sends cover art, and forwards the music
+  border's levels as HID report 7 (thread `audio_tx`).
 - **The user-session half** (`--user`, started and restarted by the service
   in the signed-in user's session, as that user): media info from Windows'
   media session (Spotify, browsers), Antigravity quota, the Claude Code login
-  refresh. Session 0 can't see media sessions or quota processes, hence the
-  second process. The two talk over anonymous pipes. Screenshots and the
+  refresh, and what the PC plays (WASAPI loopback, 6 band lengths and volumes 30 times a
+  second for the cover's music border, thread `esp32_audio` on the E-cores).
+  Session 0 can't see media sessions, quota processes or the user's audio,
+  hence the second process. The two talk over anonymous pipes. Screenshots and the
   camera check are PcHwCtl's, in its own agent in that session.
 
 ## Details worth knowing

@@ -455,6 +455,7 @@ void viewEnter(int i, View v) {
   p.view = v;
   panelFace[i] = FACE_NONE;   // auto views pick their face on the next service pass
   p.canvas->fillScreen(C_BG);
+  p.sentReset = true;
   memset(p.sent, 0xA5, (size_t)TFT_W * TFT_H * 2);
   p.gifIdx = gifStartFrame(i, N_PANELS, nowMs());
   p.dueMs = nowMs();
@@ -492,7 +493,10 @@ static void enterFace(int i, Face f) {
   } else {
     p.bandY0 = p.bandY1 = 0;
   }
-  if (!gifNow) memset(p.sent, 0xA5, (size_t)TFT_W * TFT_H * 2);
+  if (!gifNow) {
+    p.sentReset = true;
+    memset(p.sent, 0xA5, (size_t)TFT_W * TFT_H * 2);
+  }
   panelFace[i] = f;
   lastFaceDrawMs[i] = nowMs();
   panelDirty[i] = true;
@@ -514,6 +518,7 @@ void viewsService() {
     wasIdle = false;
     for (int i = 0; i < N_PANELS; i++) {
       displayWait(i);   // a frame submitted just before idle may still be in the flush task
+      panels[i].sentReset = true;
       memset(panels[i].sent, 0xA5, (size_t)TFT_W * TFT_H * 2);
       panels[i].gifShown = -1;
       panelDirty[i] = true;

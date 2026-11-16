@@ -11,11 +11,12 @@
 #include "sys.h"
 #include "usb.h"
 
-constexpr size_t ART_BYTES = (size_t)ART_SIZE * ART_SIZE * 2;
+constexpr size_t ART_BYTES = (size_t)ART_BOX_W * ART_BOX_H * 2;   // the largest cover, RGB565
 
 // Two PSRAM buffers: the one on screen stays valid while the next arrives
 static uint8_t *shown, *incoming;
 static uint32_t shownId, incomingId;
+static int shownW, shownH, incomingW, incomingH;
 static size_t incomingLen, incomingSize;   // incomingSize: RGB444 (packed) or RGB565 bytes expected
 static uint32_t lastRequestMs;
 static uint32_t lastRequestId;
@@ -32,18 +33,23 @@ static bool ensureBuffers() {
 }
 
 void artLine(const char *line) {
-  // "@a begin <id> <w> <h>" / "@a d <b64>" / "@a end <id> <crc>"
+  // "@a begin <id> <w> <h> [fmt]" / "@a d <b64>" / "@a end <id> <crc>"
   if (strncmp(line, "@a ", 3) || !ensureBuffers()) return;
   const char *rest = line + 3;
   if (!strncmp(rest, "begin ", 6)) {
     unsigned long id = 0, w = 0, h = 0, fmt = 565;
-    if (sscanf(rest + 6, "%lu %lu %lu %lu", &id, &w, &h, &fmt) < 3 || w != ART_SIZE || h != ART_SIZE) {
+    // even sides: the RGB444 pairs never straddle the end
+    if (sscanf(rest + 6, "%lu %lu %lu %lu", &id, &w, &h, &fmt) < 3 || w < ART_MIN_W || w > ART_BOX_W ||
+        h < ART_MIN_H || h > ART_BOX_H || (w & 1) || (h & 1)) {
       incomingId = 0;
       return;
     }
     incomingId = (uint32_t)id;
+    incomingW = (int)w;
+    incomingH = (int)h;
     incomingLen = 0;
-    incomingSize = fmt == 444 ? ART_BYTES * 3 / 4 : ART_BYTES;
+    size_t bytes565 = (size_t)w * h * 2;
+    incomingSize = fmt == 444 ? bytes565 * 3 / 4 : bytes565;
   } else if (!strncmp(rest, "d ", 2)) {
     if (!incomingId) return;
     size_t out = 0;
@@ -65,10 +71,10 @@ void artLine(const char *line) {
       incomingId = 0;
       return;
     }
-    if (incomingSize != ART_BYTES) {
+    if (incomingSize != (size_t)incomingW * incomingH * 2) {
       // RGB444 pairs (3 bytes) -> RGB565 big-endian, in place from the end:
       // each output pair (4 bytes) only overwrites input already consumed
-      for (int j = ART_SIZE * ART_SIZE / 2 - 1; j >= 0; j--) {
+      for (int j = incomingW * incomingH / 2 - 1; j >= 0; j--) {
         const uint8_t *q = incoming + 3 * j;
         int r0 = q[0] >> 4, g0 = q[0] & 15, b0 = q[1] >> 4, r1 = q[1] & 15, g1 = q[2] >> 4, b1 = q[2] & 15;
         uint16_t c0 = (uint16_t)((r0 << 12) | (r0 >> 3 << 11) | (g0 << 7) | (g0 >> 2 << 5) | (b0 << 1) | (b0 >> 3));
@@ -81,13 +87,19 @@ void artLine(const char *line) {
     shown = incoming;
     incoming = t;
     shownId = incomingId;
+    shownW = incomingW;
+    shownH = incomingH;
     incomingId = 0;
   }
 }
 
-const uint16_t *artGet(uint32_t id) {
+const uint16_t *artGet(uint32_t id, int *w, int *h) {
   if (!id) return nullptr;
-  if (id == shownId && shown) return (const uint16_t *)shown;
+  if (id == shownId && shown) {
+    *w = shownW;
+    *h = shownH;
+    return (const uint16_t *)shown;
+  }
   // missing: ask the PC, unless a transfer of it is running or we just asked
   uint32_t now = nowMs();
   if (id != incomingId && (id != lastRequestId || now - lastRequestMs >= 5000)) {

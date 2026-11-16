@@ -28,8 +28,45 @@ Notes on what is shown:
   4-bit alpha bitmap. The board caches the last 8 bitmaps. The weather place
   name is pinned and saved to flash (`/ffat/txt_wx.place.bin`), so it still
   draws while the PC is off.
-- **Cover art** is 144x144, sent as RGB444 (31 KB per cover). It shrinks to
-  104x104 while a warning box sits above it.
+- **Cover art** keeps its shape inside a 224x144 box (8 px from each screen
+  edge), centred both ways: 144 tall up to 224:144 wide (a square cover stays
+  144x144), then 224 wide and shorter, down to 96 tall (2/3) for 7:3. Past
+  that it is cut evenly: the sides of a wider cover, top and bottom of one
+  taller than 1:2 (72 wide). Black bars around a video thumbnail are trimmed
+  first. Sent as RGB444 (31 KB for 144x144, at most 47 KB). The box and the
+  art shrink with it to 104 tall while a warning box sits above it. The
+  board rounds the cover's corners (radius 8, antialiased).
+- **Music border** (`vis`): an 8 px ring around the cover, rounded to match
+  (outer radius 16, inner 8, same centres), lit by what the PC plays. Six
+  bands, in this order round the ring:
+
+  | Band | Hz | Colour |
+  |---|---|---|
+  | Heavy bass | 20-60 | `#c80000` |
+  | Upper bass | 60-250 | `#ff0000` |
+  | Lower mid | 250-1000 | `#0000c8` |
+  | Upper mid | 1000-4000 | `#0000ff` |
+  | Lower high | 4000-8000 | `#00c800` |
+  | Upper high | 8000-16000 | `#00ff00` |
+
+  Each band's stretch of the ring is its share of the total length; a band
+  under 10% of the longest drops out, and one band alone fills the ring.
+  Lengths weigh the bands on one scale (power per octave), with lower bands
+  counting a little more, so a faint treble or very faint bass fills little.
+  Each region is lit 60-100% by its band's volume against the song's own
+  loudness (not Windows' volume): a loud chorus is bright, a quiet verse
+  dimmer. Neighbouring colours blend over 20 px at each boundary and the
+  pattern turns clockwise once every 120 s.
+  The board averages the frames of the last 100 ms, holds a level it reached
+  for 100 ms, then lets it fall no faster than full scale in 0.5 s, so a
+  pause or the end of a song fades
+  out; a frame older than 250 ms counts as silence. No audio: the ring is
+  black. The PC sends 6 lengths and 6 volumes 30 times a second (WASAPI loopback in the
+  helper's user half, HID report 7; see
+  [host/pc_stats/README.md](../host/pc_stats/README.md#music-border-audio-stream-v-hid-report-7)).
+  `vis on|off` turns it on or off (saved, on by default); `vis` or
+  `vis stats` prints the stream and ring counters, `vis reset` clears them.
+  `shot` draws the ring into the screenshot.
 - **Weather warnings:** rain within 60 min puts a box on the media and weather
   faces (Drizzle under 0.5 mm/h / Light Rain / Heavy Shower from 7.6 mm/h /
   Storm, the ETA counting down each minute, how long it lasts); yellow until

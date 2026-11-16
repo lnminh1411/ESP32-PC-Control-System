@@ -1,3 +1,4 @@
+#include "vis.h"
 #include "commands.h"
 
 #include <ctype.h>
@@ -388,6 +389,7 @@ static void cmdShot(const char *a1, const char *) {
     }
   }
   free(frame);
+  displayShotRing(n - 1, (uint16_t *)copy);   // the music ring never touches the canvas
   char line[1100];
   int len = snprintf(line, sizeof line, "SHOT begin %d %d %d\n", n, TFT_W, TFT_H);
   usbCdcWriteAll(line, len);
@@ -467,6 +469,7 @@ static void cmdNight(const char *a1, const char *a2) {
   nightConsole(args);
 }
 static void cmdPcWarn(const char *, const char *) { pcWarnCommand(""); }
+static void cmdVis(const char *a1, const char *) { visConsole(a1 ? a1 : ""); }
 
 static const Command COMMANDS[] = {
   {"help",    "",                                    cmdHelp},
@@ -495,6 +498,7 @@ static const Command COMMANDS[] = {
   {"pcstats", "[text]",                                       cmdPcStats},
   {"pcwarn",  "[set <metric> <high|crit> <v|off|default> | avg <ms> | reset | demo [one] | off]", cmdPcWarn},
   {"fps",     "[budget <20-95> | cap <1|2|3> <1-60|off>]",   cmdFps},
+  {"vis",     "[on|off|stats|reset]  (music border around the cover: on/off saved; stats = HID level stream + ring push counters)", cmdVis},
   {"layout",  "<show|reload|default|begin|data <b64>|end>",  cmdLayout},
   {"face",    "<1|2|3> <auto|pc|gif|restart|update|media|weather|ai|localai|clock>", cmdFace},
   {"shot",    "<1|2|3>  (panel screenshot, base64 on CDC)",   cmdShot},
