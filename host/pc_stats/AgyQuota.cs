@@ -493,7 +493,8 @@ static partial class AgyQuota {
         Dictionary<string, object> models = fm != null && fm.ContainsKey("models") ? fm["models"] as Dictionary<string, object> : null;
         if (models != null) {
           foreach (KeyValuePair<string, object> kv in models) {
-            if (kv.Key.IndexOf("flash", StringComparison.OrdinalIgnoreCase) < 0 || kv.Key.IndexOf("lite", StringComparison.OrdinalIgnoreCase) >= 0) continue;
+            if (kv.Key.IndexOf("flash", StringComparison.OrdinalIgnoreCase) < 0 || kv.Key.IndexOf("lite", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                kv.Key.IndexOf("image", StringComparison.OrdinalIgnoreCase) >= 0) continue;   // image models have their own quota
             Dictionary<string, object> m = kv.Value as Dictionary<string, object>;
             Dictionary<string, object> qi = m != null && m.ContainsKey("quotaInfo") ? m["quotaInfo"] as Dictionary<string, object> : null;
             double? frac = GetDouble(qi, "remainingFraction");
@@ -505,7 +506,11 @@ static partial class AgyQuota {
           }
         }
       }
-      // the weekly Gemini window only shows in agy's /usage panel: every 10
+      // agy's /usage panel is the one source that tracks the Gemini group:
+      // since 2026-11 the cloud per-model values read 100% for every model
+      // (Gemini 3.8 Flash too) while /usage shows the group's real use. So
+      // /usage wins for both windows; the cloud only fills in before the
+      // first read. The weekly window only shows there at all: every 10
       // minutes, or after 1 minute when the last try failed (a cold agy start
       // can miss the timeouts, and until a read works the weekly row is empty)
       if (DateTime.UtcNow >= nextUsageUtc) {
@@ -521,7 +526,7 @@ static partial class AgyQuota {
         nextUsageUtc = DateTime.UtcNow + TimeSpan.FromMinutes(read ? 10 : 1);
       }
       if (usageWeek != null && !double.IsNaN(usageWeek.Pct)) { q.WeekPct = usageWeek.Pct; q.WeekReset = usageWeek.ResetUtc; }
-      if (double.IsNaN(q.FivePct) && usageFive != null) { q.FivePct = usageFive.Pct; q.FiveReset = usageFive.ResetUtc; }
+      if (usageFive != null && !double.IsNaN(usageFive.Pct)) { q.FivePct = usageFive.Pct; q.FiveReset = usageFive.ResetUtc; }
       lock (cloudQuota) cloudQuota[email] = q;
       cloudErrLogged = false;
     } catch (HttpFailure ex) {
