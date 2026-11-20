@@ -88,6 +88,7 @@ static class AgyUsage {
   static readonly Regex Ansi = new Regex(@"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|\x1b[()][0-9A-B]|\x1b[=>]");
 
   public static string LastText;   // flattened panel text of the last run, for --agy-usage
+  public static string LastAccount; // "Account: <email>" from the last panel read, null when not shown
 
   public static string Workspace {
     get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"ESP32PcStats\agy-usage"); }
@@ -125,7 +126,10 @@ static class AgyUsage {
       try { if (oldStamp != DateTime.MinValue && File.GetLastWriteTimeUtc(stamp) == ourStamp) File.SetLastWriteTimeUtc(stamp, oldStamp); } catch (Exception) { }
     }
     LastText = text;
+    LastAccount = null;
     if (text == null) return false;
+    Match acct = Regex.Match(text, @"Account:\s*(\S+@\S+)");
+    if (acct.Success) LastAccount = acct.Groups[1].Value;
 
     int g = text.IndexOf("GEMINI MODELS", StringComparison.Ordinal);
     if (g < 0) return false;

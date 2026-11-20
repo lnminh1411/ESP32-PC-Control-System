@@ -328,7 +328,35 @@ static partial class AgyQuota {
   static string refreshErrLogged;         // last refresh failure logged (once per kind)
   static bool cloudErrLogged;
   static AgyUsage.Window usageWeek, usageFive;   // from agy's /usage panel
+  static string usageAccount;                    // whose panel that was
   static DateTime nextUsageUtc = DateTime.MinValue;
+
+  // agy's /usage panel is the one source that tracks the Gemini group: since
+  // 2026-11 the cloud per-model values read 100% for every model while /usage
+  // shows the group's real use, and the weekly window only shows there at
+  // all. So /usage wins for both windows (GenerateOutputLines); the cloud only
+  // fills in before the first read. Polled on its own, every 10 minutes, or
+  // after 1 minute when the last try failed: it needs no cloud token, and
+  // while it ran inside the cloud pass a token or network failure there
+  // stopped it for a day (2026-11-19), leaving a stale 5-hour row.
+  static void PollUsage() {
+    if (DateTime.UtcNow < nextUsageUtc) return;
+    AgyUsage.Window w, f;
+    bool read = false;
+    try {
+      read = AgyUsage.Read(out w, out f);
+      if (read) {
+        usageWeek = w;
+        usageFive = f;
+        usageAccount = AgyUsage.LastAccount;
+      } else {
+        Log("agy usage: /usage panel not read, retrying in 1 min");
+      }
+    } catch (Exception ex) {
+      Log("agy usage: " + ex.GetType().Name + ": " + ex.Message);
+    }
+    nextUsageUtc = DateTime.UtcNow + TimeSpan.FromMinutes(read ? 10 : 1);
+  }
 
   // agy's login blob: {"token":{access_token, refresh_token, expiry, ...}, "id_token" or "id_token_email"}
   static Dictionary<string, object> ReadAgyLogin() {
@@ -506,27 +534,6 @@ static partial class AgyQuota {
           }
         }
       }
-      // agy's /usage panel is the one source that tracks the Gemini group:
-      // since 2026-11 the cloud per-model values read 100% for every model
-      // (Gemini 3.8 Flash too) while /usage shows the group's real use. So
-      // /usage wins for both windows; the cloud only fills in before the
-      // first read. The weekly window only shows there at all: every 10
-      // minutes, or after 1 minute when the last try failed (a cold agy start
-      // can miss the timeouts, and until a read works the weekly row is empty)
-      if (DateTime.UtcNow >= nextUsageUtc) {
-        AgyUsage.Window w, f;
-        bool read = false;
-        try {
-          read = AgyUsage.Read(out w, out f);
-          if (read) { usageWeek = w; usageFive = f; }
-          else Log("agy usage: /usage panel not read, retrying in 1 min");
-        } catch (Exception ex) {
-          Log("agy usage: " + ex.GetType().Name + ": " + ex.Message);
-        }
-        nextUsageUtc = DateTime.UtcNow + TimeSpan.FromMinutes(read ? 10 : 1);
-      }
-      if (usageWeek != null && !double.IsNaN(usageWeek.Pct)) { q.WeekPct = usageWeek.Pct; q.WeekReset = usageWeek.ResetUtc; }
-      if (usageFive != null && !double.IsNaN(usageFive.Pct)) { q.FivePct = usageFive.Pct; q.FiveReset = usageFive.ResetUtc; }
       lock (cloudQuota) cloudQuota[email] = q;
       cloudErrLogged = false;
     } catch (HttpFailure ex) {
@@ -1182,6 +1189,18 @@ static partial class AgyQuota {
       CloudQuota cq;
       bool haveCq;
       lock (cloudQuota) haveCq = cloudQuota.TryGetValue(acc.Email ?? email, out cq);
+      // /usage over the cloud values, for the account agy is signed in as
+      // (any account when the panel did not say)
+      AgyUsage.Window uw = usageWeek, uf = usageFive;
+      string ua = usageAccount;
+      if ((uw != null || uf != null) && (ua == null || string.Equals(ua, acc.Email ?? email, StringComparison.OrdinalIgnoreCase))) {
+        CloudQuota m = new CloudQuota();
+        if (haveCq) { m.FivePct = cq.FivePct; m.FiveReset = cq.FiveReset; m.WeekPct = cq.WeekPct; m.WeekReset = cq.WeekReset; }
+        if (uw != null && !double.IsNaN(uw.Pct)) { m.WeekPct = uw.Pct; m.WeekReset = uw.ResetUtc; }
+        if (uf != null && !double.IsNaN(uf.Pct)) { m.FivePct = uf.Pct; m.FiveReset = uf.ResetUtc; }
+        cq = m;
+        haveCq = true;
+      }
       if (haveCq) {
         if (!double.IsNaN(cq.FivePct)) lines.Add(pfx + "flash_5h_pct=" + cq.FivePct.ToString("0.0", CultureInfo.InvariantCulture));
         if (cq.FiveReset.HasValue) lines.Add(pfx + "flash_5h_reset_at=" + cq.FiveReset.Value.ToLocalTime().ToString("HH:mm", CultureInfo.InvariantCulture));
@@ -1737,6 +1756,7 @@ static partial class AgyQuota {
       Log("Poll error: " + ex.Message);
     }
     try { ClaudeKeepAlive(); } catch (Exception ex) { Log("claude: keep-alive error: " + ex.Message); }
+    try { PollUsage(); } catch (Exception ex) { Log("agy usage: " + ex.GetType().Name); }
     try { PollCloudQuota(); } catch (Exception ex) { Log("agy cloud: " + ex.GetType().Name); }
 
     List<string> lines = GenerateOutputLines(liveClients, cfg.Families, cfg.Accounts, accountsData);
@@ -1787,6 +1807,7 @@ static partial class AgyQuota {
         Log("Poll error: " + ex.Message);
       }
       try { ClaudeKeepAlive(); } catch (Exception ex) { Log("claude: keep-alive error: " + ex.Message); }
+      try { PollUsage(); } catch (Exception ex) { Log("agy usage: " + ex.GetType().Name); }
       try { PollCloudQuota(); } catch (Exception ex) { Log("agy cloud: " + ex.GetType().Name); }
 
       try {
